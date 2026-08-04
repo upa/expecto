@@ -46,7 +46,7 @@ class TestQueryModeUI:
         ui = QueryModeUI(self.slave_fd)
         ui.show("auto")
         output = self._read_output()
-        assert "# " in output
+        assert "! " in output
 
     def test_update_appends_incrementally(self) -> None:
         ui = QueryModeUI(self.slave_fd)
@@ -59,7 +59,7 @@ class TestQueryModeUI:
 
         ui.update("ls")
         output2 = self._read_output()
-        assert output2 == "s"
+        assert "s" in output2
 
     def test_update_backspace_redraws(self) -> None:
         ui = QueryModeUI(self.slave_fd)

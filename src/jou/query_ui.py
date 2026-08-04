@@ -31,7 +31,7 @@ class QueryModeUI:
 
     def show(self, mode: str) -> None:
         self._visible = True
-        self._prompt = "? " if mode == "completion" else "# "
+        self._prompt = "? " if mode == "completion" else "! "
         self._start_col = self._get_cursor_col() if self._get_cursor_col else 0
         self._text = ""
         self._write(f"\x1b[90m{self._prompt}\x1b[0m".encode())
@@ -44,11 +44,11 @@ class QueryModeUI:
             return
         if len(text) > len(old) and text[: len(old)] == old:
             new_chars = text[len(old) :]
-            self._write(new_chars.encode())
+            self._write(f"\x1b[90m{new_chars}\x1b[0m".encode())
         else:
             self._move_to_prompt_start()
             self._write(b"\x1b[J")
-            self._write(f"\x1b[90m{self._prompt}\x1b[0m{text}".encode())
+            self._write(f"\x1b[90m{self._prompt}{text}\x1b[0m".encode())
         self._text = text
 
     def hide(self) -> None:
