@@ -14,10 +14,13 @@ Two hotkeys, two modes — the hotkey pressed determines the execution mode:
 
 ## Status
 
-Phase 1 (completion mode) complete. Phase 2 (auto mode) in progress — SettleDetector and LLMClient auto mode extension done, ModeExecutor auto loop next. `DESIGN.md` is the authoritative specification.
+Phase 1 (completion mode) complete. Phase 2 (auto mode) core loop complete (SettleDetector, LLMClient with Responses API, ModeExecutor auto loop). `DESIGN.md` is the authoritative specification.
 
 ### TODO
 
+- **Dangerous command confirmation**: auto mode での危険コマンド検知+ユーザー確認（`rm -rf`, `dd`, `mkfs` 等のブラックリスト）
+- **Secret masking**: LLM に送るスクリーン履歴からパスワード・APIキー等を簡易マスキング
+- **Working Summary**: セッション内の操作要約を LLM コンテキストに含める機能（DESIGN.md §5.10 参照）
 - **Prompt engineering**: completion mode / auto mode のシステムプロンプト内容の精査・改善（現状は最低限の指示のみ）
 
 ## Tech Stack
