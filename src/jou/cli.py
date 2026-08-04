@@ -72,11 +72,20 @@ def main(argv: list[str] | None = None) -> None:
         assert pty_mgr.master_fd is not None
         os.write(pty_mgr.master_fd, data)
 
+    def get_pty_master_fd() -> int:
+        assert pty_mgr.master_fd is not None
+        return pty_mgr.master_fd
+
     mode_executor = ModeExecutor(
         llm_client=llm_client,
         screen_buffer=screen_buffer,
         write_to_pty=write_to_pty,
         stdout_fd=stdout_fd,
+        stdin_fd=stdin_fd,
+        get_pty_master_fd=get_pty_master_fd,
+        settle_ms=config.settle_ms,
+        threshold_ms=config.threshold_ms,
+        max_auto_steps=config.max_auto_steps,
     )
 
     def on_query_submit(query: str, mode: str) -> None:
