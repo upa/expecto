@@ -117,7 +117,7 @@ class TestCompletionMode:
 
 class TestAutoMode:
     def test_done_immediately(self) -> None:
-        """LLM returns done on first step — command is executed, no settle wait."""
+        """LLM returns done on first step — command is executed, settle waited, then done."""
         auto_responses = [
             AutoResponse(
                 action=AutoAction(type="command", value="echo hello"),
@@ -147,7 +147,7 @@ class TestAutoMode:
             )
             executor.execute("say hello", "auto")
 
-            assert pty_written == [b"echo hello\n"]
+            assert pty_written == [b"echo hello\n", b"\n"]
 
             os.close(stdout_w)
             stdout_w = -1
@@ -173,6 +173,7 @@ class TestAutoMode:
         fake_llm = FakeLLMClient(auto_responses=auto_responses)
         screen = ScreenBuffer()
 
+        pty_written: list[bytes] = []
         stdout_r, stdout_w = os.pipe()
         pty_r, pty_w = os.pipe()
 
@@ -180,12 +181,14 @@ class TestAutoMode:
             executor = ModeExecutor(
                 llm_client=fake_llm,
                 screen_buffer=screen,
-                write_to_pty=lambda d: None,
+                write_to_pty=lambda d: pty_written.append(d),
                 stdout_fd=stdout_w,
                 get_pty_master_fd=lambda: pty_r,
                 settle_ms=10,
             )
             executor.execute("do something", "auto")
+
+            assert pty_written == [b"\n"]
 
             os.close(stdout_w)
             stdout_w = -1
@@ -239,7 +242,7 @@ class TestAutoMode:
             )
             executor.execute("list then finish", "auto")
 
-            assert pty_written == [b"ls\n", b"echo done\n"]
+            assert pty_written == [b"ls\n", b"echo done\n", b"\n"]
 
             os.close(stdout_w)
             stdout_w = -1
@@ -281,7 +284,7 @@ class TestAutoMode:
             )
             executor.execute("stop it", "auto")
 
-            assert pty_written == [b"\x03"]
+            assert pty_written == [b"\x03", b"\n"]
         finally:
             for fd in [stdout_r, stdout_w, pty_r, pty_w]:
                 if fd >= 0:
@@ -326,7 +329,8 @@ class TestAutoMode:
             )
             executor.execute("keep going", "auto")
 
-            assert len(pty_written) == max_steps
+            assert len(pty_written) == max_steps + 1
+            assert pty_written[-1] == b"\n"
 
             os.close(stdout_w)
             stdout_w = -1

@@ -89,7 +89,10 @@ def main(argv: list[str] | None = None) -> None:
     )
 
     def on_query_submit(query: str, mode: str) -> None:
-        query_ui.deactivate()
+        if mode == "auto":
+            query_ui.finalize()
+        else:
+            query_ui.deactivate()
         mode_executor.execute(query, mode)
 
     input_router = InputRouter(

@@ -89,21 +89,26 @@ class ModeExecutor:
 
             os.write(self._stdout_fd, b"\x1b8\x1b[J")
 
+            command_executed = False
             if response.action.value:
                 if response.action.type == "command":
                     self._write_to_pty(
                         response.action.value.encode() + b"\n"
                     )
+                    command_executed = True
                 elif response.action.type == "control":
                     ctrl_bytes = CONTROL_CHAR_MAP.get(response.action.value)
                     if ctrl_bytes:
                         self._write_to_pty(ctrl_bytes)
 
-            if response.status == "done":
-                self._show_auto_end(f"done: {response.explanation}")
-                break
-            if response.status == "fail":
-                self._show_auto_end(f"failed: {response.explanation}")
+            if response.status in ("done", "fail"):
+                if command_executed:
+                    interrupted = self._wait_for_settle(pty_master_fd)
+                    if interrupted:
+                        self._show_auto_end("interrupted")
+                        break
+                label = "done" if response.status == "done" else "failed"
+                self._show_auto_end(f"{label}: {response.explanation}")
                 break
 
             interrupted = self._wait_for_settle(pty_master_fd)
@@ -127,6 +132,8 @@ class ModeExecutor:
                 f"max steps ({self._max_auto_steps})"
             )
 
+        self._write_to_pty(b"\n")
+
     def _show_auto_thinking(self, step: int) -> None:
         msg = f"[auto {step}/{self._max_auto_steps} thinking...]"
         os.write(self._stdout_fd, b"\x1b7")
@@ -135,7 +142,7 @@ class ModeExecutor:
     def _show_auto_end(self, label: str) -> None:
         os.write(
             self._stdout_fd,
-            f"\x1b[90m[auto {label}]\x1b[0m\r\n".encode(),
+            f"\x1b[90m[auto {label}]\x1b[0m".encode(),
         )
 
     def _wait_for_settle(self, pty_master_fd: int) -> bool:

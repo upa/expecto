@@ -65,6 +65,13 @@ class QueryModeUI:
         self._move_to_prompt_start()
         self._write(b"\x1b[J")
 
+    def finalize(self) -> None:
+        """Keep query text visible, write newline, mark invisible."""
+        if not self._visible:
+            return
+        self._visible = False
+        self._write(b"\r\n")
+
     def _move_to_prompt_start(self) -> None:
         cols = self._get_cols()
         prompt_width = _display_width(self._prompt)
