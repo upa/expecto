@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import openai
 from openai.types.chat import ChatCompletionMessageParam
@@ -16,9 +16,31 @@ SYSTEM_PROMPT = """\
 - 1つのコマンドだけを提案してください。実行はユーザーが行います。
 """
 
+AUTO_SYSTEM_PROMPT = """\
+あなたはユーザーの操作しているターミナル（またはSSH先、あるいはネットワーク機器のCLI）\
+に対してコマンドを実行するアシスタントです。
+- ユーザーが指定したゴールを達成するために、コマンドを1つずつ実行してください。
+- 各ステップで、前のコマンドの出力を確認し、次のアクションを判断してください。
+- ゴールが達成できたら status を "done" にしてください。
+- エラーが発生して回復不能な場合は status を "fail" にしてください。
+- コマンドが長時間実行されている場合、action.type を "control" にして \
+"ctrl-c" 等の制御文字を送信できます。
+"""
+
 
 class CompletionResponse(BaseModel):
     command: str
+    explanation: str
+
+
+class AutoAction(BaseModel):
+    type: Literal["command", "control"]
+    value: str
+
+
+class AutoResponse(BaseModel):
+    action: AutoAction
+    status: Literal["continue", "done", "fail"]
     explanation: str
 
 
@@ -48,3 +70,34 @@ class LLMClient:
         if parsed is None:
             return CompletionResponse(command="", explanation="LLM returned empty response")
         return parsed
+
+    def auto_step(self, messages: list[ChatCompletionMessageParam]) -> AutoResponse:
+        response = self._client.beta.chat.completions.parse(
+            model=self._config.model,
+            messages=messages,
+            response_format=AutoResponse,
+            reasoning_effort=self._config.openai_reasoning_effort,
+        )
+
+        parsed = response.choices[0].message.parsed
+        if parsed is None:
+            return AutoResponse(
+                action=AutoAction(type="command", value=""),
+                status="fail",
+                explanation="LLM returned empty response",
+            )
+        return parsed
+
+    def build_auto_messages(
+        self,
+        query: str,
+        screen_text: str,
+        history: list[ChatCompletionMessageParam],
+    ) -> list[ChatCompletionMessageParam]:
+        user_content = f"## ゴール\n{query}\n\n## 現在のターミナル画面\n```\n{screen_text}\n```"
+        messages: list[ChatCompletionMessageParam] = [
+            {"role": "system", "content": AUTO_SYSTEM_PROMPT},
+            {"role": "user", "content": user_content},
+        ]
+        messages.extend(history)
+        return messages

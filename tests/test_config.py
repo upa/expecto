@@ -18,6 +18,9 @@ class TestJouConfig:
             assert config.openai_base_url is None
             assert config.openai_reasoning_effort is None
             assert config.history_lines == 200
+            assert config.settle_ms == 500
+            assert config.threshold_ms == 30000
+            assert config.max_auto_steps == 10
             assert config.completion_hotkey == 0x1F
             assert config.auto_hotkey == 0x1D
             assert config.log_file is None

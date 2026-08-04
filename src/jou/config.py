@@ -25,6 +25,9 @@ class JouConfig:
     openai_base_url: str | None
     openai_reasoning_effort: ReasoningEffortLevel | None
     history_lines: int
+    settle_ms: int
+    threshold_ms: int
+    max_auto_steps: int
     completion_hotkey: int
     auto_hotkey: int
     log_file: str | None
@@ -41,6 +44,9 @@ class JouConfig:
             openai_base_url=os.environ.get("OPENAI_BASE_URL") or None,
             openai_reasoning_effort=effort,
             history_lines=200,
+            settle_ms=500,
+            threshold_ms=30000,
+            max_auto_steps=10,
             completion_hotkey=0x1F,
             auto_hotkey=0x1D,
             log_file=None,
