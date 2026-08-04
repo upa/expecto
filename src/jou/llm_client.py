@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import json
 from typing import TYPE_CHECKING, Literal
 
 import openai
-from openai.types.chat import ChatCompletionMessageParam
-from pydantic import BaseModel, ValidationError
+from openai.types.responses import EasyInputMessageParam, ResponseInputParam
+from openai.types.shared_params import Reasoning
+from pydantic import BaseModel
 
 if TYPE_CHECKING:
     from jou.config import JouConfig
@@ -56,79 +56,59 @@ class LLMClient:
 
     def complete(self, screen_text: str, query: str) -> CompletionResponse:
         user_content = f"## ターミナル画面\n```\n{screen_text}\n```\n\n## ユーザーのリクエスト\n{query}"
-        messages: list[ChatCompletionMessageParam] = [
-            {"role": "system", "content": SYSTEM_PROMPT},
+        input_msgs: ResponseInputParam = [
             {"role": "user", "content": user_content},
         ]
 
-        response = self._client.beta.chat.completions.parse(
+        reasoning: Reasoning | None = (
+            Reasoning(effort=self._config.openai_reasoning_effort)
+            if self._config.openai_reasoning_effort is not None
+            else None
+        )
+        response = self._client.responses.parse(
             model=self._config.model,
-            messages=messages,
-            response_format=CompletionResponse,
-            reasoning_effort=self._config.openai_reasoning_effort,
+            instructions=SYSTEM_PROMPT,
+            input=input_msgs,
+            text_format=CompletionResponse,
+            reasoning=reasoning,
         )
 
-        parsed = response.choices[0].message.parsed
+        parsed = response.output_parsed
         if parsed is None:
             return CompletionResponse(command="", explanation="LLM returned empty response")
         return parsed
 
-    def auto_step(self, messages: list[ChatCompletionMessageParam]) -> AutoResponse:
-        try:
-            response = self._client.beta.chat.completions.parse(
-                model=self._config.model,
-                messages=messages,
-                response_format=AutoResponse,
-                reasoning_effort=self._config.openai_reasoning_effort,
-            )
-        except ValidationError as e:
-            return self._fallback_parse(e)
+    def auto_step(self, messages: list[EasyInputMessageParam]) -> AutoResponse:
+        input_msgs: ResponseInputParam = list(messages)
+        reasoning: Reasoning | None = (
+            Reasoning(effort=self._config.openai_reasoning_effort)
+            if self._config.openai_reasoning_effort is not None
+            else None
+        )
+        response = self._client.responses.parse(
+            model=self._config.model,
+            instructions=AUTO_SYSTEM_PROMPT,
+            input=input_msgs,
+            text_format=AutoResponse,
+            reasoning=reasoning,
+        )
 
-        parsed = response.choices[0].message.parsed
+        parsed = response.output_parsed
         if parsed is None:
-            content = response.choices[0].message.content
-            if content:
-                return self._parse_raw_content(content)
             return AutoResponse(
                 status="fail",
                 explanation="LLM returned empty response",
             )
         return parsed
 
-    def _fallback_parse(self, original_error: ValidationError) -> AutoResponse:
-        """Try raw_decode to handle trailing characters in LLM response."""
-        error_str = str(original_error)
-        input_start = error_str.find("input_value='")
-        if input_start < 0:
-            return AutoResponse(
-                status="fail",
-                explanation=f"LLM response parse error: {original_error}",
-            )
-        raw = error_str[input_start + len("input_value='"):]
-        raw = raw.rsplit("'", 1)[0]
-        return self._parse_raw_content(raw)
-
-    def _parse_raw_content(self, content: str) -> AutoResponse:
-        """Parse JSON from content, tolerating trailing characters."""
-        try:
-            decoder = json.JSONDecoder()
-            obj, _ = decoder.raw_decode(content.strip())
-            return AutoResponse.model_validate(obj)
-        except (json.JSONDecodeError, ValidationError) as e:
-            return AutoResponse(
-                status="fail",
-                explanation=f"LLM response parse error: {e}",
-            )
-
     def build_auto_messages(
         self,
         query: str,
         screen_text: str,
-        history: list[ChatCompletionMessageParam],
-    ) -> list[ChatCompletionMessageParam]:
+        history: list[EasyInputMessageParam],
+    ) -> list[EasyInputMessageParam]:
         user_content = f"## ゴール\n{query}\n\n## 現在のターミナル画面\n```\n{screen_text}\n```"
-        messages: list[ChatCompletionMessageParam] = [
-            {"role": "system", "content": AUTO_SYSTEM_PROMPT},
+        messages: list[EasyInputMessageParam] = [
             {"role": "user", "content": user_content},
         ]
         messages.extend(history)

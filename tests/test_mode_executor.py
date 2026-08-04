@@ -8,7 +8,7 @@ from jou.mode_executor import ModeExecutor
 from jou.screen_buffer import ScreenBuffer
 
 if TYPE_CHECKING:
-    from openai.types.chat import ChatCompletionMessageParam
+    from openai.types.responses import EasyInputMessageParam
 
 
 class FakeLLMClient:
@@ -31,7 +31,7 @@ class FakeLLMClient:
         return self._response
 
     def auto_step(
-        self, messages: list[ChatCompletionMessageParam]
+        self, messages: list[EasyInputMessageParam]
     ) -> AutoResponse:
         resp = self._auto_responses[self._auto_call_count]
         self._auto_call_count += 1
@@ -46,10 +46,9 @@ class FakeLLMClient:
         self,
         query: str,
         screen_text: str,
-        history: list[ChatCompletionMessageParam],
-    ) -> list[ChatCompletionMessageParam]:
-        messages: list[ChatCompletionMessageParam] = [
-            {"role": "system", "content": "auto system prompt"},
+        history: list[EasyInputMessageParam],
+    ) -> list[EasyInputMessageParam]:
+        messages: list[EasyInputMessageParam] = [
             {"role": "user", "content": f"goal: {query}\nscreen: {screen_text}"},
         ]
         messages.extend(history)
@@ -364,7 +363,7 @@ class TestAutoMode:
         ]
 
         def fake_auto_step(
-            messages: list[ChatCompletionMessageParam],
+            messages: list[EasyInputMessageParam],
         ) -> AutoResponse:
             os.write(stdin_w, b"\x03")
             return auto_responses[0]
@@ -455,7 +454,7 @@ class TestAutoMode:
             ),
         ]
 
-        call_messages: list[list[ChatCompletionMessageParam]] = []
+        call_messages: list[list[EasyInputMessageParam]] = []
 
         fake_llm = FakeLLMClient(
             auto_responses=auto_responses,
@@ -466,8 +465,8 @@ class TestAutoMode:
         def tracking_build(
             query: str,
             screen_text: str,
-            history: list[ChatCompletionMessageParam],
-        ) -> list[ChatCompletionMessageParam]:
+            history: list[EasyInputMessageParam],
+        ) -> list[EasyInputMessageParam]:
             msgs = original_build(query, screen_text, history)
             call_messages.append(list(msgs))
             return msgs
@@ -495,13 +494,13 @@ class TestAutoMode:
 
             assert len(call_messages) == 2
             first_call = call_messages[0]
-            assert len(first_call) == 2
+            assert len(first_call) == 1
 
             second_call = call_messages[1]
-            assert len(second_call) == 4
-            assert second_call[2]["role"] == "assistant"
-            assert second_call[3]["role"] == "user"
-            assert "コマンド実行結果" in str(second_call[3]["content"])
+            assert len(second_call) == 3
+            assert second_call[1]["role"] == "assistant"
+            assert second_call[2]["role"] == "user"
+            assert "コマンド実行結果" in str(second_call[2]["content"])
         finally:
             for fd in [stdout_r, stdout_w, pty_r, pty_w]:
                 if fd >= 0:

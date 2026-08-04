@@ -1,3 +1,5 @@
+from openai.types.responses import EasyInputMessageParam
+
 from jou.config import JouConfig
 from jou.llm_client import (
     AUTO_SYSTEM_PROMPT,
@@ -95,17 +97,15 @@ class TestLLMClient:
             screen_text="user@host:~$ ",
             history=[],
         )
-        assert len(messages) == 2
-        assert messages[0]["role"] == "system"
-        assert messages[0]["content"] == AUTO_SYSTEM_PROMPT
-        assert messages[1]["role"] == "user"
-        content = str(messages[1]["content"])
+        assert len(messages) == 1
+        assert messages[0]["role"] == "user"
+        content = str(messages[0]["content"])
         assert "ディスク使用量を確認して" in content
         assert "user@host:~$ " in content
 
     def test_build_auto_messages_with_history(self) -> None:
         client = LLMClient(_make_config())
-        history = [
+        history: list[EasyInputMessageParam] = [
             {"role": "assistant", "content": '{"action":{"type":"command","value":"df -h"},"status":"continue","explanation":"checking"}'},
             {"role": "user", "content": "## コマンド実行結果\n```\n/dev/sda1  50G  20G  30G  40% /\n```"},
         ]
@@ -114,15 +114,14 @@ class TestLLMClient:
             screen_text="user@host:~$ ",
             history=history,
         )
-        assert len(messages) == 4
-        assert messages[0]["role"] == "system"
-        assert messages[1]["role"] == "user"
-        assert messages[2]["role"] == "assistant"
-        assert messages[3]["role"] == "user"
+        assert len(messages) == 3
+        assert messages[0]["role"] == "user"
+        assert messages[1]["role"] == "assistant"
+        assert messages[2]["role"] == "user"
 
     def test_build_auto_messages_query_always_first(self) -> None:
         client = LLMClient(_make_config())
-        history = [
+        history: list[EasyInputMessageParam] = [
             {"role": "assistant", "content": "action1"},
             {"role": "user", "content": "output1"},
             {"role": "assistant", "content": "action2"},
@@ -133,7 +132,6 @@ class TestLLMClient:
             screen_text="$ ",
             history=history,
         )
-        assert messages[0]["role"] == "system"
-        assert messages[1]["role"] == "user"
-        assert "setup nginx" in str(messages[1]["content"])
-        assert len(messages) == 6
+        assert messages[0]["role"] == "user"
+        assert "setup nginx" in str(messages[0]["content"])
+        assert len(messages) == 5

@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Protocol
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from openai.types.chat import ChatCompletionMessageParam
+    from openai.types.responses import EasyInputMessageParam
 
     from jou.screen_buffer import ScreenBuffer
 
@@ -25,15 +25,15 @@ class LLMCompleter(Protocol):
     def complete(self, screen_text: str, query: str) -> CompletionResponse: ...
 
     def auto_step(
-        self, messages: list[ChatCompletionMessageParam]
+        self, messages: list[EasyInputMessageParam]
     ) -> AutoResponse: ...
 
     def build_auto_messages(
         self,
         query: str,
         screen_text: str,
-        history: list[ChatCompletionMessageParam],
-    ) -> list[ChatCompletionMessageParam]: ...
+        history: list[EasyInputMessageParam],
+    ) -> list[EasyInputMessageParam]: ...
 
 
 class ModeExecutor:
@@ -79,7 +79,7 @@ class ModeExecutor:
         pty_master_fd = self._get_pty_master_fd()
 
         screen_text = self._screen.get_text()
-        history: list[ChatCompletionMessageParam] = []
+        history: list[EasyInputMessageParam] = []
 
         for step in range(1, self._max_auto_steps + 1):
             self._show_auto_thinking(step)
