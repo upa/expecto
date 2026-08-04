@@ -11,7 +11,10 @@ class ScreenBuffer:
         self._screen.set_mode(pyte.modes.LNM)
 
     def feed(self, data: bytes) -> None:
-        self._stream.feed(data.decode("utf-8", errors="replace"))
+        try:
+            self._stream.feed(data.decode("utf-8", errors="replace"))
+        except TypeError:
+            self._screen.reset()
 
     def get_text(self) -> str:
         history_lines: list[str] = []
