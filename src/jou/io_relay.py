@@ -1,11 +1,24 @@
+from __future__ import annotations
+
 import os
 import select
 import sys
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from jou.input_router import InputRouter
+    from jou.screen_buffer import ScreenBuffer
 
 
 class IORelay:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        input_router: InputRouter | None = None,
+        screen_buffer: ScreenBuffer | None = None,
+    ) -> None:
         self._running: bool = False
+        self._input_router = input_router
+        self._screen_buffer = screen_buffer
 
     def run(self, pty_master_fd: int, stdin_fd: int | None = None, stdout_fd: int | None = None) -> None:
         effective_stdin = stdin_fd if stdin_fd is not None else sys.stdin.fileno()
@@ -25,7 +38,10 @@ class IORelay:
                     break
                 if not data:
                     break
-                os.write(pty_master_fd, data)
+                if self._input_router is not None:
+                    self._input_router.handle(data)
+                else:
+                    os.write(pty_master_fd, data)
 
             if pty_master_fd in rlist:
                 try:
@@ -34,6 +50,8 @@ class IORelay:
                     break
                 if not data:
                     break
+                if self._screen_buffer is not None:
+                    self._screen_buffer.feed(data)
                 os.write(effective_stdout, data)
 
     def stop(self) -> None:
