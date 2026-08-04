@@ -49,7 +49,15 @@ Core components (each a separate module under `src/jou/`):
 - Install: `uv sync`
 - Run tests: `uv run pytest tests/ -v`
 - Run single test: `uv run pytest tests/test_foo.py::TestClass::test_name -v`
+- Type check: `uv run ty check`
+- Type check single path: `uv run ty check src/<path>`
 - Tests live in `tests/` and mirror `src/jou/` modules. Create or update tests alongside every code change.
+
+## Code Style
+
+- All code must use type hints. Prefer explicit types over type inference for public interfaces.
+- Avoid using `Any` wherever possible.
+- Run `uv run ty check` to verify types before completing a change.
 
 ## Design Constraints
 

@@ -7,7 +7,7 @@ from jou.pty_manager import PTYManager
 from jou.tty_controller import TTYController
 
 
-def parse_args(argv=None):
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="jou",
         description="Transparent TTY wrapper with LLM-powered command assistance",
@@ -30,9 +30,10 @@ def parse_args(argv=None):
     return parser.parse_args(argv)
 
 
-def main(argv=None):
+def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
 
+    command: str | list[str]
     if args.command:
         command = args.command
     elif args.shell:
@@ -47,6 +48,7 @@ def main(argv=None):
     tty_ctrl.enter_raw()
     try:
         pty_mgr.spawn(command)
+        assert pty_mgr.master_fd is not None
         rows, cols = tty_ctrl.get_window_size()
         tty_ctrl.set_pty_window_size(pty_mgr.master_fd, rows, cols)
         tty_ctrl.setup_sigwinch(pty_mgr.master_fd)
