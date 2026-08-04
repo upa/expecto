@@ -1,7 +1,7 @@
 import os
 import pty
 
-from jou.query_ui import QueryModeUI, _display_width, _truncate_to_width
+from jou.query_ui import QueryModeUI, _display_width
 
 
 class TestDisplayWidth:
@@ -13,25 +13,6 @@ class TestDisplayWidth:
 
     def test_mixed(self) -> None:
         assert _display_width("hello世界") == 9
-
-
-class TestTruncateToWidth:
-    def test_no_truncation(self) -> None:
-        assert _truncate_to_width("hello", 10) == "hello"
-
-    def test_truncate_ascii(self) -> None:
-        assert _truncate_to_width("hello world", 5) == "hello"
-
-    def test_truncate_cjk(self) -> None:
-        result = _truncate_to_width("あいうえお", 6)
-        assert result == "あいう"
-
-    def test_truncate_cjk_boundary(self) -> None:
-        result = _truncate_to_width("あいう", 5)
-        assert result == "あい"
-
-    def test_zero_width(self) -> None:
-        assert _truncate_to_width("hello", 0) == ""
 
 
 class TestQueryModeUI:
@@ -60,7 +41,6 @@ class TestQueryModeUI:
         ui.show("completion")
         output = self._read_output()
         assert "? " in output
-        assert "\x1b7" in output
 
     def test_show_auto_prompt(self) -> None:
         ui = QueryModeUI(self.slave_fd)
@@ -68,22 +48,41 @@ class TestQueryModeUI:
         output = self._read_output()
         assert "# " in output
 
-    def test_update_shows_text(self) -> None:
+    def test_update_appends_incrementally(self) -> None:
         ui = QueryModeUI(self.slave_fd)
         ui.show("completion")
         self._read_output()
-        ui.update("ls -la")
-        output = self._read_output()
-        assert "ls -la" in output
-        assert "\x1b[J" in output
 
-    def test_hide_restores_cursor(self) -> None:
+        ui.update("l")
+        output1 = self._read_output()
+        assert "l" in output1
+
+        ui.update("ls")
+        output2 = self._read_output()
+        assert output2 == "s"
+
+    def test_update_backspace_redraws(self) -> None:
         ui = QueryModeUI(self.slave_fd)
         ui.show("completion")
         self._read_output()
+        ui.update("abc")
+        self._read_output()
+
+        ui.update("ab")
+        output = self._read_output()
+        assert "\x1b[J" in output
+        assert "ab" in output
+
+    def test_hide_clears_with_relative_movement(self) -> None:
+        ui = QueryModeUI(self.slave_fd)
+        ui.show("completion")
+        self._read_output()
+        ui.update("test")
+        self._read_output()
+
         ui.hide()
         output = self._read_output()
-        assert "\x1b8" in output
+        assert "\r" in output
         assert "\x1b[J" in output
 
     def test_hide_when_not_visible_is_noop(self) -> None:
@@ -98,31 +97,63 @@ class TestQueryModeUI:
         output = self._read_output()
         assert output == ""
 
-    def test_deactivate_prevents_update(self) -> None:
+    def test_deactivate_clears_and_prevents_update(self) -> None:
         ui = QueryModeUI(self.slave_fd)
         ui.show("completion")
         self._read_output()
+        ui.update("hello")
+        self._read_output()
+
         ui.deactivate()
+        deactivate_output = self._read_output()
+        assert "\x1b[J" in deactivate_output
+
         ui.update("should not appear")
         output = self._read_output()
         assert output == ""
 
-    def test_truncation_with_cursor_col(self) -> None:
-        ui = QueryModeUI(self.slave_fd, get_cursor_col=lambda: 30)
+    def test_long_text_not_truncated(self) -> None:
+        ui = QueryModeUI(self.slave_fd, get_cursor_col=lambda: 0)
         ui.show("completion")
         self._read_output()
 
         long_text = "a" * 200
         ui.update(long_text)
         output = self._read_output()
-        displayed_a_count = output.count("a")
-        assert displayed_a_count < 200
+        assert output.count("a") == 200
 
     def test_cursor_col_stored_on_show(self) -> None:
-        col_values: list[int] = [25]
-        ui = QueryModeUI(self.slave_fd, get_cursor_col=lambda: col_values[0])
+        ui = QueryModeUI(self.slave_fd, get_cursor_col=lambda: 25)
         ui.show("completion")
-        assert ui._cursor_col == 25
+        assert ui._start_col == 25
+
+    def test_hide_with_start_col(self) -> None:
+        ui = QueryModeUI(self.slave_fd, get_cursor_col=lambda: 10)
+        ui.show("completion")
+        self._read_output()
+        ui.update("test")
+        self._read_output()
+
+        ui.hide()
+        output = self._read_output()
+        assert "\r" in output
+        assert "\x1b[10C" in output
+
+    def test_move_to_start_multiline(self) -> None:
+        """When text wraps, hide moves cursor up correctly."""
+        ui = QueryModeUI(self.slave_fd, get_cursor_col=lambda: 0)
+        ui.show("completion")
+        self._read_output()
+
+        cols = ui._get_cols()
+        long_text = "x" * (cols * 2)
+        ui.update(long_text)
+        self._read_output()
+
+        ui.hide()
+        output = self._read_output()
+        assert "\x1b[" in output
+        assert "A" in output
 
 
 class TestInputRouterWithQueryUI:

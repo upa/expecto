@@ -16,19 +16,6 @@ def _display_width(text: str) -> int:
     return width
 
 
-def _truncate_to_width(text: str, max_width: int) -> str:
-    if max_width <= 0:
-        return ""
-    width = 0
-    for i, ch in enumerate(text):
-        eaw = unicodedata.east_asian_width(ch)
-        char_width = 2 if eaw in ("F", "W") else 1
-        if width + char_width > max_width:
-            return text[:i]
-        width += char_width
-    return text
-
-
 class QueryModeUI:
     def __init__(
         self,
@@ -39,40 +26,67 @@ class QueryModeUI:
         self._get_cursor_col = get_cursor_col
         self._visible: bool = False
         self._prompt: str = ""
-        self._cursor_col: int = 0
+        self._start_col: int = 0
+        self._text: str = ""
 
     def show(self, mode: str) -> None:
         self._visible = True
         self._prompt = "? " if mode == "completion" else "# "
-        self._cursor_col = self._get_cursor_col() if self._get_cursor_col else 0
-        self._write(f"\x1b7\x1b[90m{self._prompt}\x1b[0m".encode())
+        self._start_col = self._get_cursor_col() if self._get_cursor_col else 0
+        self._text = ""
+        self._write(f"\x1b[90m{self._prompt}\x1b[0m".encode())
 
     def update(self, text: str) -> None:
         if not self._visible:
             return
-        max_width = self._available_width()
-        display_text = _truncate_to_width(text, max_width)
-        output = f"\x1b8\x1b[J\x1b7\x1b[90m{self._prompt}\x1b[0m{display_text}"
-        self._write(output.encode())
+        old = self._text
+        if text == old:
+            return
+        if len(text) > len(old) and text[: len(old)] == old:
+            new_chars = text[len(old) :]
+            self._write(new_chars.encode())
+        else:
+            self._move_to_prompt_start()
+            self._write(b"\x1b[J")
+            self._write(f"\x1b[90m{self._prompt}\x1b[0m{text}".encode())
+        self._text = text
 
     def hide(self) -> None:
         if not self._visible:
             return
         self._visible = False
-        self._write(b"\x1b8\x1b[J")
+        self._move_to_prompt_start()
+        self._write(b"\x1b[J")
 
     def deactivate(self) -> None:
+        if not self._visible:
+            return
         self._visible = False
+        self._move_to_prompt_start()
+        self._write(b"\x1b[J")
 
-    def _available_width(self) -> int:
+    def _move_to_prompt_start(self) -> None:
+        cols = self._get_cols()
+        prompt_width = _display_width(self._prompt)
+        text_width = _display_width(self._text)
+        total = self._start_col + prompt_width + text_width
+
+        # Account for pending wrap: when total is exactly a multiple of cols,
+        # the cursor is still on the current line (deferred wrap), not the next.
+        lines_down = (total - 1) // cols if total > 0 else 0
+
+        self._write(b"\r")
+        if lines_down > 0:
+            self._write(f"\x1b[{lines_down}A".encode())
+        if self._start_col > 0:
+            self._write(f"\x1b[{self._start_col}C".encode())
+
+    def _get_cols(self) -> int:
         try:
             cols = os.get_terminal_size(self._stdout_fd).columns
         except OSError:
             cols = 80
-        if cols <= 0:
-            cols = 80
-        prompt_width = _display_width(self._prompt)
-        return max(1, cols - self._cursor_col - prompt_width - 1)
+        return cols if cols > 0 else 80
 
     def _write(self, data: bytes) -> None:
         os.write(self._stdout_fd, data)
