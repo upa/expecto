@@ -34,5 +34,8 @@ class ScreenBuffer:
         all_lines = history_lines + screen_lines
         return "\n".join(all_lines)
 
+    def get_cursor_col(self) -> int:
+        return self._screen.cursor.x
+
     def resize(self, rows: int, cols: int) -> None:
         self._screen.resize(rows, cols)

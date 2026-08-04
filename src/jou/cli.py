@@ -64,7 +64,7 @@ def main(argv: list[str] | None = None) -> None:
     screen_buffer = ScreenBuffer(
         history_lines=config.history_lines,
     )
-    query_ui = QueryModeUI(stdout_fd)
+    query_ui = QueryModeUI(stdout_fd, get_cursor_col=screen_buffer.get_cursor_col)
 
     llm_client = LLMClient(config)
 

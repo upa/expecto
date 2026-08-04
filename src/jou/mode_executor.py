@@ -100,10 +100,10 @@ class ModeExecutor:
                         self._write_to_pty(ctrl_bytes)
 
             if response.status == "done":
-                self._show_auto_end("done")
+                self._show_auto_end(f"done: {response.explanation}")
                 break
             if response.status == "fail":
-                self._show_auto_end("failed")
+                self._show_auto_end(f"failed: {response.explanation}")
                 break
 
             interrupted = self._wait_for_settle(pty_master_fd)

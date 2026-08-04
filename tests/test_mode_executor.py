@@ -152,7 +152,7 @@ class TestAutoMode:
             os.close(stdout_w)
             stdout_w = -1
             stdout_output = _drain(stdout_r)
-            assert b"[auto done]" in stdout_output
+            assert b"[auto done:" in stdout_output
         finally:
             for fd in [stdout_r, stdout_w, pty_r, pty_w]:
                 if fd >= 0:
@@ -190,7 +190,7 @@ class TestAutoMode:
             os.close(stdout_w)
             stdout_w = -1
             stdout_output = _drain(stdout_r)
-            assert b"[auto failed]" in stdout_output
+            assert b"[auto failed:" in stdout_output
         finally:
             for fd in [stdout_r, stdout_w, pty_r, pty_w]:
                 if fd >= 0:
@@ -244,7 +244,7 @@ class TestAutoMode:
             os.close(stdout_w)
             stdout_w = -1
             stdout_output = _drain(stdout_r)
-            assert b"[auto done]" in stdout_output
+            assert b"[auto done:" in stdout_output
             assert b"output from step 1" in stdout_output
         finally:
             for fd in [stdout_r, stdout_w, pty_r, pty_w]:

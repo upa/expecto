@@ -49,3 +49,13 @@ class TestScreenBuffer:
         buf = ScreenBuffer(rows=24, cols=80)
         text = buf.get_text()
         assert text == ""
+
+    def test_get_cursor_col(self) -> None:
+        buf = ScreenBuffer(rows=24, cols=80)
+        buf.feed(b"user@host:~$ ")
+        assert buf.get_cursor_col() == 13
+
+    def test_get_cursor_col_after_newline(self) -> None:
+        buf = ScreenBuffer(rows=24, cols=80)
+        buf.feed(b"line1\r\nuser@host:~$ ")
+        assert buf.get_cursor_col() == 13
