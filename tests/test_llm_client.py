@@ -18,7 +18,7 @@ class TestLLMClient:
             openai_base_url=None,
             openai_reasoning_effort=None,
             history_lines=200,
-            completion_hotkey=0x1E,
+            completion_hotkey=0x1F,
             auto_hotkey=0x1D,
             log_file=None,
         )

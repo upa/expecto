@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import select
 import sys
-from typing import TYPE_CHECKING
+from typing import IO, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from jou.input_router import InputRouter
@@ -15,10 +15,12 @@ class IORelay:
         self,
         input_router: InputRouter | None = None,
         screen_buffer: ScreenBuffer | None = None,
+        log_file: IO[str] | None = None,
     ) -> None:
         self._running: bool = False
         self._input_router = input_router
         self._screen_buffer = screen_buffer
+        self._log_file = log_file
 
     def run(self, pty_master_fd: int, stdin_fd: int | None = None, stdout_fd: int | None = None) -> None:
         effective_stdin = stdin_fd if stdin_fd is not None else sys.stdin.fileno()
@@ -38,6 +40,9 @@ class IORelay:
                     break
                 if not data:
                     break
+                if self._log_file is not None:
+                    self._log_file.write(f"stdin: {data!r}\n")
+                    self._log_file.flush()
                 if self._input_router is not None:
                     self._input_router.handle(data)
                 else:

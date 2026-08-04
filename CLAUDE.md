@@ -9,7 +9,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Key differentiator: wraps the **tty itself**, not a specific shell — works over ssh, vendor CLI (routers/switches), etc.
 
 Two hotkeys, two modes — the hotkey pressed determines the execution mode:
-- **completion mode** (`Ctrl-^`): LLM suggests one command, injected without Enter — user reviews and executes
+- **completion mode** (`Ctrl-/`): LLM suggests one command, injected without Enter — user reviews and executes
 - **auto mode** (`Ctrl-]`): LLM loops command-execute-observe until goal is met, with idle-based settle detection. LLM can also send control characters (e.g., Ctrl-C) to manage long-running commands.
 
 ## Status

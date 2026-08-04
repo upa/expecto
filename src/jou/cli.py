@@ -64,7 +64,7 @@ def main(argv: list[str] | None = None) -> None:
     screen_buffer = ScreenBuffer(
         history_lines=config.history_lines,
     )
-    query_ui = QueryModeUI(stdout_fd, tty_ctrl.get_window_size)
+    query_ui = QueryModeUI(stdout_fd)
 
     llm_client = LLMClient(config)
 
@@ -76,13 +76,11 @@ def main(argv: list[str] | None = None) -> None:
         llm_client=llm_client,
         screen_buffer=screen_buffer,
         write_to_pty=write_to_pty,
-        stdin_fd=stdin_fd,
         stdout_fd=stdout_fd,
-        get_window_size=tty_ctrl.get_window_size,
     )
 
     def on_query_submit(query: str, mode: str) -> None:
-        query_ui.hide()
+        query_ui.deactivate()
         mode_executor.execute(query, mode)
 
     input_router = InputRouter(
@@ -95,7 +93,9 @@ def main(argv: list[str] | None = None) -> None:
         auto_hotkey=config.auto_hotkey,
     )
 
-    relay = IORelay(input_router=input_router, screen_buffer=screen_buffer)
+    log_fh = open(config.log_file, "a") if config.log_file else None
+
+    relay = IORelay(input_router=input_router, screen_buffer=screen_buffer, log_file=log_fh)
 
     tty_ctrl.enter_raw()
     try:
@@ -113,6 +113,8 @@ def main(argv: list[str] | None = None) -> None:
         tty_ctrl.cleanup_sigwinch()
         pty_mgr.close()
         tty_ctrl.restore()
+        if log_fh is not None:
+            log_fh.close()
 
     sys.exit(exit_code)
 

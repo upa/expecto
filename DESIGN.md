@@ -55,7 +55,7 @@
 
   ユーザーがホットキーを押す
   ※ ホットキーは2つあり、どちらを押したかで実行モードが決まる:
-    - completion hotkey (例: Ctrl-^) → completion mode
+    - completion hotkey (例: Ctrl-/) → completion mode
     - auto hotkey (例: Ctrl-]) → auto mode
         │
         ▼
@@ -154,7 +154,7 @@
 
 - 1バイトずつ状態機械として処理する。UTF-8マルチバイト文字の分割に注意(バッファリングして完全な1文字になるまで待つ処理が必要)。
 - ホットキーは2つ設ける。どちらを押したかで、query mode 確定後の実行モード(completion / auto)が決まる:
-  - completion hotkey: `Ctrl-^` (0x1e) を第一候補とする。
+  - completion hotkey: `Ctrl-/` (0x1f) を第一候補とする。
   - auto hotkey: `Ctrl-]` (0x1d) を第一候補とする。
 - いずれも設定可能にし、衝突が判明したら容易に変更できるようにする。
 - query mode 中の入力ハンドリング:
@@ -248,7 +248,7 @@ jou [OPTIONS] [-- COMMAND ...]
 
 OPTIONS:
   --shell PATH              子プロセスとして起動するコマンド (既定: $SHELL)
-  --completion-hotkey KEY    completion mode に入るキー (既定: ctrl-^)
+  --completion-hotkey KEY    completion mode に入るキー (既定: ctrl-/)
   --auto-hotkey KEY          auto mode に入るキー (既定: ctrl-])
   --model NAME               使用するLLMモデル (既定値あり)
   --max-auto-steps N         auto mode の最大ステップ数 (既定: 10)

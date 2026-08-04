@@ -19,7 +19,7 @@ class TestPassthrough:
             on_query_submit=lambda q, m: None,
             on_query_cancel=lambda: None,
         )
-        router.handle(bytes([0x1E]))
+        router.handle(bytes([0x1F]))
         assert router.state == State.QUERY_COMPLETION
 
     def test_auto_hotkey_enters_query_mode(self) -> None:
@@ -38,7 +38,7 @@ class TestPassthrough:
             on_query_submit=lambda q, m: None,
             on_query_cancel=lambda: None,
         )
-        router.handle(b"ab" + bytes([0x1E]) + b"cd")
+        router.handle(b"ab" + bytes([0x1F]) + b"cd")
         # "ab" forwarded, hotkey consumed, "cd" goes to query buffer
         assert b"".join(forwarded) == b"ab"
         assert router.query_text == "cd"
@@ -65,7 +65,7 @@ class TestQueryMode:
             on_query_submit=lambda q, m: None,
             on_query_cancel=lambda: None,
         )
-        router.handle(bytes([0x1E]))
+        router.handle(bytes([0x1F]))
         router.handle(b"ls -la")
         assert router.query_text == "ls -la"
 
@@ -75,7 +75,7 @@ class TestQueryMode:
             on_query_submit=lambda q, m: None,
             on_query_cancel=lambda: None,
         )
-        router.handle(bytes([0x1E]))
+        router.handle(bytes([0x1F]))
         router.handle(b"abc")
         router.handle(bytes([0x7F]))
         assert router.query_text == "ab"
@@ -86,7 +86,7 @@ class TestQueryMode:
             on_query_submit=lambda q, m: None,
             on_query_cancel=lambda: None,
         )
-        router.handle(bytes([0x1E]))
+        router.handle(bytes([0x1F]))
         router.handle(bytes([0x7F]))
         assert router.query_text == ""
         assert router.state == State.QUERY_COMPLETION
@@ -98,7 +98,7 @@ class TestQueryMode:
             on_query_submit=lambda q, m: submitted.append((q, m)),
             on_query_cancel=lambda: None,
         )
-        router.handle(bytes([0x1E]))
+        router.handle(bytes([0x1F]))
         router.handle(b"df -h")
         router.handle(bytes([0x0D]))
         assert submitted == [("df -h", "completion")]
@@ -124,7 +124,7 @@ class TestQueryMode:
             on_query_submit=lambda q, m: None,
             on_query_cancel=lambda: cancelled.append(True),
         )
-        router.handle(bytes([0x1E]))
+        router.handle(bytes([0x1F]))
         router.handle(b"partial")
         router.handle(bytes([0x1B]))
         assert cancelled == [True]
@@ -150,7 +150,7 @@ class TestQueryMode:
             on_query_submit=lambda q, m: None,
             on_query_cancel=lambda: None,
         )
-        router.handle(bytes([0x1E]))
+        router.handle(bytes([0x1F]))
         router.handle(b"a")
         router.handle(bytes([0x01]))  # Ctrl-A
         router.handle(b"b")
@@ -163,10 +163,58 @@ class TestQueryMode:
             on_query_submit=lambda q, m: None,
             on_query_cancel=lambda: None,
         )
-        router.handle(bytes([0x1E]))
+        router.handle(bytes([0x1F]))
         router.handle(b"query text")
         router.handle(bytes([0x0D]))
         assert forwarded == []
+
+
+    def test_utf8_multibyte_japanese(self) -> None:
+        router = InputRouter(
+            write_to_pty=lambda d: None,
+            on_query_submit=lambda q, m: None,
+            on_query_cancel=lambda: None,
+        )
+        router.handle(bytes([0x1F]))
+        router.handle("あいう".encode("utf-8"))
+        assert router.query_text == "あいう"
+
+    def test_utf8_split_across_reads(self) -> None:
+        router = InputRouter(
+            write_to_pty=lambda d: None,
+            on_query_submit=lambda q, m: None,
+            on_query_cancel=lambda: None,
+        )
+        router.handle(bytes([0x1F]))
+        # "あ" is E3 81 82 in UTF-8, split across two reads
+        router.handle(bytes([0xE3, 0x81]))
+        assert router.query_text == ""
+        router.handle(bytes([0x82]))
+        assert router.query_text == "あ"
+
+    def test_utf8_mixed_with_ascii(self) -> None:
+        submitted: list[tuple[str, str]] = []
+        router = InputRouter(
+            write_to_pty=lambda d: None,
+            on_query_submit=lambda q, m: submitted.append((q, m)),
+            on_query_cancel=lambda: None,
+        )
+        router.handle(bytes([0x1F]))
+        router.handle(b"ls ")
+        router.handle("日本語".encode("utf-8"))
+        router.handle(bytes([0x0D]))
+        assert submitted == [("ls 日本語", "completion")]
+
+    def test_utf8_backspace_deletes_whole_char(self) -> None:
+        router = InputRouter(
+            write_to_pty=lambda d: None,
+            on_query_submit=lambda q, m: None,
+            on_query_cancel=lambda: None,
+        )
+        router.handle(bytes([0x1F]))
+        router.handle("あい".encode("utf-8"))
+        router.handle(bytes([0x7F]))
+        assert router.query_text == "あ"
 
 
 class TestRoundTrip:
@@ -179,7 +227,7 @@ class TestRoundTrip:
             on_query_cancel=lambda: None,
         )
         router.handle(b"before")
-        router.handle(bytes([0x1E]))
+        router.handle(bytes([0x1F]))
         router.handle(b"query")
         router.handle(bytes([0x0D]))
         router.handle(b"after")

@@ -41,7 +41,7 @@ class JouConfig:
             openai_base_url=os.environ.get("OPENAI_BASE_URL") or None,
             openai_reasoning_effort=effort,
             history_lines=200,
-            completion_hotkey=0x1E,
+            completion_hotkey=0x1F,
             auto_hotkey=0x1D,
             log_file=None,
         )

@@ -25,44 +25,55 @@ class TestQueryModeUI:
             data += os.read(self.master_fd, 4096)
         return data.decode("utf-8", errors="replace")
 
-    def test_show_draws_prompt(self) -> None:
-        ui = QueryModeUI(self.slave_fd, lambda: (24, 80))
+    def test_show_completion_prompt(self) -> None:
+        ui = QueryModeUI(self.slave_fd)
         ui.show("completion")
         output = self._read_output()
-        assert "jou(comp)>" in output
+        assert "? " in output
+        assert "\x1b7" in output
 
-    def test_show_auto_mode(self) -> None:
-        ui = QueryModeUI(self.slave_fd, lambda: (24, 80))
+    def test_show_auto_prompt(self) -> None:
+        ui = QueryModeUI(self.slave_fd)
         ui.show("auto")
         output = self._read_output()
-        assert "jou(auto)>" in output
+        assert "# " in output
 
     def test_update_shows_text(self) -> None:
-        ui = QueryModeUI(self.slave_fd, lambda: (24, 80))
+        ui = QueryModeUI(self.slave_fd)
         ui.show("completion")
-        self._read_output()  # consume initial draw
+        self._read_output()
         ui.update("ls -la")
         output = self._read_output()
         assert "ls -la" in output
+        assert "\x1b[K" in output
 
-    def test_hide_clears_overlay(self) -> None:
-        ui = QueryModeUI(self.slave_fd, lambda: (24, 80))
+    def test_hide_restores_cursor(self) -> None:
+        ui = QueryModeUI(self.slave_fd)
         ui.show("completion")
         self._read_output()
         ui.hide()
         output = self._read_output()
-        # Should contain clear line escape (\x1b[2K)
-        assert "\x1b[2K" in output
+        assert "\x1b8" in output
+        assert "\x1b[K" in output
 
     def test_hide_when_not_visible_is_noop(self) -> None:
-        ui = QueryModeUI(self.slave_fd, lambda: (24, 80))
-        ui.hide()  # should not raise
+        ui = QueryModeUI(self.slave_fd)
+        ui.hide()
         output = self._read_output()
         assert output == ""
 
     def test_update_when_not_visible_is_noop(self) -> None:
-        ui = QueryModeUI(self.slave_fd, lambda: (24, 80))
+        ui = QueryModeUI(self.slave_fd)
         ui.update("text")
+        output = self._read_output()
+        assert output == ""
+
+    def test_deactivate_prevents_update(self) -> None:
+        ui = QueryModeUI(self.slave_fd)
+        ui.show("completion")
+        self._read_output()
+        ui.deactivate()
+        ui.update("should not appear")
         output = self._read_output()
         assert output == ""
 
@@ -81,14 +92,11 @@ class TestInputRouterWithQueryUI:
             on_query_start=started.append,
             on_query_update=updated.append,
         )
-        # Enter completion query mode
-        router.handle(bytes([0x1E]))
+        router.handle(bytes([0x1F]))
         assert started == ["completion"]
 
-        # Type characters
         router.handle(b"ab")
         assert updated == ["a", "ab"]
 
-        # Backspace
         router.handle(bytes([0x7F]))
         assert updated == ["a", "ab", "a"]
