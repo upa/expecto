@@ -17,14 +17,14 @@ class QueryModeUI:
     def update(self, text: str) -> None:
         if not self._visible:
             return
-        output = f"\x1b8\x1b7\x1b[90m{self._prompt}{text}\x1b[0m\x1b[K"
+        output = f"\x1b8\x1b[J\x1b7\x1b[90m{self._prompt}\x1b[0m{text}"
         self._write(output.encode())
 
     def hide(self) -> None:
         if not self._visible:
             return
         self._visible = False
-        self._write(b"\x1b8\x1b[K")
+        self._write(b"\x1b8\x1b[J")
 
     def deactivate(self) -> None:
         self._visible = False

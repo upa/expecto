@@ -71,7 +71,7 @@ class ModeExecutor:
         screen_text = self._screen.get_text()
         response = self._llm.complete(screen_text, query)
 
-        os.write(self._stdout_fd, b"\x1b8\x1b[K")
+        os.write(self._stdout_fd, b"\x1b8\x1b[J")
         self._write_to_pty(response.command.encode())
 
     def _execute_auto(self, query: str) -> None:
@@ -87,7 +87,7 @@ class ModeExecutor:
             messages = self._llm.build_auto_messages(query, screen_text, history)
             response = self._llm.auto_step(messages)
 
-            os.write(self._stdout_fd, b"\x1b8\x1b[K")
+            os.write(self._stdout_fd, b"\x1b8\x1b[J")
 
             if response.action.value:
                 if response.action.type == "command":

@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING, Literal
 
 import openai
 from openai.types.chat import ChatCompletionMessageParam
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 if TYPE_CHECKING:
     from jou.config import JouConfig
@@ -72,12 +72,19 @@ class LLMClient:
         return parsed
 
     def auto_step(self, messages: list[ChatCompletionMessageParam]) -> AutoResponse:
-        response = self._client.beta.chat.completions.parse(
-            model=self._config.model,
-            messages=messages,
-            response_format=AutoResponse,
-            reasoning_effort=self._config.openai_reasoning_effort,
-        )
+        try:
+            response = self._client.beta.chat.completions.parse(
+                model=self._config.model,
+                messages=messages,
+                response_format=AutoResponse,
+                reasoning_effort=self._config.openai_reasoning_effort,
+            )
+        except ValidationError as e:
+            return AutoResponse(
+                action=AutoAction(type="command", value=""),
+                status="fail",
+                explanation=f"LLM response parse error: {e}",
+            )
 
         parsed = response.choices[0].message.parsed
         if parsed is None:

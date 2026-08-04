@@ -45,7 +45,7 @@ class TestQueryModeUI:
         ui.update("ls -la")
         output = self._read_output()
         assert "ls -la" in output
-        assert "\x1b[K" in output
+        assert "\x1b[J" in output
 
     def test_hide_restores_cursor(self) -> None:
         ui = QueryModeUI(self.slave_fd)
@@ -54,7 +54,7 @@ class TestQueryModeUI:
         ui.hide()
         output = self._read_output()
         assert "\x1b8" in output
-        assert "\x1b[K" in output
+        assert "\x1b[J" in output
 
     def test_hide_when_not_visible_is_noop(self) -> None:
         ui = QueryModeUI(self.slave_fd)
