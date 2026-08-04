@@ -117,10 +117,9 @@ class TestCompletionMode:
 
 class TestAutoMode:
     def test_done_immediately(self) -> None:
-        """LLM returns done on first step — command is executed, settle waited, then done."""
+        """LLM returns done on first step — no command, just done message."""
         auto_responses = [
             AutoResponse(
-                action=AutoAction(type="command", value="echo hello"),
                 status="done",
                 explanation="task complete",
             ),
@@ -147,7 +146,7 @@ class TestAutoMode:
             )
             executor.execute("say hello", "auto")
 
-            assert pty_written == [b"echo hello\n", b"\n"]
+            assert pty_written == [b"\n"]
 
             os.close(stdout_w)
             stdout_w = -1
@@ -165,7 +164,6 @@ class TestAutoMode:
         """LLM returns fail — shows failed message."""
         auto_responses = [
             AutoResponse(
-                action=AutoAction(type="command", value=""),
                 status="fail",
                 explanation="cannot proceed",
             ),
@@ -213,7 +211,6 @@ class TestAutoMode:
                 explanation="listing files",
             ),
             AutoResponse(
-                action=AutoAction(type="command", value="echo done"),
                 status="done",
                 explanation="complete",
             ),
@@ -242,7 +239,7 @@ class TestAutoMode:
             )
             executor.execute("list then finish", "auto")
 
-            assert pty_written == [b"ls\n", b"echo done\n", b"\n"]
+            assert pty_written == [b"ls\n", b"\n"]
 
             os.close(stdout_w)
             stdout_w = -1
@@ -258,20 +255,28 @@ class TestAutoMode:
                         pass
 
     def test_control_char(self) -> None:
-        """LLM returns control action — sends control character to pty."""
+        """LLM returns control action with continue, then done."""
+        pty_r, pty_w = os.pipe()
+
         auto_responses = [
             AutoResponse(
                 action=AutoAction(type="control", value="ctrl-c"),
+                status="continue",
+                explanation="interrupting the command",
+            ),
+            AutoResponse(
                 status="done",
-                explanation="interrupted the command",
+                explanation="interrupted",
             ),
         ]
-        fake_llm = FakeLLMClient(auto_responses=auto_responses)
+        fake_llm = FakeLLMClient(
+            auto_responses=auto_responses,
+            pty_w=pty_w,
+        )
         screen = ScreenBuffer()
 
         pty_written: list[bytes] = []
         stdout_r, stdout_w = os.pipe()
-        pty_r, pty_w = os.pipe()
 
         try:
             executor = ModeExecutor(
@@ -284,7 +289,8 @@ class TestAutoMode:
             )
             executor.execute("stop it", "auto")
 
-            assert pty_written == [b"\x03", b"\n"]
+            assert pty_written[0] == b"\x03"
+            assert pty_written[-1] == b"\n"
         finally:
             for fd in [stdout_r, stdout_w, pty_r, pty_w]:
                 if fd >= 0:
@@ -399,7 +405,6 @@ class TestAutoMode:
         """Auto mode shows step-numbered thinking indicator."""
         auto_responses = [
             AutoResponse(
-                action=AutoAction(type="command", value="ls"),
                 status="done",
                 explanation="done",
             ),
@@ -445,7 +450,6 @@ class TestAutoMode:
                 explanation="listing",
             ),
             AutoResponse(
-                action=AutoAction(type="command", value=""),
                 status="done",
                 explanation="done",
             ),

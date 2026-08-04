@@ -52,25 +52,26 @@ class TestAutoResponse:
             status="continue",
             explanation="checking disk usage",
         )
+        assert resp.action is not None
         assert resp.action.type == "command"
         assert resp.action.value == "df -h"
         assert resp.status == "continue"
 
     def test_done_response(self) -> None:
         resp = AutoResponse(
-            action=AutoAction(type="command", value=""),
             status="done",
             explanation="goal achieved",
         )
         assert resp.status == "done"
+        assert resp.action is None
 
     def test_fail_response(self) -> None:
         resp = AutoResponse(
-            action=AutoAction(type="command", value=""),
             status="fail",
             explanation="unrecoverable error",
         )
         assert resp.status == "fail"
+        assert resp.action is None
 
 
 class TestLLMClient:

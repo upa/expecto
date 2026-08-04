@@ -89,27 +89,22 @@ class ModeExecutor:
 
             os.write(self._stdout_fd, b"\x1b8\x1b[J")
 
-            command_executed = False
-            if response.action.value:
+            if response.status == "done":
+                self._show_auto_end(f"done: {response.explanation}")
+                break
+            if response.status == "fail":
+                self._show_auto_end(f"failed: {response.explanation}")
+                break
+
+            if response.action is not None:
                 if response.action.type == "command":
                     self._write_to_pty(
                         response.action.value.encode() + b"\n"
                     )
-                    command_executed = True
                 elif response.action.type == "control":
                     ctrl_bytes = CONTROL_CHAR_MAP.get(response.action.value)
                     if ctrl_bytes:
                         self._write_to_pty(ctrl_bytes)
-
-            if response.status in ("done", "fail"):
-                if command_executed:
-                    interrupted = self._wait_for_settle(pty_master_fd)
-                    if interrupted:
-                        self._show_auto_end("interrupted")
-                        break
-                label = "done" if response.status == "done" else "failed"
-                self._show_auto_end(f"{label}: {response.explanation}")
-                break
 
             interrupted = self._wait_for_settle(pty_master_fd)
             if interrupted:
