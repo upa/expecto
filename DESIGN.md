@@ -171,6 +171,10 @@
   2. **クリーンテキスト**: [`pyte`](https://pypi.org/project/pyte/) の `pyte.Screen` + `pyte.Stream` を使い、ANSIエスケープシーケンスを解釈した「現在の画面内容」および直近のスクロールバック行を保持する。LLMに渡すのは主にこちら。
 - LLMへの入力としては、直近の「表示されているテキスト」を中心に、必要であれば直前に実行したコマンド文字列も別途保持して付与する(コマンド入力自体はScreenBuffer上にも現れるが、明示的にログしておくとプロンプト構築が楽)。
 - トークン量を抑えるため、既定では直近 Nスクリーン分 or 直近 M 行 のみを送る設計とし、`--history-lines` などで調整可能にする。
+- **新規出力の抽出 (auto mode 用)**: auto mode の tool 結果には「そのコマンドが生んだ新規出力のみ」を渡す(全履歴を毎回再送しない)。
+  - `mark()`: 現時点の状態を記録して `ScreenMark` を返す。記録内容は「スクロールバックへ押し出した累計行数(deque の maxlen 溢れや clear に影響されない単調カウンタ)」と「カーソル行」。同時に pyte の `screen.dirty`(変更行の set。pyte は追加のみ、クリアはコンシューマの責務)をクリアする。
+  - `get_text_since(mark)`: 「mark 以降に履歴へ押し出された行(mark 時点でカーソルより上にあった既存行がスクロールで押し出された分は除外)」+「mark 以降に変更された可視行の範囲」を結合して返す。スクロールが起きた場合、可視部分は mark 時点のカーソル行の移動先から下を採用する(スクロールは全行を dirty にするため)。
+  - 1コマンドの出力がスクロールバック容量を超えた場合は、先頭に truncation 注記を付ける。画面クリアを伴う再描画では全行が dirty になるため、可視画面全体が結果になる(妥当なフォールバック)。
 
 ### 5.6 QueryModeUI
 
@@ -212,11 +216,11 @@ auto mode の「コマンドを実行し結果を受け取る」1ステップは
 - tool 定義は `strict: true` の JSON Schema で渡し、引数は Pydantic モデル (`RunCommandParams` / `SendControlParams`) で検証する。検証に失敗した場合(strict のため通常発生しない)は、該当 `call_id` にエラーテキストを output として返す。
 - `parallel_tool_calls=False` を指定し、1応答1 tool call を API レベルで保証する(防御的に複数返った場合も順次実行する)。
 - `text_format=AutoResponse` と `tools=` を併用する。LLM は tool call を返す(継続)か、最終応答を返す(done/fail)かを選ぶ。**tool call を含まない応答をループ終了とみなす。**
-- tool の実行結果 (`function_call_output`) の形式:
+- tool の実行結果 (`function_call_output`) の形式(画面全体ではなく、そのコマンドが生んだ新規出力のみを渡す。抽出方法は §5.5 参照):
 
       ## Terminal Output
       ```
-      {settle 後の画面テキスト}
+      {mark 以降の新規出力 (§5.5 の get_text_since)}
       ```
 
   settle せず閾値時間を超えた場合は末尾に注記を付け、LLM が「Ctrl-C で中断するか、待つか」を判断できるようにする:
@@ -258,7 +262,7 @@ function_call 本体はサーバー側に保存されているため、クライ
   - LLM応答の `command` を pty master に書き込む(Enterは送らない)。
   - passthrough mode に戻り、ユーザーが自分でEnterを押すか編集するのを待つ。
 - **auto mode**:
-  - LLM が function calling で `run_command` / `send_control` を呼び出すループとして実装する(§5.7)。tool call の実行(pty master への書き込み + settle 待ち + 画面テキストの回収と `function_call_output` の構築)は ModeExecutor が担う。
+  - LLM が function calling で `run_command` / `send_control` を呼び出すループとして実装する(§5.7)。tool call の実行(pty master への書き込み + settle 待ち + 新規出力の回収(§5.5 の mark / get_text_since)と `function_call_output` の構築)は ModeExecutor が担う。
   - ループ処理は下記 SettleDetector を利用し、既定で最大ステップ数(例: 10、LLM 呼び出し回数でカウント)を設け、無限ループを防止する。
   - LLMは `send_control` tool で制御文字（Ctrl-C等）を送信できる。これにより、長時間実行中のコマンドの中断などをLLM自身が判断できる。
   - 各ステップ実行前に、危険そうなコマンド(`rm -rf`, `dd`, `mkfs` など簡易ブラックリスト)を検知したら、ユーザーに1回だけ確認を挟む安全策を入れる(v0.1でも最低限のガードとして実装する)。

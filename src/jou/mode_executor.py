@@ -137,6 +137,8 @@ class ModeExecutor:
         if call.params is None:
             return f"Error: {call.error}", False
 
+        mark = self._screen.mark()
+
         if isinstance(call.params, RunCommandParams):
             self._write_to_pty(call.params.command.encode() + b"\n")
         else:
@@ -149,7 +151,7 @@ class ModeExecutor:
         if interrupted:
             return "", True
 
-        output_text = f"## Terminal Output\n```\n{self._screen.get_text()}\n```"
+        output_text = f"## Terminal Output\n```\n{self._screen.get_text_since(mark)}\n```"
         if settle_result == SettleResult.THRESHOLD:
             threshold_s = self._threshold_ms / 1000
             output_text += (

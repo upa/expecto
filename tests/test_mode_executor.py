@@ -501,6 +501,46 @@ class TestAutoMode:
                     except OSError:
                         pass
 
+    def test_tool_output_excludes_past_output(self) -> None:
+        """Tool results contain only output produced by the executed command."""
+        pty_r, pty_w = os.pipe()
+
+        auto_results = [
+            _cmd_result(1, "echo hi"),
+            _final_result(2, "done", "done"),
+        ]
+        fake_llm = FakeLLMClient(auto_results=auto_results, pty_w=pty_w)
+        screen = ScreenBuffer()
+        screen.feed(b"previous command output\r\nuser@host:~$ ")
+
+        stdout_r, stdout_w = os.pipe()
+
+        try:
+            executor = ModeExecutor(
+                llm_client=fake_llm,
+                screen_buffer=screen,
+                write_to_pty=lambda d: None,
+                stdout_fd=stdout_w,
+                stdin_fd=-1,
+                get_pty_master_fd=lambda: pty_r,
+                settle_ms=10,
+                threshold_ms=5000,
+                max_auto_steps=10,
+            )
+            executor.execute("say hi", "auto")
+
+            second_items, _ = fake_llm.auto_step_calls[1]
+            output = str(_item_dict(second_items[0])["output"])
+            assert "output from step 1" in output
+            assert "previous command output" not in output
+        finally:
+            for fd in [stdout_r, stdout_w, pty_r, pty_w]:
+                if fd >= 0:
+                    try:
+                        os.close(fd)
+                    except OSError:
+                        pass
+
     def test_invalid_tool_call_returns_error(self) -> None:
         """A tool call with invalid params sends an error output back, no pty write."""
         pty_r, pty_w = os.pipe()
