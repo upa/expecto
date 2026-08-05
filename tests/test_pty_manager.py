@@ -1,6 +1,6 @@
 import os
 
-from jou.pty_manager import PTYManager
+from jou.pty_manager import NESTING_ENV_VAR, PTYManager
 
 
 class TestPTYManager:
@@ -47,3 +47,22 @@ class TestPTYManager:
         mgr.close()
         mgr.close()
         assert mgr.master_fd is None
+
+    def test_child_env_marks_jou_session(self):
+        mgr = PTYManager()
+        mgr.spawn(["sh", "-c", f"echo marker=${NESTING_ENV_VAR}"])
+        assert mgr.master_fd is not None
+
+        output = b""
+        while True:
+            try:
+                chunk = os.read(mgr.master_fd, 4096)
+                if not chunk:
+                    break
+                output += chunk
+            except OSError:
+                break
+        assert b"marker=1" in output
+
+        mgr.wait()
+        mgr.close()

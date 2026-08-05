@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import os
 import select
-from typing import TYPE_CHECKING, Literal, Protocol
+from functools import partial
+from typing import TYPE_CHECKING, Literal, Protocol, TypeVar
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -13,6 +14,7 @@ if TYPE_CHECKING:
     from jou.screen_buffer import ScreenBuffer
     from jou.working_summary import WorkingSummaryManager
 
+from jou.background import BackgroundCall
 from jou.llm_client import (
     AutoStepResult,
     CompletionResponse,
@@ -21,6 +23,8 @@ from jou.llm_client import (
     RunCommandParams,
 )
 from jou.settle import SettleDetector, SettleResult
+
+T = TypeVar("T")
 
 ConfirmLevel = Literal["destructive", "mutating", "none"]
 
@@ -127,7 +131,12 @@ class ModeExecutor:
             return
 
         os.write(self._stdout_fd, b"\x1b7\x1b[90m[thinking...]\x1b[0m")
-        working_summary = self._ensure_working_summary()
+        summary_call = BackgroundCall(self._ensure_working_summary).start()
+        if self._wait_for_llm(summary_call):
+            os.write(self._stdout_fd, b"\x1b8\x1b[J")
+            self._show_auto_end("interrupted")
+            return
+        working_summary = summary_call.result()
         os.write(self._stdout_fd, b"\x1b8\x1b[J")
 
         screen_text = self._screen.get_text(last_n=self._history_lines)
@@ -140,11 +149,17 @@ class ModeExecutor:
             step += 1
             self._show_auto_thinking()
 
-            result = self._llm.auto_step(
+            step_call = BackgroundCall(partial(
+                self._llm.auto_step,
                 input_items,
                 previous_response_id=prev_response_id,
                 working_summary=working_summary,
-            )
+            )).start()
+            if self._wait_for_llm(step_call):
+                os.write(self._stdout_fd, b"\x1b8\x1b[J")
+                self._show_auto_end("interrupted")
+                break
+            result = step_call.result()
             prev_response_id = result.response_id
 
             os.write(self._stdout_fd, b"\x1b8\x1b[J")
@@ -224,7 +239,13 @@ class ModeExecutor:
 
         mark = self._screen.mark()
 
+        reset_color_at_newline = False
         if isinstance(call.params, RunCommandParams):
+            # Show the echoed command in gray, like jou's own status
+            # messages; the reset is emitted once the echoed Enter (first
+            # relayed newline) arrives.
+            os.write(self._stdout_fd, b"\x1b[90m")
+            reset_color_at_newline = True
             self._write_to_pty(call.params.command.encode() + b"\n")
         else:
             ctrl_bytes = CONTROL_CHAR_MAP.get(call.params.key)
@@ -232,7 +253,9 @@ class ModeExecutor:
                 return f"Error: unknown control key: {call.params.key}", False
             self._write_to_pty(ctrl_bytes)
 
-        settle_result, interrupted = self._wait_for_settle(pty_master_fd)
+        settle_result, interrupted = self._wait_for_settle(
+            pty_master_fd, reset_color_at_newline=reset_color_at_newline,
+        )
         if interrupted:
             return "", True
 
@@ -244,6 +267,33 @@ class ModeExecutor:
                 "The command may still be running."
             )
         return output_text, False
+
+    def _wait_for_llm(self, call: BackgroundCall[T]) -> bool:
+        """Wait for a background LLM call while watching stdin for Ctrl-C.
+
+        Returns True when the user interrupted; the call is then abandoned
+        (its daemon thread finishes on its own and the result is dropped).
+        Other keys typed while waiting are discarded, matching
+        _wait_for_settle."""
+        if self._stdin_fd < 0:
+            call.wait()
+            return False
+
+        while not call.done:
+            try:
+                rlist, _, _ = select.select([self._stdin_fd], [], [], 0.1)
+            except (OSError, ValueError):
+                call.wait()
+                return False
+            if rlist:
+                try:
+                    data = os.read(self._stdin_fd, 4096)
+                except OSError:
+                    call.wait()
+                    return False
+                if 0x03 in data:
+                    return True
+        return False
 
     def _show_auto_thinking(self) -> None:
         os.write(self._stdout_fd, b"\x1b7")
@@ -320,9 +370,14 @@ class ModeExecutor:
         )
 
     def _wait_for_settle(
-        self, pty_master_fd: int,
+        self, pty_master_fd: int, reset_color_at_newline: bool = False,
     ) -> tuple[SettleResult | None, bool]:
-        """Wait until output settles. Returns (settle result, interrupted by user)."""
+        """Wait until output settles. Returns (settle result, interrupted by user).
+
+        With reset_color_at_newline, the caller has switched the outer tty
+        color before injecting a command; an SGR reset is emitted right after
+        the first relayed newline (the echoed Enter, ending the echoed
+        command line). The reset is guaranteed on every exit path."""
         detector = SettleDetector(
             settle_ms=self._settle_ms,
             threshold_ms=self._threshold_ms,
@@ -333,35 +388,47 @@ class ModeExecutor:
         if self._stdin_fd >= 0:
             watch_fds.append(self._stdin_fd)
 
+        pending_reset = reset_color_at_newline
         result: SettleResult | None = None
-        while detector.active:
-            timeout_s = detector.remaining_ms() / 1000.0
-            try:
-                rlist, _, _ = select.select(watch_fds, [], [], timeout_s)
-            except (OSError, ValueError):
-                break
-
-            if pty_master_fd in rlist:
+        try:
+            while detector.active:
+                timeout_s = detector.remaining_ms() / 1000.0
                 try:
-                    data = os.read(pty_master_fd, 4096)
-                except OSError:
+                    rlist, _, _ = select.select(watch_fds, [], [], timeout_s)
+                except (OSError, ValueError):
                     break
-                if not data:
+
+                if pty_master_fd in rlist:
+                    try:
+                        data = os.read(pty_master_fd, 4096)
+                    except OSError:
+                        break
+                    if not data:
+                        break
+                    self._screen.feed(data)
+                    newline_at = data.find(b"\n") if pending_reset else -1
+                    if newline_at >= 0:
+                        os.write(self._stdout_fd, data[: newline_at + 1])
+                        os.write(self._stdout_fd, b"\x1b[0m")
+                        os.write(self._stdout_fd, data[newline_at + 1:])
+                        pending_reset = False
+                    else:
+                        os.write(self._stdout_fd, data)
+                    detector.on_output()
+
+                if self._stdin_fd in rlist:
+                    try:
+                        data = os.read(self._stdin_fd, 4096)
+                    except OSError:
+                        break
+                    if 0x03 in data:
+                        return result, True
+
+                result = detector.check()
+                if result is not None:
                     break
-                self._screen.feed(data)
-                os.write(self._stdout_fd, data)
-                detector.on_output()
 
-            if self._stdin_fd in rlist:
-                try:
-                    data = os.read(self._stdin_fd, 4096)
-                except OSError:
-                    break
-                if 0x03 in data:
-                    return result, True
-
-            result = detector.check()
-            if result is not None:
-                break
-
-        return result, False
+            return result, False
+        finally:
+            if pending_reset:
+                os.write(self._stdout_fd, b"\x1b[0m")
