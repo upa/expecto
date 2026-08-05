@@ -14,7 +14,7 @@ Two hotkeys, two modes — the hotkey pressed determines the execution mode:
 
 ## Status
 
-Phase 1 (completion mode) complete. Phase 2 (auto mode) core loop complete (SettleDetector, LLMClient with Responses API, ModeExecutor auto loop). `DESIGN.md` is the authoritative specification.
+Phase 1 (completion mode) complete. Phase 2 (auto mode) core loop complete (SettleDetector, LLMClient with Responses API function calling — `run_command` / `send_control` tools, ModeExecutor tool-call loop). `DESIGN.md` is the authoritative specification.
 
 ### TODO
 

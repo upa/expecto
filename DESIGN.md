@@ -75,14 +75,15 @@
         │   → passthrough mode に戻る                     │
         │                                               │
         └─ auto mode (auto hotkey で起動) ───────────────┘
-            ループ:
-              1. LLMがコマンドまたは制御文字(Ctrl-C等)を生成
-              2. pty master に コマンド + Enter (または制御文字) を書き込み
+            ループ (function calling):
+              1. LLMが tool (run_command / send_control) を呼び出す
+              2. jou が pty master に コマンド + Enter (または制御文字) を書き込み
               3. 出力が安定(settle)するまで待つ
-                 settle せず閾値時間を超えた場合は、その時点の出力を
-                 LLMに送り、LLMが判断する(Ctrl-Cで中断するか待つか等)
-              4. 新規出力を履歴に追加してLLMに返す
-              5. LLMが「完了/失敗/継続」を判断
+                 settle せず閾値時間を超えた場合は「settle しなかった」
+                 旨の注記を結果に付ける
+              4. その時点の画面テキストを tool の実行結果
+                 (function_call_output) として LLM に返す
+              5. LLM は次の tool を呼ぶ(継続)か、最終応答(done/fail)を返す
             ゴール達成 or 上限回数 or ユーザーのCtrl-C割込みで終了
             → passthrough mode に戻る
 ```
@@ -189,17 +190,38 @@
     "explanation": "Check disk usage"
   }
   ```
-- auto mode 用スキーマ (`AutoResponse`):
+- auto mode 用スキーマ (`AutoResponse`) — **最終応答専用**:
   ```json
   {
-    "action": {"type": "command", "value": "df -h"},
-    "status": "continue",
-    "explanation": "Checking disk usage"
+    "status": "done",
+    "explanation": "Disk usage confirmed"
   }
   ```
-  - `status: "continue"` + `action` → コマンドまたは制御文字を実行。
-  - `status: "done"` / `"fail"` → `action` なし、auto mode ループを終了。
-  - `action.type: "control"` → 制御文字(例: `"ctrl-c"`)を pty master に書き込み。
+  - `status: "done"` → ゴール達成。`"fail"` → 達成不能。いずれも auto mode ループを終了する。
+  - 「継続」は tool call そのもので表現されるため、スキーマには存在しない(下記)。
+
+#### Auto mode の function calling
+
+auto mode の「コマンドを実行し結果を受け取る」1ステップは、Responses API の function calling による **tool** として LLM に公開する:
+
+| tool           | 引数                                   | 動作                                                                                       |
+|----------------|----------------------------------------|--------------------------------------------------------------------------------------------|
+| `run_command`  | `command: string`                      | コマンド + Enter を pty master に書き込み、出力が settle するまで待って画面テキストを返す |
+| `send_control` | `key: "ctrl-c" \| "ctrl-d" \| "ctrl-z"` | 制御文字を pty master に書き込み、同様に settle を待って画面テキストを返す                |
+
+- tool 定義は `strict: true` の JSON Schema で渡し、引数は Pydantic モデル (`RunCommandParams` / `SendControlParams`) で検証する。検証に失敗した場合(strict のため通常発生しない)は、該当 `call_id` にエラーテキストを output として返す。
+- `parallel_tool_calls=False` を指定し、1応答1 tool call を API レベルで保証する(防御的に複数返った場合も順次実行する)。
+- `text_format=AutoResponse` と `tools=` を併用する。LLM は tool call を返す(継続)か、最終応答を返す(done/fail)かを選ぶ。**tool call を含まない応答をループ終了とみなす。**
+- tool の実行結果 (`function_call_output`) の形式:
+
+      ## Terminal Output
+      ```
+      {settle 後の画面テキスト}
+      ```
+
+  settle せず閾値時間を超えた場合は末尾に注記を付け、LLM が「Ctrl-C で中断するか、待つか」を判断できるようにする:
+
+      [Note] Output did not settle within 30s. The command may still be running.
 
 #### Auto mode の会話チェーン (`previous_response_id`)
 
@@ -217,16 +239,17 @@ Step 1 (初回):
   input = [{ role: "user", content: "## Goal\n{query}\n\n## Current Terminal Screen\n```\n{screen}\n```" }]
   previous_response_id = なし
   store = true
-  → response_id を記録
+  → response_id を記録。LLM は tool call (function_call) または最終応答を返す
 
 Step N (フォローアップ):
-  input = [{ role: "user", content: "## Command Output\n```\n{new_screen}\n```" }]
+  input = [{ type: "function_call_output", call_id: {前回の tool call の call_id},
+             output: "## Terminal Output\n```\n{new_screen}\n```" }]
   previous_response_id = 前回の response_id
   store = true
   → response_id を更新
 ```
 
-これにより、毎ステップで全画面履歴と過去のメッセージ列を再送する必要がなくなる。
+function_call 本体はサーバー側に保存されているため、クライアントは `function_call_output` だけを送ればよい。毎ステップで全画面履歴と過去のメッセージ列を再送する必要がなくなる。
 
 ### 5.8 ModeExecutor
 
@@ -235,8 +258,9 @@ Step N (フォローアップ):
   - LLM応答の `command` を pty master に書き込む(Enterは送らない)。
   - passthrough mode に戻り、ユーザーが自分でEnterを押すか編集するのを待つ。
 - **auto mode**:
-  - ループ処理は下記 SettleDetector を利用し、既定で最大ステップ数(例: 10)を設け、無限ループを防止する。
-  - LLMは `action: "control"` で制御文字（Ctrl-C等）を送信できる。これにより、長時間実行中のコマンドの中断などをLLM自身が判断できる。
+  - LLM が function calling で `run_command` / `send_control` を呼び出すループとして実装する(§5.7)。tool call の実行(pty master への書き込み + settle 待ち + 画面テキストの回収と `function_call_output` の構築)は ModeExecutor が担う。
+  - ループ処理は下記 SettleDetector を利用し、既定で最大ステップ数(例: 10、LLM 呼び出し回数でカウント)を設け、無限ループを防止する。
+  - LLMは `send_control` tool で制御文字（Ctrl-C等）を送信できる。これにより、長時間実行中のコマンドの中断などをLLM自身が判断できる。
   - 各ステップ実行前に、危険そうなコマンド(`rm -rf`, `dd`, `mkfs` など簡易ブラックリスト)を検知したら、ユーザーに1回だけ確認を挟む安全策を入れる(v0.1でも最低限のガードとして実装する)。
   - ユーザーはいつでも `Ctrl-C` で auto mode を中断できるようにする(中断検知は InputRouter が auto mode 中の入力を優先的にハンドルする形にする)。
 
@@ -245,7 +269,7 @@ Step N (フォローアップ):
 - auto mode でコマンド実行後、「出力が落ち着いた」タイミングを検知するために、シンプルなアイドルタイマー方式を採用する:
   - コマンド送信後、pty master からの出力が最後に届いた時刻を記録。
   - 一定時間(既定 300ms 〜 800ms、設定可能)出力が来なければ「settle」と判断。
-  - settle せずに閾値時間(既定 30秒、設定可能)を超えた場合: タイムアウトエラーとはせず、その時点までの出力を LLM に送る。LLMは出力内容を見て次のアクションを判断する（例: `action: "control"` で Ctrl-C を送信してコマンドを中断する、さらに待つ、別のアプローチに切り替える等）。30秒以上継続するコマンド（ダウンロード、ビルド等）は日常的にあるため、一律でタイムアウト扱いにはしない。
+  - settle せずに閾値時間(既定 30秒、設定可能)を超えた場合: タイムアウトエラーとはせず、その時点までの出力を tool の実行結果として LLM に送る。このとき「出力が settle しなかった(コマンドはまだ実行中の可能性がある)」旨の注記を結果に含め、LLM が次のアクションを判断する（例: `send_control` で Ctrl-C を送信してコマンドを中断する、さらに待つ、別のアプローチに切り替える等）。30秒以上継続するコマンド（ダウンロード、ビルド等）は日常的にあるため、一律でタイムアウト扱いにはしない。
 - シェル固有のプロンプトマーカー注入(PS1書き換え)には**依存しない**。これは ssh 越しやルーターCLIでは使えないため、汎用性を優先してアイドル検知のみで v0.1 を組む。将来的に「対応シェルではPS1マーカーも併用してより正確に検知する」拡張は可能(§11参照)。
 
 ### 5.10 WorkingSummary (セッションコンテキスト) — TODO
@@ -354,7 +378,7 @@ OPTIONS:
 ユーザーメッセージには以下を含める:
 - 直近のクリーンテキスト画面/スクロールバック(§5.5)
 - ユーザーのクエリ文字列
-- (auto modeのループ中は) これまでの全ステップの履歴をOpenAIのメッセージ列として保持し、マルチターン会話として渡す。具体的には、各ステップごとに「LLMの応答(assistant message)」と「コマンド実行結果の出力(user message)」のペアを蓄積し、LLM呼び出し時にはシステムプロンプト + 初回コンテキスト + これまでの全ステップ履歴 + 最新の出力、という形で渡す。これにより、LLMは過去に何を試して何が起きたかを踏まえて次のアクションを判断できる。
+- (auto modeのループ中は) 各ステップの履歴は「LLMの tool call (function_call)」と「その実行結果 (function_call_output)」のペアとして会話に蓄積される。履歴の保持は `previous_response_id` によるサーバー側チェーンに委ねるため、クライアントは毎ステップ最新の `function_call_output` だけを送る(§5.7)。これにより、LLMは過去に何を試して何が起きたかを踏まえて次のアクションを判断できる。
 
 ---
 

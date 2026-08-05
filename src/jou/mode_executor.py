@@ -7,12 +7,17 @@ from typing import TYPE_CHECKING, Protocol
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from openai.types.responses import EasyInputMessageParam
+    from openai.types.responses import ResponseInputParam
 
     from jou.screen_buffer import ScreenBuffer
 
-from jou.llm_client import AutoResponse, CompletionResponse
-from jou.settle import SettleDetector
+from jou.llm_client import (
+    AutoStepResult,
+    CompletionResponse,
+    ParsedToolCall,
+    RunCommandParams,
+)
+from jou.settle import SettleDetector, SettleResult
 
 CONTROL_CHAR_MAP: dict[str, bytes] = {
     "ctrl-c": b"\x03",
@@ -26,15 +31,15 @@ class LLMCompleter(Protocol):
 
     def auto_step(
         self,
-        messages: list[EasyInputMessageParam],
+        input_items: ResponseInputParam,
         previous_response_id: str | None = None,
-    ) -> tuple[AutoResponse, str]: ...
+    ) -> AutoStepResult: ...
 
     def build_auto_messages(
         self,
         query: str,
         screen_text: str,
-    ) -> list[EasyInputMessageParam]: ...
+    ) -> ResponseInputParam: ...
 
 
 class ModeExecutor:
@@ -80,54 +85,78 @@ class ModeExecutor:
         pty_master_fd = self._get_pty_master_fd()
 
         screen_text = self._screen.get_text()
+        input_items: ResponseInputParam = self._llm.build_auto_messages(query, screen_text)
         prev_response_id: str | None = None
 
         for step in range(1, self._max_auto_steps + 1):
             self._show_auto_thinking(step)
 
-            if step == 1:
-                messages = self._llm.build_auto_messages(query, screen_text)
-            else:
-                new_screen_text = self._screen.get_text()
-                output_msg: EasyInputMessageParam = {
-                    "role": "user",
-                    "content": f"## Command Output\n```\n{new_screen_text}\n```",
-                }
-                messages = [output_msg]
-
-            response, prev_response_id = self._llm.auto_step(
-                messages, previous_response_id=prev_response_id,
+            result = self._llm.auto_step(
+                input_items, previous_response_id=prev_response_id,
             )
+            prev_response_id = result.response_id
 
             os.write(self._stdout_fd, b"\x1b8\x1b[J")
 
-            if response.status == "done":
-                self._show_auto_end(f"done: {response.explanation}")
-                break
-            if response.status == "fail":
-                self._show_auto_end(f"failed: {response.explanation}")
+            if not result.tool_calls:
+                final = result.final
+                if final is not None and final.status == "done":
+                    self._show_auto_end(f"done: {final.explanation}")
+                elif final is not None:
+                    self._show_auto_end(f"failed: {final.explanation}")
+                else:
+                    self._show_auto_end("failed: empty response")
                 break
 
-            if response.action is not None:
-                if response.action.type == "command":
-                    self._write_to_pty(
-                        response.action.value.encode() + b"\n"
-                    )
-                elif response.action.type == "control":
-                    ctrl_bytes = CONTROL_CHAR_MAP.get(response.action.value)
-                    if ctrl_bytes:
-                        self._write_to_pty(ctrl_bytes)
-
-            interrupted = self._wait_for_settle(pty_master_fd)
+            outputs: ResponseInputParam = []
+            interrupted = False
+            for call in result.tool_calls:
+                output_text, interrupted = self._run_tool_call(call, pty_master_fd)
+                outputs.append({
+                    "type": "function_call_output",
+                    "call_id": call.call_id,
+                    "output": output_text,
+                })
+                if interrupted:
+                    break
             if interrupted:
                 self._show_auto_end("interrupted")
                 break
+            input_items = outputs
         else:
             self._show_auto_end(
                 f"max steps ({self._max_auto_steps})"
             )
 
         self._write_to_pty(b"\n")
+
+    def _run_tool_call(
+        self, call: ParsedToolCall, pty_master_fd: int,
+    ) -> tuple[str, bool]:
+        """Execute one tool call and build its output. Returns (output, interrupted)."""
+        if call.params is None:
+            return f"Error: {call.error}", False
+
+        if isinstance(call.params, RunCommandParams):
+            self._write_to_pty(call.params.command.encode() + b"\n")
+        else:
+            ctrl_bytes = CONTROL_CHAR_MAP.get(call.params.key)
+            if ctrl_bytes is None:
+                return f"Error: unknown control key: {call.params.key}", False
+            self._write_to_pty(ctrl_bytes)
+
+        settle_result, interrupted = self._wait_for_settle(pty_master_fd)
+        if interrupted:
+            return "", True
+
+        output_text = f"## Terminal Output\n```\n{self._screen.get_text()}\n```"
+        if settle_result == SettleResult.THRESHOLD:
+            threshold_s = self._threshold_ms / 1000
+            output_text += (
+                f"\n[Note] Output did not settle within {threshold_s:g}s. "
+                "The command may still be running."
+            )
+        return output_text, False
 
     def _show_auto_thinking(self, step: int) -> None:
         msg = f"[auto {step}/{self._max_auto_steps} thinking...]"
@@ -140,7 +169,10 @@ class ModeExecutor:
             f"\x1b[90m[auto {label}]\x1b[0m".encode(),
         )
 
-    def _wait_for_settle(self, pty_master_fd: int) -> bool:
+    def _wait_for_settle(
+        self, pty_master_fd: int,
+    ) -> tuple[SettleResult | None, bool]:
+        """Wait until output settles. Returns (settle result, interrupted by user)."""
         detector = SettleDetector(
             settle_ms=self._settle_ms,
             threshold_ms=self._threshold_ms,
@@ -151,6 +183,7 @@ class ModeExecutor:
         if self._stdin_fd >= 0:
             watch_fds.append(self._stdin_fd)
 
+        result: SettleResult | None = None
         while detector.active:
             timeout_s = detector.remaining_ms() / 1000.0
             try:
@@ -175,10 +208,10 @@ class ModeExecutor:
                 except OSError:
                     break
                 if 0x03 in data:
-                    return True
+                    return result, True
 
             result = detector.check()
             if result is not None:
                 break
 
-        return False
+        return result, False
