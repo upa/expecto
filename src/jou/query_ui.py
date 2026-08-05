@@ -66,11 +66,12 @@ class QueryModeUI:
         self._write(b"\x1b[J")
 
     def finalize(self) -> None:
-        """Keep query text visible, write newline, mark invisible."""
+        """Keep query text visible and mark invisible. No newline is
+        written: auto mode nudges the shell with Enter right after, and
+        its echo supplies the line break."""
         if not self._visible:
             return
         self._visible = False
-        self._write(b"\r\n")
 
     def _move_to_prompt_start(self) -> None:
         cols = self._get_cols()

@@ -60,7 +60,7 @@ class ModeExecutor:
         get_pty_master_fd: Callable[[], int] | None = None,
         settle_ms: int = 500,
         threshold_ms: int = 30000,
-        max_auto_steps: int = 10,
+        max_auto_steps: int = 15,
         history_lines: int = 500,
         working_summary: WorkingSummaryManager | None = None,
     ) -> None:
@@ -103,6 +103,15 @@ class ModeExecutor:
         assert self._get_pty_master_fd is not None
         pty_master_fd = self._get_pty_master_fd()
 
+        # The finalized query line took over the prompt line on the outer
+        # tty; nudge the shell with a newline so a fresh prompt is shown
+        # (and captured) before the first command is injected.
+        self._write_to_pty(b"\n")
+        _, interrupted = self._wait_for_settle(pty_master_fd)
+        if interrupted:
+            self._show_auto_end("interrupted")
+            return
+
         os.write(self._stdout_fd, b"\x1b7\x1b[90m[thinking...]\x1b[0m")
         working_summary = self._ensure_working_summary()
         os.write(self._stdout_fd, b"\x1b8\x1b[J")
@@ -111,8 +120,11 @@ class ModeExecutor:
         input_items: ResponseInputParam = self._llm.build_auto_messages(query, screen_text)
         prev_response_id: str | None = None
 
-        for step in range(1, self._max_auto_steps + 1):
-            self._show_auto_thinking(step)
+        step = 0
+        checkpoint = self._max_auto_steps
+        while True:
+            step += 1
+            self._show_auto_thinking()
 
             result = self._llm.auto_step(
                 input_items,
@@ -148,10 +160,12 @@ class ModeExecutor:
                 self._show_auto_end("interrupted")
                 break
             input_items = outputs
-        else:
-            self._show_auto_end(
-                f"max steps ({self._max_auto_steps})"
-            )
+
+            if step == checkpoint:
+                if not self._confirm_continue(pty_master_fd, step):
+                    self._show_auto_end(f"stopped at step {step}")
+                    break
+                checkpoint += self._max_auto_steps
 
         self._write_to_pty(b"\n")
 
@@ -185,10 +199,55 @@ class ModeExecutor:
             )
         return output_text, False
 
-    def _show_auto_thinking(self, step: int) -> None:
-        msg = f"[auto {step}/{self._max_auto_steps} thinking...]"
+    def _show_auto_thinking(self) -> None:
         os.write(self._stdout_fd, b"\x1b7")
-        os.write(self._stdout_fd, f"\x1b[90m{msg}\x1b[0m".encode())
+        os.write(self._stdout_fd, b"\x1b[90m[auto: thinking...]\x1b[0m")
+
+    def _confirm_continue(self, pty_master_fd: int, step: int) -> bool:
+        """Ask the user whether to continue past the step checkpoint.
+
+        Keeps relaying pty output while waiting so the screen stays live.
+        Returns False when no interactive stdin is available."""
+        if self._stdin_fd < 0:
+            return False
+
+        os.write(
+            self._stdout_fd,
+            f"\r\n\x1b[90m[auto] reached step {step} — continue? (y/n) \x1b[0m".encode(),
+        )
+
+        watch_fds: list[int] = [self._stdin_fd]
+        if pty_master_fd >= 0:
+            watch_fds.append(pty_master_fd)
+
+        while True:
+            try:
+                rlist, _, _ = select.select(watch_fds, [], [])
+            except (OSError, ValueError):
+                return False
+
+            if pty_master_fd in rlist:
+                try:
+                    data = os.read(pty_master_fd, 4096)
+                except OSError:
+                    return False
+                if not data:
+                    return False
+                self._screen.feed(data)
+                os.write(self._stdout_fd, data)
+
+            if self._stdin_fd in rlist:
+                try:
+                    data = os.read(self._stdin_fd, 4096)
+                except OSError:
+                    return False
+                for byte in data:
+                    if byte in (0x79, 0x59):  # y, Y
+                        os.write(self._stdout_fd, b"y\r\n")
+                        return True
+                    if byte in (0x6E, 0x4E, 0x1B, 0x03):  # n, N, Esc, Ctrl-C
+                        os.write(self._stdout_fd, b"n\r\n")
+                        return False
 
     def _show_auto_end(self, label: str) -> None:
         # The outer tty is in raw mode (no ONLCR), so bare "\n" moves down
