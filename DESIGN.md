@@ -272,6 +272,7 @@ function_call 本体はサーバー側に保存されているため、クライ
   - LLMは `send_control` tool で制御文字（Ctrl-C等）を送信できる。これにより、長時間実行中のコマンドの中断などをLLM自身が判断できる。
   - 各ステップ実行前に、危険そうなコマンド(`rm -rf`, `dd`, `mkfs` など簡易ブラックリスト)を検知したら、ユーザーに1回だけ確認を挟む安全策を入れる(v0.1でも最低限のガードとして実装する)。
   - ユーザーはいつでも `Ctrl-C` で auto mode を中断できるようにする(中断検知は InputRouter が auto mode 中の入力を優先的にハンドルする形にする)。
+  - LLM 呼び出し(各ステップの auto_step、およびクエリ直前の WorkingSummary 生成)は `BackgroundCall`(`jou.background`、daemon スレッド + 完了イベント)で実行し、メインスレッドは完了まで stdin を select で監視する。これにより **LLM 応答待ち中の Ctrl-C でも即座に中断**できる(応答は破棄され、tool call は実行されない)。HTTP リクエスト自体はキャンセルせず、abandon されたスレッドは裏で完走して結果ごと破棄される。バックグラウンドの LLM 呼び出しのスレッド起動は WorkingSummary の行数トリガー更新も含め、すべて `BackgroundCall` に統一する。
 
 ### 5.9 SettleDetector (出力安定検知)
 

@@ -194,7 +194,7 @@ class WorkingSummaryManager:
 
 - `_summary: SummaryResult | None` — 最新の要約
 - `_last_gen_scrolled: int` — 前回生成時点の `screen_buffer.scrolled_lines_total`
-- `_in_flight: threading.Event` — 更新中フラグ兼待機用
+- `_inflight: BackgroundCall[None] | None` — 実行中のバックグラウンド更新(`jou.background.BackgroundCall`。完了判定・待機はこのオブジェクトの `done` / `wait()` で行う)
 
 ### 5.2 蓄積量の計測と差分更新の入力
 
@@ -228,13 +228,19 @@ new_output = screen_buffer.get_scrolled_tail(min(pending, max_input_lines))
 ## 6. スレッドモデル
 
 - **メインスレッド**: select ループ (passthrough) / auto ループ。
-  LLM 要約以外は従来通りすべて同期。
-- **背景スレッド**: 要約 LLM 呼び出しのみ。更新 1 回につき `threading.Thread` を 1 本起動。
+- **背景スレッド**: LLM 呼び出しのみ。スレッド起動は `jou.background.BackgroundCall`
+  (daemon スレッド + 完了イベント + 結果/例外の受け渡し) に統一されており、
+  行数トリガーの要約更新は更新 1 回につき `BackgroundCall` を 1 本起動する。
   共有状態は §5.1 の 3 つのみで、すべて Lock 経由でアクセスする。
   HTTP 待ちで GIL は解放されるためパススルーの体感遅延はない。
 - **競合ケース**: 背景更新中にユーザーがクエリを確定 → `ensure_summary()` が
-  Event で完了を待つ (summary が古い/無い状態で本来の呼び出しを行うと品質が
-  下がるため、同期的に待つ)。待ち時間は `[thinking...]` 表示でカバーされる。
+  `_inflight.wait()` で完了を待つ (summary が古い/無い状態で本来の呼び出しを行うと
+  品質が下がるため、同期的に待つ)。待ち時間は `[thinking...]` 表示でカバーされる。
+- **auto mode からの呼び出し**: `ensure_summary()` 自体も ModeExecutor が
+  `BackgroundCall` で実行し、メインスレッドは stdin を監視する (LLM 待ち中の
+  Ctrl-C 中断のため。DESIGN.md §5.8 参照)。`check_trigger()` はメインスレッド
+  (IORelay) からのみ呼ばれ、クエリ処理中は relay ループが止まっているため
+  `ensure_summary()` と並行実行されることはない。
 - **auto ループ中はトリガーチェックを行わない**: チェーン内で instructions が揺れない・
   スレッド競合を避けるため。auto ループ中の出力は passthrough 復帰後にまとめて要約される。
 

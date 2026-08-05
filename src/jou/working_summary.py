@@ -3,6 +3,8 @@ from __future__ import annotations
 import threading
 from typing import TYPE_CHECKING, Protocol
 
+from jou.background import BackgroundCall
+
 if TYPE_CHECKING:
     from jou.llm_client import SummaryResult
     from jou.screen_buffer import ScreenBuffer
@@ -21,10 +23,11 @@ class WorkingSummaryManager:
     """Maintains a working summary of the session (long-term memory of
     output that has scrolled out of the visible window).
 
-    check_trigger() and ensure_summary() are both called from the main
-    thread only; the LLM call itself runs on a background thread. Shared
-    state is guarded by _lock, and _idle signals that no update is in
-    flight."""
+    check_trigger() runs on the main thread (IORelay); ensure_summary()
+    runs on the main thread or on a ModeExecutor BackgroundCall thread —
+    never concurrently with check_trigger, because the relay loop is not
+    processing output while a query is being handled. Shared state is
+    guarded by _lock; _inflight tracks the background update."""
 
     def __init__(
         self,
@@ -40,8 +43,7 @@ class WorkingSummaryManager:
         self._lock = threading.Lock()
         self._summary: SummaryResult | None = None
         self._last_gen_scrolled: int = 0
-        self._idle = threading.Event()
-        self._idle.set()
+        self._inflight: BackgroundCall[None] | None = None
 
     @property
     def summary_text(self) -> str | None:
@@ -65,34 +67,24 @@ class WorkingSummaryManager:
     def check_trigger(self) -> None:
         """Start a background update if enough new lines have scrolled out
         since the last generation and no update is in flight."""
-        if not self._idle.is_set():
+        if self._inflight is not None and not self._inflight.done:
             return
         if self._pending_lines() < self._trigger_lines:
             return
-        self._idle.clear()
-        thread = threading.Thread(target=self._refresh_in_background, daemon=True)
-        thread.start()
+        self._inflight = BackgroundCall(self._refresh).start()
 
     def ensure_summary(self) -> None:
         """Synchronous path called before an LLM query. Waits for any
-        in-flight update; generates one synchronously if there is none yet
-        and enough output has accumulated."""
-        self._idle.wait()
+        in-flight update; generates one inline if there is none yet and
+        enough output has accumulated."""
+        inflight = self._inflight
+        if inflight is not None:
+            inflight.wait()
         with self._lock:
             have_summary = self._summary is not None
         if have_summary or self._pending_lines() < self._trigger_lines:
             return
-        self._idle.clear()
-        try:
-            self._refresh()
-        finally:
-            self._idle.set()
-
-    def _refresh_in_background(self) -> None:
-        try:
-            self._refresh()
-        finally:
-            self._idle.set()
+        self._refresh()
 
     def _refresh(self) -> None:
         with self._lock:

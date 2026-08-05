@@ -718,6 +718,128 @@ class TestAutoMode:
                     except OSError:
                         pass
 
+    def test_ctrl_c_during_llm_call(self) -> None:
+        """Ctrl-C while the LLM call is in flight aborts before any command runs."""
+        pty_r, pty_w = os.pipe()
+        stdin_r, stdin_w = os.pipe()
+        worker_finished = threading.Event()
+
+        class SlowLLMClient(FakeLLMClient):
+            def auto_step(
+                self,
+                input_items: ResponseInputParam,
+                previous_response_id: str | None = None,
+                working_summary: str | None = None,
+            ) -> AutoStepResult:
+                try:
+                    self.auto_step_calls.append((list(input_items), previous_response_id))
+                    os.write(stdin_w, b"\x03")
+                    time.sleep(0.3)
+                    return _cmd_result(1, "ls")
+                finally:
+                    worker_finished.set()
+
+        fake_llm = SlowLLMClient()
+        screen = ScreenBuffer()
+
+        pty_written: list[bytes] = []
+        stdout_r, stdout_w = os.pipe()
+
+        try:
+            executor = ModeExecutor(
+                llm_client=fake_llm,
+                screen_buffer=screen,
+                write_to_pty=lambda d: pty_written.append(d),
+                stdout_fd=stdout_w,
+                stdin_fd=stdin_r,
+                get_pty_master_fd=lambda: pty_r,
+                settle_ms=10,
+                threshold_ms=5000,
+            )
+            executor.execute("run something", "auto")
+
+            # The tool call was abandoned: no command reached the pty.
+            assert b"ls\n" not in pty_written
+
+            os.close(stdout_w)
+            stdout_w = -1
+            out = _drain(stdout_r)
+            assert b"[auto interrupted]" in out
+        finally:
+            # Let the abandoned daemon thread finish so it cannot outlive
+            # this test (pty.fork elsewhere warns in multi-threaded processes).
+            worker_finished.wait(timeout=2)
+            for fd in [stdout_r, stdout_w, pty_r, pty_w, stdin_r, stdin_w]:
+                if fd >= 0:
+                    try:
+                        os.close(fd)
+                    except OSError:
+                        pass
+
+    def test_ctrl_c_during_summary_generation(self) -> None:
+        """Ctrl-C during the pre-query working summary generation aborts auto mode."""
+        pty_r, pty_w = os.pipe()
+        stdin_r, stdin_w = os.pipe()
+        worker_finished = threading.Event()
+
+        class BlockingSummaryLLM:
+            def summarize(
+                self,
+                previous: SummaryResult | None,
+                new_output: str,
+                truncated: bool = False,
+            ) -> SummaryResult:
+                try:
+                    os.write(stdin_w, b"\x03")
+                    time.sleep(0.3)
+                    return SummaryResult(environment="e", activities="a", notes="n")
+                finally:
+                    worker_finished.set()
+
+        screen = ScreenBuffer(rows=3, cols=40)
+        for i in range(20):
+            screen.feed(f"line {i}\r\n".encode())
+        manager = WorkingSummaryManager(
+            llm_client=BlockingSummaryLLM(),
+            screen_buffer=screen,
+            trigger_lines=5,
+        )
+
+        fake_llm = FakeLLMClient(auto_results=[_final_result(1, "done", "x")])
+
+        pty_written: list[bytes] = []
+        stdout_r, stdout_w = os.pipe()
+
+        try:
+            executor = ModeExecutor(
+                llm_client=fake_llm,
+                screen_buffer=screen,
+                write_to_pty=lambda d: pty_written.append(d),
+                stdout_fd=stdout_w,
+                stdin_fd=stdin_r,
+                get_pty_master_fd=lambda: pty_r,
+                settle_ms=10,
+                threshold_ms=5000,
+                working_summary=manager,
+            )
+            executor.execute("run something", "auto")
+
+            # The auto step was never reached.
+            assert fake_llm.auto_step_calls == []
+
+            os.close(stdout_w)
+            stdout_w = -1
+            out = _drain(stdout_r)
+            assert b"[auto interrupted]" in out
+        finally:
+            worker_finished.wait(timeout=2)
+            for fd in [stdout_r, stdout_w, pty_r, pty_w, stdin_r, stdin_w]:
+                if fd >= 0:
+                    try:
+                        os.close(fd)
+                    except OSError:
+                        pass
+
     def test_thinking_indicator(self) -> None:
         """Auto mode shows the [auto] thinking indicator."""
         auto_results = [_final_result(1, "done", "done")]
