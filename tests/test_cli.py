@@ -24,6 +24,25 @@ class TestParseArgs:
         args = parse_args(["--", "ssh", "myhost"])
         assert args.command == ["ssh", "myhost"]
 
+    def test_line_options_default_to_none(self):
+        args = parse_args([])
+        assert args.history_lines is None
+        assert args.scrollback_lines is None
+        assert args.summary_trigger_lines is None
+        assert args.summary_max_input_lines is None
+
+    def test_line_options(self):
+        args = parse_args([
+            "--history-lines", "300",
+            "--scrollback-lines", "10000",
+            "--summary-trigger-lines", "250",
+            "--summary-max-input-lines", "1000",
+        ])
+        assert args.history_lines == 300
+        assert args.scrollback_lines == 10000
+        assert args.summary_trigger_lines == 250
+        assert args.summary_max_input_lines == 1000
+
     def test_all_options(self):
         args = parse_args(["--shell", "/bin/zsh", "--raw-io-log-file", "/tmp/raw.log", "--log-file", "/tmp/log", "--", "echo", "hi"])
         assert args.shell == "/bin/zsh"

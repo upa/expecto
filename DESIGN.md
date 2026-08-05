@@ -276,14 +276,14 @@ function_call 本体はサーバー側に保存されているため、クライ
   - settle せずに閾値時間(既定 30秒、設定可能)を超えた場合: タイムアウトエラーとはせず、その時点までの出力を tool の実行結果として LLM に送る。このとき「出力が settle しなかった(コマンドはまだ実行中の可能性がある)」旨の注記を結果に含め、LLM が次のアクションを判断する（例: `send_control` で Ctrl-C を送信してコマンドを中断する、さらに待つ、別のアプローチに切り替える等）。30秒以上継続するコマンド（ダウンロード、ビルド等）は日常的にあるため、一律でタイムアウト扱いにはしない。
 - シェル固有のプロンプトマーカー注入(PS1書き換え)には**依存しない**。これは ssh 越しやルーターCLIでは使えないため、汎用性を優先してアイドル検知のみで v0.1 を組む。将来的に「対応シェルではPS1マーカーも併用してより正確に検知する」拡張は可能(§11参照)。
 
-### 5.10 WorkingSummary (セッションコンテキスト) — TODO
+### 5.10 WorkingSummary (セッションコンテキスト)
 
 `jou` セッション内でユーザーがこれまで行ってきた操作の要約 (working summary) を保持し、LLM 呼び出し時（completion mode / auto mode 共通）にシステムプロンプトへ含めることで、文脈を踏まえたコマンド提案・自動実行を可能にする。
 
 詳細設計は **`DESIGN-WorkingSummary.md`** を参照。要点:
 
 - 直近の生画面 (`get_text()`) = 短期記憶、working summary = スクロールアウトした情報の長期記憶、という役割分担。
-- 行数トリガーによるバックグラウンド差分更新 (anchored iterative summarization) + クエリ確定時の遅延同期生成。
+- スクロールバックへ押し出された行数（§5.5 の単調カウンタ）をトリガーとするバックグラウンド差分更新 (anchored iterative summarization) + クエリ確定時の遅延同期生成。auto mode の tool 結果が新規出力のみになったため、セッション全体の文脈供給は instructions 内の working summary が担う。
 - 環境推測（SSH 先・ベンダー CLI 種別）を独立フィールドとして保持する構造化スキーマ。
 - 併せて `history_lines` を「LLM に送る行数」と「pyte スクロールバック容量 (`scrollback_lines`)」に分離し、既定値を見直す（§5.5 / §7 の「既定 200 行」は同設計で更新される）。
 
@@ -319,9 +319,14 @@ OPTIONS:
   --model NAME               使用するLLMモデル (既定値あり)
   --max-auto-steps N         auto mode の最大ステップ数 (既定: 10)
   --settle-ms N              出力安定判定の待機時間 (既定: 500)
-  --history-lines N          LLMに渡すスクリーン履歴の行数 (既定: 200)
+  --history-lines N          LLMに渡すスクリーン履歴の行数 (既定: 500)
+  --scrollback-lines N       pyteスクロールバック容量 (既定: 5000)
+  --summary-trigger-lines N  working summary 更新トリガーの行数 (既定: 500)
+  --summary-max-input-lines N  working summary 1回の差分入力上限 (既定: 2000)
   --log-file PATH            raw I/Oログの出力先 (デバッグ用、既定は無効)
 ```
+
+Working summary 生成用の LLM 接続 (URL・APIキー・モデル・reasoning effort) は環境変数 `SUMMARY_OPENAI_BASE_URL` / `SUMMARY_OPENAI_API_KEY` / `SUMMARY_OPENAI_MODEL` / `SUMMARY_OPENAI_REASONING_EFFORT` で指定する (未設定時は対応する `OPENAI_*` にフォールバック)。詳細は `DESIGN-WorkingSummary.md` §7 を参照。
 
 設定ファイル: `~/.config/jou/config.toml` に既定値を書けるようにし、CLIオプションが上書きする。APIキーは環境変数 `OPENAI_API_KEY` を利用(設定ファイルに平置きしない)。
 
@@ -333,7 +338,6 @@ OPTIONS:
 
 - **危険コマンドの確認**: auto mode でコマンド実行前に、危険なコマンド（`rm -rf`, `dd`, `mkfs` 等）を簡易ブラックリストで検知し、ユーザーに確認を挟む（§5.8, §9 参照）。`--no-confirm` オプションも合わせて実装する。
 - **シークレットのマスキング**: LLM に送信するスクリーン履歴から、パスワード・APIキー等の機密情報を簡易マスキングする（§9 参照）。`password`, `token`, `secret` 等を含む行の値部分を伏字にする。
-- **Working Summary (セッションコンテキスト)**: LLM呼び出し時に、ユーザーが当該 `jou` セッション内でこれまで何をしてきたかの要約（working summary）をシステムプロンプトに含める。詳細設計は §5.10 および `DESIGN-WorkingSummary.md` を参照。
 - **プロンプトエンジニアリング**: completion mode / auto mode のシステムプロンプト・ユーザーメッセージの内容を精査し、出力品質を改善する。現状は最低限の指示のみ。
 
 ---

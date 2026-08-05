@@ -38,7 +38,7 @@ class TestScreenBuffer:
         assert "after resize" in text
 
     def test_scrollback_preserved(self) -> None:
-        buf = ScreenBuffer(rows=3, cols=40, history_lines=100)
+        buf = ScreenBuffer(rows=3, cols=40, scrollback_lines=100)
         for i in range(10):
             buf.feed(f"line {i}\r\n".encode())
         text = buf.get_text()
@@ -59,6 +59,96 @@ class TestScreenBuffer:
         buf = ScreenBuffer(rows=24, cols=80)
         buf.feed(b"line1\r\nuser@host:~$ ")
         assert buf.get_cursor_col() == 13
+
+
+class TestGetTextLastN:
+    def test_returns_only_tail_lines(self) -> None:
+        buf = ScreenBuffer(rows=3, cols=40, scrollback_lines=100)
+        for i in range(10):
+            buf.feed(f"line {i}\r\n".encode())
+        text = buf.get_text(last_n=3)
+        lines = text.split("\n")
+        assert len(lines) == 3
+        assert "line 0" not in text
+
+    def test_no_limit_when_none(self) -> None:
+        buf = ScreenBuffer(rows=3, cols=40, scrollback_lines=100)
+        for i in range(10):
+            buf.feed(f"line {i}\r\n".encode())
+        assert buf.get_text(last_n=None) == buf.get_text()
+
+    def test_limit_larger_than_content(self) -> None:
+        buf = ScreenBuffer(rows=24, cols=80)
+        buf.feed(b"only line")
+        assert buf.get_text(last_n=100) == "only line"
+
+
+class TestScrolledLines:
+    def test_counter_starts_at_zero(self) -> None:
+        buf = ScreenBuffer(rows=24, cols=80)
+        assert buf.scrolled_lines_total == 0
+
+    def test_counter_counts_scrolled_lines(self) -> None:
+        buf = ScreenBuffer(rows=3, cols=40, scrollback_lines=100)
+        for i in range(10):
+            buf.feed(f"line {i}\r\n".encode())
+        # 10 newlines on a 3-row screen: rows scrolled out = 10 - (3 - 1).
+        assert buf.scrolled_lines_total == 8
+
+    def test_counter_monotonic_past_capacity(self) -> None:
+        buf = ScreenBuffer(rows=3, cols=40, scrollback_lines=5)
+        for i in range(30):
+            buf.feed(f"line {i}\r\n".encode())
+        assert buf.scrolled_lines_total == 28
+
+    def test_lines_on_screen_not_counted(self) -> None:
+        buf = ScreenBuffer(rows=24, cols=80)
+        buf.feed(b"line1\r\nline2\r\n")
+        assert buf.scrolled_lines_total == 0
+
+
+class TestGetScrolledTail:
+    def test_returns_last_n_scrolled_lines(self) -> None:
+        buf = ScreenBuffer(rows=3, cols=40, scrollback_lines=100)
+        for i in range(10):
+            buf.feed(f"line {i}\r\n".encode())
+        text = buf.get_scrolled_tail(3)
+        lines = text.split("\n")
+        assert len(lines) == 3
+        assert lines[-1] == "line 7"
+
+    def test_visible_screen_not_included(self) -> None:
+        buf = ScreenBuffer(rows=3, cols=40, scrollback_lines=100)
+        for i in range(10):
+            buf.feed(f"line {i}\r\n".encode())
+        text = buf.get_scrolled_tail(100)
+        assert "line 9" not in text  # still on the visible screen
+
+    def test_zero_or_negative_returns_empty(self) -> None:
+        buf = ScreenBuffer(rows=3, cols=40, scrollback_lines=100)
+        for i in range(10):
+            buf.feed(f"line {i}\r\n".encode())
+        assert buf.get_scrolled_tail(0) == ""
+        assert buf.get_scrolled_tail(-1) == ""
+
+    def test_truncation_note_when_lines_evicted(self) -> None:
+        buf = ScreenBuffer(rows=3, cols=40, scrollback_lines=5)
+        for i in range(30):
+            buf.feed(f"line {i}\r\n".encode())
+        text = buf.get_scrolled_tail(20)
+        assert "truncated" in text
+        assert "line 27" in text
+
+    def test_does_not_clear_dirty_state(self) -> None:
+        """get_scrolled_tail must not interfere with mark()/get_text_since()."""
+        buf = ScreenBuffer(rows=24, cols=80)
+        buf.feed(b"$ ")
+        mark = buf.mark()
+        buf.feed(b"cmd\r\nresult\r\n$ ")
+        buf.get_scrolled_tail(10)
+        buf.scrolled_lines_total  # noqa: B018 - read-only access
+        text = buf.get_text_since(mark)
+        assert "result" in text
 
 
 class TestGetTextSince:
@@ -82,7 +172,7 @@ class TestGetTextSince:
     def test_scrolling_output_excludes_old_screen(self) -> None:
         """When new output scrolls the screen, pre-mark rows pushed into
         history are not included, while all new output is."""
-        buf = ScreenBuffer(rows=5, cols=40, history_lines=100)
+        buf = ScreenBuffer(rows=5, cols=40, scrollback_lines=100)
         for i in range(4):
             buf.feed(f"old {i}\r\n".encode())
         buf.feed(b"$ ")
@@ -100,7 +190,7 @@ class TestGetTextSince:
 
     def test_history_overflow_adds_truncation_note(self) -> None:
         """Output larger than the scrollback capacity carries a truncation note."""
-        buf = ScreenBuffer(rows=3, cols=40, history_lines=5)
+        buf = ScreenBuffer(rows=3, cols=40, scrollback_lines=5)
         buf.feed(b"$ ")
         mark = buf.mark()
         for i in range(30):

@@ -15,7 +15,7 @@ from openai.types.shared_params import Reasoning
 from pydantic import BaseModel, ValidationError
 
 if TYPE_CHECKING:
-    from jou.config import JouConfig
+    from jou.config import JouConfig, ReasoningEffortLevel
 
 SYSTEM_PROMPT = """\
 You are an assistant that suggests commands for the terminal the user is \
@@ -48,10 +48,31 @@ another action.
 the user wrote their query in.
 """
 
+SUMMARY_SYSTEM_PROMPT = """\
+You are maintaining a running summary of a terminal session.
+Given the previous summary (if any) and new terminal output, produce an \
+updated summary by MERGING the new information into the previous summary.
+- environment: infer what system, shell, or CLI the user is currently on \
+(a local shell, an SSH session, or a network device vendor CLI such as \
+Cisco IOS / Junos / Arista EOS). Keep the previous inference unless the \
+new output contradicts it.
+- activities: summarize what the user has been doing in this session.
+- notes: errors encountered, apparent goals, and other key facts. Never \
+drop information from the previous summary unless it is clearly obsolete.
+- Do not describe the most recent output verbatim; focus on information \
+that will scroll out of view.
+"""
+
 
 class CompletionResponse(BaseModel):
     command: str
     explanation: str
+
+
+class SummaryResult(BaseModel):
+    environment: str
+    activities: str
+    notes: str
 
 
 class RunCommandParams(BaseModel):
@@ -131,12 +152,51 @@ class AutoStepResult:
     response_id: str
 
 
+def _compose_instructions(base: str, working_summary: str | None) -> str:
+    if working_summary is None:
+        return base
+    return f"{base}\n{working_summary}"
+
+
+def _build_summary_input(
+    previous: SummaryResult | None,
+    new_output: str,
+    truncated: bool,
+) -> str:
+    sections: list[str] = []
+    if previous is not None:
+        sections.append(
+            "## Previous Summary\n"
+            f"Environment: {previous.environment}\n"
+            f"Activities: {previous.activities}\n"
+            f"Notes: {previous.notes}"
+        )
+    heading = "## New Terminal Output"
+    if truncated:
+        heading += " (earlier lines omitted due to length)"
+    sections.append(f"{heading}\n```\n{new_output}\n```")
+    return "\n\n".join(sections)
+
+
 class LLMClient:
     def __init__(self, config: JouConfig) -> None:
         self._config = config
         self._client: openai.OpenAI = openai.OpenAI(
             api_key=config.openai_api_key,
             base_url=config.openai_base_url,
+        )
+        # Summary settings fall back to the main ones when unset, mirroring
+        # the SUMMARY_OPENAI_* -> OPENAI_* env var fallback for configs
+        # constructed without from_env().
+        self._summary_client: openai.OpenAI = openai.OpenAI(
+            api_key=config.summary_openai_api_key or config.openai_api_key,
+            base_url=config.summary_openai_base_url or config.openai_base_url,
+        )
+        self._summary_model: str = config.summary_model or config.model
+        self._summary_reasoning_effort: ReasoningEffortLevel | None = (
+            config.summary_openai_reasoning_effort
+            if config.summary_openai_reasoning_effort is not None
+            else config.openai_reasoning_effort
         )
         self._log_file = config.log_file
 
@@ -147,11 +207,17 @@ class LLMClient:
         with open(self._log_file, "a") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
-    def complete(self, screen_text: str, query: str) -> CompletionResponse:
+    def complete(
+        self,
+        screen_text: str,
+        query: str,
+        working_summary: str | None = None,
+    ) -> CompletionResponse:
         user_content = f"## Terminal Screen\n```\n{screen_text}\n```\n\n## User Request\n{query}"
         input_msgs: ResponseInputParam = [
             {"role": "user", "content": user_content},
         ]
+        instructions = _compose_instructions(SYSTEM_PROMPT, working_summary)
 
         self._log({
             "type": "query",
@@ -169,13 +235,13 @@ class LLMClient:
             "type": "llm_request",
             "mode": "completion",
             "model": self._config.model,
-            "instructions": SYSTEM_PROMPT,
+            "instructions": instructions,
             "input": list(input_msgs),
         })
 
         response = self._client.responses.parse(
             model=self._config.model,
-            instructions=SYSTEM_PROMPT,
+            instructions=instructions,
             input=input_msgs,
             text_format=CompletionResponse,
             reasoning=reasoning,
@@ -199,7 +265,9 @@ class LLMClient:
         self,
         input_items: ResponseInputParam,
         previous_response_id: str | None = None,
+        working_summary: str | None = None,
     ) -> AutoStepResult:
+        instructions = _compose_instructions(AUTO_SYSTEM_PROMPT, working_summary)
         reasoning: Reasoning | None = (
             Reasoning(effort=self._config.openai_reasoning_effort)
             if self._config.openai_reasoning_effort is not None
@@ -210,14 +278,14 @@ class LLMClient:
             "type": "llm_request",
             "mode": "auto",
             "model": self._config.model,
-            "instructions": AUTO_SYSTEM_PROMPT,
+            "instructions": instructions,
             "input": list(input_items),
             "previous_response_id": previous_response_id,
         })
 
         response = self._client.responses.parse(
             model=self._config.model,
-            instructions=AUTO_SYSTEM_PROMPT,
+            instructions=instructions,
             input=input_items,
             text_format=AutoResponse,
             tools=AUTO_TOOLS,
@@ -282,6 +350,54 @@ class LLMClient:
                 error=f"invalid arguments: {exc}",
             )
         return ParsedToolCall(call_id=call_id, name=item.name, params=params)
+
+    def summarize(
+        self,
+        previous: SummaryResult | None,
+        new_output: str,
+        truncated: bool = False,
+    ) -> SummaryResult:
+        user_content = _build_summary_input(previous, new_output, truncated)
+        input_msgs: ResponseInputParam = [
+            {"role": "user", "content": user_content},
+        ]
+        reasoning: Reasoning | None = (
+            Reasoning(effort=self._summary_reasoning_effort)
+            if self._summary_reasoning_effort is not None
+            else None
+        )
+
+        self._log({
+            "type": "summary_request",
+            "model": self._summary_model,
+            "instructions": SUMMARY_SYSTEM_PROMPT,
+            "input": list(input_msgs),
+        })
+
+        try:
+            response = self._summary_client.responses.parse(
+                model=self._summary_model,
+                instructions=SUMMARY_SYSTEM_PROMPT,
+                input=input_msgs,
+                text_format=SummaryResult,
+                reasoning=reasoning,
+                store=False,
+            )
+        except Exception as exc:
+            self._log({"type": "summary_error", "error": str(exc)})
+            raise
+
+        parsed = response.output_parsed
+        if parsed is None:
+            self._log({"type": "summary_error", "error": "LLM returned empty response"})
+            raise ValueError("summary LLM returned empty response")
+
+        self._log({
+            "type": "summary_response",
+            "response": parsed.model_dump(),
+        })
+
+        return parsed
 
     def build_auto_messages(
         self,

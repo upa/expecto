@@ -8,6 +8,7 @@ from typing import IO, TYPE_CHECKING
 if TYPE_CHECKING:
     from jou.input_router import InputRouter
     from jou.screen_buffer import ScreenBuffer
+    from jou.working_summary import WorkingSummaryManager
 
 
 class IORelay:
@@ -16,11 +17,13 @@ class IORelay:
         input_router: InputRouter | None = None,
         screen_buffer: ScreenBuffer | None = None,
         log_file: IO[str] | None = None,
+        working_summary: WorkingSummaryManager | None = None,
     ) -> None:
         self._running: bool = False
         self._input_router = input_router
         self._screen_buffer = screen_buffer
         self._log_file = log_file
+        self._working_summary = working_summary
 
     def run(self, pty_master_fd: int, stdin_fd: int | None = None, stdout_fd: int | None = None) -> None:
         effective_stdin = stdin_fd if stdin_fd is not None else sys.stdin.fileno()
@@ -57,6 +60,8 @@ class IORelay:
                     break
                 if self._screen_buffer is not None:
                     self._screen_buffer.feed(data)
+                    if self._working_summary is not None:
+                        self._working_summary.check_trigger()
                 os.write(effective_stdout, data)
 
     def stop(self) -> None:

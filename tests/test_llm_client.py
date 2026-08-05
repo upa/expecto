@@ -13,7 +13,11 @@ from jou.llm_client import (
     LLMClient,
     RunCommandParams,
     SendControlParams,
+    SUMMARY_SYSTEM_PROMPT,
+    SummaryResult,
     SYSTEM_PROMPT,
+    _build_summary_input,
+    _compose_instructions,
 )
 
 
@@ -137,10 +141,74 @@ class TestParseToolCall:
         assert "invalid arguments" in parsed.error
 
 
+class TestSummaryResult:
+    def test_model_fields(self) -> None:
+        result = SummaryResult(
+            environment="local shell (bash)",
+            activities="editing config files",
+            notes="no errors",
+        )
+        assert result.environment == "local shell (bash)"
+        assert result.activities == "editing config files"
+        assert result.notes == "no errors"
+
+
+class TestComposeInstructions:
+    def test_without_summary(self) -> None:
+        assert _compose_instructions(SYSTEM_PROMPT, None) == SYSTEM_PROMPT
+
+    def test_with_summary(self) -> None:
+        summary = "## Session Context\nEnvironment: ssh router"
+        composed = _compose_instructions(SYSTEM_PROMPT, summary)
+        assert composed.startswith(SYSTEM_PROMPT)
+        assert composed.endswith(summary)
+
+
+class TestBuildSummaryInput:
+    def test_first_generation_has_no_previous_section(self) -> None:
+        content = _build_summary_input(None, "some output", truncated=False)
+        assert "## Previous Summary" not in content
+        assert "some output" in content
+
+    def test_merge_includes_previous_summary(self) -> None:
+        previous = SummaryResult(
+            environment="ssh to router1 (Junos)",
+            activities="checking BGP sessions",
+            notes="session to peer 10.0.0.1 is down",
+        )
+        content = _build_summary_input(previous, "new output", truncated=False)
+        assert "## Previous Summary" in content
+        assert "Junos" in content
+        assert "10.0.0.1" in content
+        assert "new output" in content
+
+    def test_truncated_note(self) -> None:
+        content = _build_summary_input(None, "output", truncated=True)
+        assert "omitted" in content
+
+    def test_not_truncated_has_no_note(self) -> None:
+        content = _build_summary_input(None, "output", truncated=False)
+        assert "omitted" not in content
+
+
 class TestLLMClient:
     def test_init(self) -> None:
         client = LLMClient(_make_config())
         assert client._client.api_key == "sk-test"
+
+    def test_summary_client_uses_summary_settings(self) -> None:
+        config = _make_config()
+        config.summary_openai_api_key = "sk-summary"
+        config.summary_openai_base_url = "https://summary.api/v1"
+        client = LLMClient(config)
+        assert client._summary_client.api_key == "sk-summary"
+        assert str(client._summary_client.base_url).startswith("https://summary.api/v1")
+        assert client._client.api_key == "sk-test"
+
+    def test_summary_system_prompt_exists(self) -> None:
+        assert "summary" in SUMMARY_SYSTEM_PROMPT.lower()
+        assert "environment" in SUMMARY_SYSTEM_PROMPT.lower()
+        assert "merging" in SUMMARY_SYSTEM_PROMPT.lower()
 
     def test_system_prompt_exists(self) -> None:
         assert "terminal" in SYSTEM_PROMPT.lower()

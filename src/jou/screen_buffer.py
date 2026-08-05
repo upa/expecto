@@ -29,9 +29,9 @@ class ScreenMark:
 
 
 class ScreenBuffer:
-    def __init__(self, rows: int = 24, cols: int = 80, history_lines: int = 200) -> None:
-        self._screen: pyte.HistoryScreen = pyte.HistoryScreen(cols, rows, history=history_lines)
-        self._history_top: _CountingDeque = _CountingDeque(maxlen=history_lines)
+    def __init__(self, rows: int = 24, cols: int = 80, scrollback_lines: int = 5000) -> None:
+        self._screen: pyte.HistoryScreen = pyte.HistoryScreen(cols, rows, history=scrollback_lines)
+        self._history_top: _CountingDeque = _CountingDeque(maxlen=scrollback_lines)
         self._screen.history = self._screen.history._replace(top=self._history_top)
         self._stream: pyte.Stream = pyte.Stream(self._screen)
         self._screen.set_mode(pyte.modes.LNM)
@@ -49,7 +49,7 @@ class ScreenBuffer:
         line = self._screen.buffer[row]
         return "".join(line[col].data for col in range(self._screen.columns)).rstrip()
 
-    def get_text(self) -> str:
+    def get_text(self, last_n: int | None = None) -> str:
         history_lines: list[str] = []
         for line in self._screen.history.top:
             history_lines.append(self._render_history_line(line))
@@ -62,7 +62,30 @@ class ScreenBuffer:
             screen_lines.pop()
 
         all_lines = history_lines + screen_lines
+        if last_n is not None and len(all_lines) > last_n:
+            all_lines = all_lines[len(all_lines) - last_n:]
         return "\n".join(all_lines)
+
+    @property
+    def scrolled_lines_total(self) -> int:
+        """Monotonic count of lines pushed into scrollback since creation."""
+        return self._history_top.total_appended
+
+    def get_scrolled_tail(self, n: int) -> str:
+        """Render the last n lines of the scrollback (read-only: does not
+        touch the dirty set used by mark()/get_text_since()). Lines already
+        evicted from the scrollback are flagged with a truncation note."""
+        if n <= 0:
+            return ""
+        available = len(self._history_top)
+        take = min(n, available)
+        lines = [
+            self._render_history_line(line)
+            for line in list(self._history_top)[available - take:]
+        ]
+        if n > available:
+            lines.insert(0, "[... earlier output truncated: exceeded scrollback capacity ...]")
+        return "\n".join(lines)
 
     def mark(self) -> ScreenMark:
         """Record the current screen state and reset change tracking.
