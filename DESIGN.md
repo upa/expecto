@@ -61,7 +61,7 @@
         ▼
 [query mode]
   - outer tty に最小限のオーバーレイ("miniprompt")を描画
-  - どのモードで起動されたかを表示 (例: `jou(comp)> ` / `jou(auto)> `)
+  - どのモードで起動されたかを表示 (completion: `? ` / auto: `! `)
   - ユーザーの入力は child process には送らず、query バッファに蓄積
   - Enter で確定 / Esc で passthrough に戻る(キャンセル)
         │ Enter
@@ -130,7 +130,7 @@
 - 責務: `jou` 起動時に outer tty の `termios` 設定を保存し、raw モードにする。終了時(正常終了・例外・シグナル)に必ず元の設定へ復元する。
 - Python標準: `termios`, `tty` モジュール。`tty.setraw(fd)` を使うが、復元用に `termios.tcgetattr()` の結果を保存しておくこと。
 - `atexit` とシグナルハンドラ(`SIGTERM`, `SIGINT` を自プロセスが受けた場合)の両方で復元処理を確実に呼ぶ。
-- `SIGWINCH` を受け取ったら outer tty の現在サイズ (`fcntl.ioctl(fd, termios.TIOCGWINSZ, ...)`) を取得し、pty 側にも `TIOCSWINSZ` で反映する。
+- `SIGWINCH` のハンドラ登録は cli が asyncio の `loop.add_signal_handler()` で行う(イベントループ上で実行され安全)。ハンドラは TTYController の `get_window_size()` / `set_pty_window_size()` で outer tty の現在サイズを pty へ反映し、あわせて `ScreenBuffer.resize()` で pyte スクリーンも追従させる。
 
 ### 5.2 PTYManager
 
@@ -180,8 +180,8 @@
 
 ### 5.6 QueryModeUI
 
-- responsibiliy: outer tty 上に、child process の画面を破壊せずにミニプロンプト(例: 画面最下行に `jou> ` の入力行を描画)を表示する。
-- 実装簡易化のため v0.1 では「現在のカーソル位置を保存 → 最下行に移動してオーバーレイを描画 → 確定/キャンセル後にカーソル位置復元」という、単純なANSIエスケープ操作(`\x1b[s` / `\x1b[u` や `\x1b[<n>;<m>H` )で十分。
+- 責務: outer tty 上に、child process の画面を破壊せずにミニプロンプトを表示する。
+- 実装: 現在のカーソル位置(開始列は ScreenBuffer から取得)からそのままグレーで `? `(completion) / `! `(auto) とクエリ文字列をインライン描画する。文字の追記は差分エコーのみ、削除・書き換え時はプロンプト先頭へ戻って `\x1b[J` で消去し再描画する(戻り位置の計算は East Asian Width を考慮した表示幅で行い、行折り返しに対応)。キャンセル / completion 確定時は消去し、auto 確定時 (`finalize()`) はクエリ行を画面に残したまま終了する(直後に送る改行のエコーが行送りを供給するため)。
 - alternate screen (vimなど) 使用中に query mode に入るケースは v0.1 では未対応(既知の課題として明記。詳細は §10）。
 
 ### 5.7 LLMClient
@@ -267,7 +267,7 @@ function_call 本体はサーバー側に保存されているため、クライ
   - 開始時(クエリ確定直後)にまず改行 1 つを pty に送り、シェルの新しいプロンプトを表示・settle 待ちで画面に反映してから、最初の LLM 呼び出しに進む。クエリ行が直前のプロンプト行を消費しているため、これを行わないと最初のコマンドがプロンプトのない行に注入されたように見える。
   - LLM が function calling で `run_command` / `send_control` を呼び出すループとして実装する(§5.7)。tool call の実行(pty master への書き込み + settle 待ち + 新規出力の回収(§5.5 の mark / get_text_since)と `function_call_output` の構築)は ModeExecutor が担う。
   - **危険コマンドの確認ゲート(3層)**: (1) LLM が `run_command` の必須フィールド `risk`(`read_only` / `mutating` / `destructive`)+ `risk_reason` で毎コマンドのリスクを自己申告する(環境適応の主判定。ベンダー CLI の知識は LLM 側にあり、working summary の環境推測が精度を支える)。(2) 決定論的バックストップ: 組み込み + ユーザー定義(`~/.config/jou/dangerous_patterns.txt`、1行1正規表現・`#`コメント・大文字小文字無視)の正規表現にマッチしたコマンドは LLM の申告に関係なく `destructive` に**昇格**する(昇格専用 — 確認を免除する方向には働かない)。(3) `--confirm-level`(既定 `destructive`)以上のリスクのコマンドは実行前にユーザーへ y/n 確認。**拒否は abort ではなく** `function_call_output` で「ユーザーが拒否した」を LLM に返し、代替アプローチを取らせる。非対話環境では確認できないため拒否扱い。この機構は保証ではなくプロンプト削減であり(LLM 自己申告は prompt injection・自己評価バイアスに対し堅牢でない)、最終的な安全装置は「全コマンドと出力が常にユーザーの画面に見える」構造 + ユーザー在席 + Ctrl-C + チェックポイントである。
-  - `run_command` のコマンドエコーは、jou のステータス表示と同じグレーで表示する。コマンド注入直前に outer tty へ SGR(グレー)を書き、エコーの最初の改行(Enter のエコー)が中継された時点でリセットする。改行が来ないまま settle・中断・EOF となった場合も必ずリセットする。SGR は outer tty にのみ書き、ScreenBuffer には入らないため LLM へ渡すテキストには影響しない(シェル自身がエコーに色を付ける場合はそちらが優先されうる、ベストエフォート)。
+  - `run_command` のコマンドエコーは、jou のステータス表示と同じグレーで表示する。コマンド注入直前に outer tty へ SGR(グレー)を書き、IORelay に予約 (`arm_sgr_reset_at_newline()`) しておくと、ポンプがエコーの最初の改行(Enter のエコー)の直後にリセットを挿入する。改行が来ないまま settle・中断・EOF となった場合も `flush_sgr_reset()`(冪等)で必ずリセットする。SGR は outer tty にのみ書き、ScreenBuffer には入らないため LLM へ渡すテキストには影響しない(シェル自身がエコーに色を付ける場合はそちらが優先されうる、ベストエフォート)。
   - ループ処理は下記 settle 検知 (§5.9) を利用する。`max_auto_steps`(既定 15、LLM 呼び出し回数でカウント)ステップごとに**チェックポイント**としてユーザーに継続確認(`continue? (y/n)`)を行う。y なら `previous_response_id` チェーンを維持したまま続行、n / Esc / Ctrl-C なら終了。hard-abort ではなく確認にすることで、上限が「タスク失敗」ではなく「人間の目を挟む機会」として機能する(対話型ツールとして、ユーザー在席が第一の安全装置)。確認待ちの間も pty 出力の中継は継続する(常時ポンプが担う)。stdin が失われた場合(EOF)はセッション終了としてモードタスクがキャンセルされる。
   - LLMは `send_control` tool で制御文字（Ctrl-C等）を送信できる。これにより、長時間実行中のコマンドの中断などをLLM自身が判断できる。
   - ユーザーはいつでも `Ctrl-C` で auto mode を中断できるようにする(中断検知は InputRouter が auto mode 中の入力を優先的にハンドルする形にする)。
@@ -290,7 +290,7 @@ function_call 本体はサーバー側に保存されているため、クライ
 - 直近の生画面 (`get_text()`) = 短期記憶、working summary = スクロールアウトした情報の長期記憶、という役割分担。
 - スクロールバックへ押し出された行数（§5.5 の単調カウンタ）をトリガーとするバックグラウンド差分更新 (anchored iterative summarization) + クエリ確定時の遅延同期生成。auto mode の tool 結果が新規出力のみになったため、セッション全体の文脈供給は instructions 内の working summary が担う。
 - 環境推測（SSH 先・ベンダー CLI 種別）を独立フィールドとして保持する構造化スキーマ。
-- 併せて `history_lines` を「LLM に送る行数」と「pyte スクロールバック容量 (`scrollback_lines`)」に分離し、既定値を見直す（§5.5 / §7 の「既定 200 行」は同設計で更新される）。
+- `history_lines`(LLM に送る行数、既定 500)と `scrollback_lines`(pyte スクロールバック容量、既定 5000)は分離されている（分離の経緯と既定値の根拠は同設計 §7 を参照）。
 
 ---
 
@@ -317,13 +317,8 @@ function_call 本体はサーバー側に保存されているため、クライ
 ```
 jou [OPTIONS] [-- COMMAND ...]
 
-OPTIONS:
-  --shell PATH              子プロセスとして起動するコマンド (既定: $SHELL)
-  --completion-hotkey KEY    completion mode に入るキー (既定: ctrl-/)
-  --auto-hotkey KEY          auto mode に入るキー (既定: ctrl-])
-  --model NAME               使用するLLMモデル (既定値あり)
-  --max-auto-steps N         auto mode の継続確認チェックポイント間隔 (既定: 15)
-  --settle-ms N              出力安定判定の待機時間 (既定: 500)
+OPTIONS (実装済み):
+  --shell PATH               子プロセスとして起動するコマンド (既定: $SHELL)
   --history-lines N          LLMに渡すスクリーン履歴の行数 (既定: 500)
   --scrollback-lines N       pyteスクロールバック容量 (既定: 5000)
   --summary-trigger-lines N  working summary 更新トリガーの行数 (既定: 500)
@@ -332,12 +327,17 @@ OPTIONS:
                              (destructive|mutating|none、既定: destructive)
   --dangerous-patterns-file PATH  危険コマンド正規表現の追加ファイル
                              (既定: ~/.config/jou/dangerous_patterns.txt)
-  --log-file PATH            raw I/Oログの出力先 (デバッグ用、既定は無効)
+  --log-file PATH            クエリ・LLM要求/応答のJSONLログ出力先 (既定は無効)
+  --raw-io-log-file PATH     raw I/Oログの出力先 (デバッグ用、既定は無効)
 ```
+
+LLM 接続は環境変数で指定する (`.env` を `load_dotenv()` で読む):
+`OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL` (既定: gpt-4o) /
+`OPENAI_REASONING_EFFORT`。
 
 Working summary 生成用の LLM 接続 (URL・APIキー・モデル・reasoning effort) は環境変数 `SUMMARY_OPENAI_BASE_URL` / `SUMMARY_OPENAI_API_KEY` / `SUMMARY_OPENAI_MODEL` / `SUMMARY_OPENAI_REASONING_EFFORT` で指定する (未設定時は対応する `OPENAI_*` にフォールバック)。詳細は `DESIGN-WorkingSummary.md` §7 を参照。
 
-設定ファイル: `~/.config/jou/config.toml` に既定値を書けるようにし、CLIオプションが上書きする。APIキーは環境変数 `OPENAI_API_KEY` を利用(設定ファイルに平置きしない)。
+未実装 (将来対応): `--completion-hotkey` / `--auto-hotkey` (現状は既定の ctrl-/ と ctrl-] 固定。config 上のフィールドはある)、`--model`、`--max-auto-steps` (既定 15 固定)、`--settle-ms` (既定 500 固定)、および設定ファイル `~/.config/jou/config.toml` (既定値を書けるようにし、CLIオプションが上書きする。APIキーは環境変数を利用し設定ファイルに平置きしない)。
 
 ### TODO (将来追加予定の改善)
 
@@ -427,16 +427,18 @@ jou/
 ├── src/
 │   └── jou/
 │       ├── __init__.py
-│       ├── cli.py            # エントリポイント、引数解析
-│       ├── tty_controller.py # raw mode化/復元、SIGWINCH
+│       ├── cli.py            # エントリポイント、引数解析、asyncio.run
+│       ├── tty_controller.py # raw mode化/復元、ウィンドウサイズ取得/反映
 │       ├── pty_manager.py    # pty確保、child起動
-│       ├── io_relay.py       # メインループ
+│       ├── io_relay.py       # asyncio常時ポンプ、モードタスク管理
 │       ├── input_router.py   # ホットキー検出、状態機械
 │       ├── screen_buffer.py  # pyte連携、履歴管理
 │       ├── query_ui.py       # ミニプロンプト描画
-│       ├── llm_client.py     # OpenAI API呼び出し (Structured Outputs)
+│       ├── llm_client.py     # OpenAI API呼び出し (AsyncOpenAI、Structured Outputs)
 │       ├── mode_executor.py  # completion/auto実行
-│       ├── settle.py         # 出力安定検知
+│       ├── settle.py         # 出力安定検知 (wait_settleコルーチン)
+│       ├── dangerous.py      # 危険コマンド正規表現バックストップ
+│       ├── working_summary.py # セッション要約 (長期記憶)
 │       └── config.py         # 設定読み込み
 └── tests/
 ```
@@ -452,6 +454,7 @@ jou/
 
 - テストフレームワークには `pytest` を使用する。
 - **テストケース作成のクライテリア**: `jou` のために実装したロジックをテストすること。標準ライブラリや既存ライブラリの動作をただ確認するだけのテストケース（例: argparse がオプションをパースできること自体の検証）は書かない。
+- async コンポーネントのテストには `pytest-asyncio` を使用する (`asyncio_mode = "auto"` を `pyproject.toml` に設定済み。テストコルーチンにデコレータは不要)。
 - 型チェックには `ty` を使用する (`uv run ty check`)。設定は `pyproject.toml` の `[tool.ty]` に記述する。
 - すべてのコードに型ヒントを付与する。公開インターフェースは明示的な型を書き、`Any` の使用は避ける。
 - 各コンポーネント実装時に対応するテストを `tests/` 配下に作成する。既存コンポーネントの変更時もテストを適宜更新する。

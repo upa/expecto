@@ -27,26 +27,28 @@ Phase 1 (completion mode) complete. Phase 2 (auto mode) core loop complete (LLMC
 - Target OS: macOS, Linux
 - Key dependencies: `pyte` (terminal emulation), `openai` (LLM SDK, AsyncOpenAI with Structured Outputs)
 - Heavy use of stdlib: `asyncio`, `pty`, `termios`, `tty`, `os`, `signal`, `fcntl`
-- Build/packaging: `pyproject.toml` (planned)
-- Config: `~/.config/jou/config.toml`, CLI flags override
-- API key: `OPENAI_API_KEY` env var
+- Build/packaging: `pyproject.toml` (hatchling, `jou` script entry point)
+- Config: env vars (`.env` supported via python-dotenv) + CLI flags; `~/.config/jou/config.toml` planned
+- API key: `OPENAI_API_KEY` env var (summary LLM overridable via `SUMMARY_OPENAI_*`)
 
-## Planned Architecture
+## Architecture
 
-State machine: `PASSTHROUGH` → (completion hotkey) `QUERY_COMPLETION` / (auto hotkey) `QUERY_AUTO` → `LLM_COMPLETION` or `LLM_AUTO` → `COMPLETION_INJECT` or `AUTO_LOOP` → back to `PASSTHROUGH`. Query input UI is shared; only the post-LLM dispatch differs.
+State machine (InputRouter): `PASSTHROUGH` → (completion hotkey) `QUERY_COMPLETION` / (auto hotkey) `QUERY_AUTO` → (Enter) `EXECUTING` → back to `PASSTHROUGH` when the mode task finishes. Query input UI is shared; only the post-submit dispatch differs. Everything after query submit runs as a cancellable asyncio mode task — user Ctrl-C while executing cancels that task.
 
 Core components (each a separate module under `src/jou/`):
-- `tty_controller` — raw mode, termios save/restore, SIGWINCH propagation
+- `tty_controller` — raw mode, termios save/restore, window-size helpers (SIGWINCH itself is registered in `cli` via `loop.add_signal_handler`)
 - `pty_manager` — pty allocation, child process fork/exec
-- `io_relay` — always-on asyncio relay pump (loop.add_reader), bidirectional byte relay, mode-task management
+- `io_relay` — always-on asyncio relay pump (loop.add_reader), bidirectional byte relay, mode-task management, settle/key-wait event hub
 - `input_router` — per-byte state machine, dual hotkey detection, UTF-8 buffering
 - `screen_buffer` — pyte-based screen capture + scrollback ring buffer for LLM context
-- `query_ui` — ANSI-based miniprompt overlay on bottom line
-- `llm_client` — OpenAI API with Structured Outputs (response_format)
-- `mode_executor` — completion/auto mode logic
-- `settle` — idle-timer output settle detection (no PS1 dependency)
-- `config` — TOML config + CLI arg merging
-- `cli` — entry point, argparse
+- `query_ui` — gray inline miniprompt (`? ` / `! `) drawn at the cursor position
+- `llm_client` — OpenAI Responses API via AsyncOpenAI, Structured Outputs
+- `mode_executor` — completion/auto mode logic (async, cancellation-based interrupts)
+- `settle` — idle-timer output settle detection (`wait_settle` coroutine, no PS1 dependency)
+- `dangerous` — regex backstop for unmistakably catastrophic commands
+- `working_summary` — session context summary (long-term memory), background asyncio task
+- `config` — env var + CLI arg merging (`~/.config/jou/config.toml` is planned, not implemented)
+- `cli` — entry point, argparse, asyncio.run
 
 ## Build & Test
 

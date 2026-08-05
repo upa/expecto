@@ -105,6 +105,9 @@ class IORelay:
 
     # --- 実行中モードへの入力 (ModeExecutor が使う) ---
     async def wait_key(self, accept: frozenset[int]) -> int: ...  # §4.2
+
+    # --- モードタスクの起動 (cli の on_query_submit が使う) ---
+    def start_mode(self, coro: Coroutine[object, object, None]) -> asyncio.Task[None]: ...
 ```
 
 **pty コールバック** (`_on_pty`、同期):
@@ -122,10 +125,11 @@ raw I/O ログ
 **stdin コールバック** (`_on_stdin`、同期): 読んだバイト列を
 `InputRouter.handle()` に渡すのみ。ルーティング先は InputRouter の状態が決める。
 
-**モードタスクの起動**: `on_query_submit` コールバック内で
-`self._mode_task = asyncio.create_task(executor.execute(query, mode))` を行い、
-done callback で (a) InputRouter を PASSTHROUGH に戻す、(b) `CancelledError` 以外の
-例外を JSONL ログと stderr に記録する。
+**モードタスクの起動**: `on_query_submit` コールバック (cli) が
+`relay.start_mode(executor.execute(query, mode))` を呼ぶ。done callback で
+(a) SGR リセットの flush と pending なキー要求の破棄、(b) InputRouter を
+PASSTHROUGH に戻す、(c) `CancelledError` 以外の例外を outer tty にグレーで
+表示する (`[jou: mode error: ...]`)。
 
 **`pause_pty()` の意味論**: 読み取り自体を止める (`remove_reader`)。
 pty のカーネルバッファが溢れれば子プロセスの write がブロックする — これは
@@ -204,16 +208,13 @@ async def wait_settle(
 
 ```python
 async def _execute_completion(self, query: str) -> None:
-    self._relay.pause_pty()
-    os.write(stdout, THINKING)
-    try:
-        working_summary = await self._ensure_working_summary()
-        screen_text = self._screen.get_text(last_n=...)
-        response = await self._llm.complete(...)
-    finally:
-        os.write(stdout, CLEAR_THINKING)
-        self._relay.resume_pty()
+    response = await self._thinking(self._completion_request(query))
     self._write_to_pty(response.command.encode())
+
+async def _completion_request(self, query: str) -> CompletionResponse:
+    working_summary = await self._ensure_working_summary()
+    screen_text = self._screen.get_text(last_n=self._history_lines)
+    return await self._llm.complete(screen_text, query, working_summary=working_summary)
 ```
 
 キャンセル時 (thinking 中の Ctrl-C) は finally で表示と pty 読み取りが復元され、
@@ -415,7 +416,8 @@ stdout への書き込みがポンプに一元化されるため、relay のフ�
 | `working_summary.py` | Lock 削除、`BackgroundCall` → `asyncio.Task`、`ensure_summary` / `_refresh` を async に |
 | `cli.py` | `asyncio.run` 化、SIGWINCH を `add_signal_handler` に移行、終了シーケンス整理 |
 | `background.py` | **削除** |
-| `screen_buffer.py` / `query_ui.py` / `dangerous.py` / `config.py` / `tty_controller.py` | 変更なし (tty_controller は SIGWINCH 登録の呼び出し元が変わるのみ) |
+| `tty_controller.py` | `setup_sigwinch` / `cleanup_sigwinch` を削除 (登録は cli の `add_signal_handler` へ移行)。raw 化・復元・ウィンドウサイズ取得/反映は不変 |
+| `screen_buffer.py` / `query_ui.py` / `dangerous.py` / `config.py` | 変更なし |
 
 ---
 
