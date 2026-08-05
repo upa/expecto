@@ -1,13 +1,18 @@
 import json
 import tempfile
+from typing import cast
+
+from openai.types.responses import ResponseFunctionToolCall
 
 from jou.config import JouConfig
 from jou.llm_client import (
     AUTO_SYSTEM_PROMPT,
-    AutoAction,
+    AUTO_TOOLS,
     AutoResponse,
     CompletionResponse,
     LLMClient,
+    RunCommandParams,
+    SendControlParams,
     SYSTEM_PROMPT,
 )
 
@@ -37,37 +42,23 @@ class TestCompletionResponse:
         assert resp.explanation == "list files"
 
 
-class TestAutoAction:
-    def test_command_action(self) -> None:
-        action = AutoAction(type="command", value="ls -la")
-        assert action.type == "command"
-        assert action.value == "ls -la"
+class TestToolParams:
+    def test_run_command_params(self) -> None:
+        params = RunCommandParams(command="ls -la")
+        assert params.command == "ls -la"
 
-    def test_control_action(self) -> None:
-        action = AutoAction(type="control", value="ctrl-c")
-        assert action.type == "control"
-        assert action.value == "ctrl-c"
+    def test_send_control_params(self) -> None:
+        params = SendControlParams(key="ctrl-c")
+        assert params.key == "ctrl-c"
 
 
 class TestAutoResponse:
-    def test_continue_response(self) -> None:
-        resp = AutoResponse(
-            action=AutoAction(type="command", value="df -h"),
-            status="continue",
-            explanation="checking disk usage",
-        )
-        assert resp.action is not None
-        assert resp.action.type == "command"
-        assert resp.action.value == "df -h"
-        assert resp.status == "continue"
-
     def test_done_response(self) -> None:
         resp = AutoResponse(
             status="done",
             explanation="goal achieved",
         )
         assert resp.status == "done"
-        assert resp.action is None
 
     def test_fail_response(self) -> None:
         resp = AutoResponse(
@@ -75,7 +66,75 @@ class TestAutoResponse:
             explanation="unrecoverable error",
         )
         assert resp.status == "fail"
-        assert resp.action is None
+
+
+class TestAutoTools:
+    def test_tool_names(self) -> None:
+        names = [tool["name"] for tool in AUTO_TOOLS]
+        assert names == ["run_command", "send_control"]
+
+    def test_tools_are_strict(self) -> None:
+        for tool in AUTO_TOOLS:
+            assert tool["strict"] is True
+            params = tool["parameters"]
+            assert params is not None
+            assert params["additionalProperties"] is False
+
+
+class TestParseToolCall:
+    def test_run_command(self) -> None:
+        client = LLMClient(_make_config())
+        item = ResponseFunctionToolCall(
+            type="function_call",
+            call_id="call_1",
+            name="run_command",
+            arguments='{"command": "df -h"}',
+        )
+        parsed = client._parse_tool_call(item)
+        assert parsed.call_id == "call_1"
+        assert parsed.name == "run_command"
+        assert isinstance(parsed.params, RunCommandParams)
+        assert parsed.params.command == "df -h"
+        assert parsed.error is None
+
+    def test_send_control(self) -> None:
+        client = LLMClient(_make_config())
+        item = ResponseFunctionToolCall(
+            type="function_call",
+            call_id="call_2",
+            name="send_control",
+            arguments='{"key": "ctrl-c"}',
+        )
+        parsed = client._parse_tool_call(item)
+        assert isinstance(parsed.params, SendControlParams)
+        assert parsed.params.key == "ctrl-c"
+        assert parsed.error is None
+
+    def test_unknown_tool(self) -> None:
+        client = LLMClient(_make_config())
+        item = ResponseFunctionToolCall(
+            type="function_call",
+            call_id="call_3",
+            name="nonexistent",
+            arguments="{}",
+        )
+        parsed = client._parse_tool_call(item)
+        assert parsed.params is None
+        assert parsed.error is not None
+        assert "unknown tool" in parsed.error
+
+    def test_invalid_arguments(self) -> None:
+        client = LLMClient(_make_config())
+        item = ResponseFunctionToolCall(
+            type="function_call",
+            call_id="call_4",
+            name="send_control",
+            arguments='{"key": "ctrl-x"}',
+        )
+        parsed = client._parse_tool_call(item)
+        assert parsed.params is None
+        assert parsed.error is not None
+        assert "invalid arguments" in parsed.error
 
 
 class TestLLMClient:
@@ -91,7 +150,8 @@ class TestLLMClient:
     def test_auto_system_prompt_exists(self) -> None:
         assert "terminal" in AUTO_SYSTEM_PROMPT.lower()
         assert "goal" in AUTO_SYSTEM_PROMPT.lower()
-        assert "control" in AUTO_SYSTEM_PROMPT.lower()
+        assert "run_command" in AUTO_SYSTEM_PROMPT
+        assert "send_control" in AUTO_SYSTEM_PROMPT
         assert "same language" in AUTO_SYSTEM_PROMPT.lower()
 
     def test_build_auto_messages(self) -> None:
@@ -101,8 +161,9 @@ class TestLLMClient:
             screen_text="user@host:~$ ",
         )
         assert len(messages) == 1
-        assert messages[0]["role"] == "user"
-        content = str(messages[0]["content"])
+        first = cast("dict[str, object]", messages[0])
+        assert first["role"] == "user"
+        content = str(first["content"])
         assert "ディスク使用量を確認して" in content
         assert "user@host:~$ " in content
 

@@ -1,30 +1,82 @@
 from __future__ import annotations
 
 import os
-from typing import TYPE_CHECKING
+import threading
+import time
+from typing import TYPE_CHECKING, Literal, cast
 
-from jou.llm_client import AutoAction, AutoResponse, CompletionResponse
+from jou.llm_client import (
+    AutoResponse,
+    AutoStepResult,
+    CompletionResponse,
+    ParsedToolCall,
+    RunCommandParams,
+    SendControlParams,
+)
 from jou.mode_executor import ModeExecutor
 from jou.screen_buffer import ScreenBuffer
 
 if TYPE_CHECKING:
-    from openai.types.responses import EasyInputMessageParam
+    from openai.types.responses import ResponseInputParam
+
+
+def _item_dict(item: object) -> dict[str, object]:
+    """Narrow a ResponseInputParam item (a large TypedDict union) for key access."""
+    return cast("dict[str, object]", item)
+
+
+def _cmd_result(step: int, command: str) -> AutoStepResult:
+    return AutoStepResult(
+        tool_calls=[
+            ParsedToolCall(
+                call_id=f"call_{step}",
+                name="run_command",
+                params=RunCommandParams(command=command),
+            ),
+        ],
+        final=None,
+        response_id=f"resp_{step}",
+    )
+
+
+def _control_result(step: int, key: Literal["ctrl-c", "ctrl-d", "ctrl-z"]) -> AutoStepResult:
+    return AutoStepResult(
+        tool_calls=[
+            ParsedToolCall(
+                call_id=f"call_{step}",
+                name="send_control",
+                params=SendControlParams(key=key),
+            ),
+        ],
+        final=None,
+        response_id=f"resp_{step}",
+    )
+
+
+def _final_result(
+    step: int, status: Literal["done", "fail"], explanation: str,
+) -> AutoStepResult:
+    return AutoStepResult(
+        tool_calls=[],
+        final=AutoResponse(status=status, explanation=explanation),
+        response_id=f"resp_{step}",
+    )
 
 
 class FakeLLMClient:
     def __init__(
         self,
         response: CompletionResponse | None = None,
-        auto_responses: list[AutoResponse] | None = None,
+        auto_results: list[AutoStepResult] | None = None,
         pty_w: int = -1,
     ) -> None:
         self._response = response or CompletionResponse(command="", explanation="")
-        self._auto_responses = auto_responses or []
+        self._auto_results = auto_results or []
         self._auto_call_count = 0
         self._pty_w = pty_w
         self.last_screen_text: str = ""
         self.last_query: str = ""
-        self.auto_step_calls: list[tuple[list[EasyInputMessageParam], str | None]] = []
+        self.auto_step_calls: list[tuple[ResponseInputParam, str | None]] = []
 
     def complete(self, screen_text: str, query: str) -> CompletionResponse:
         self.last_screen_text = screen_text
@@ -33,25 +85,24 @@ class FakeLLMClient:
 
     def auto_step(
         self,
-        messages: list[EasyInputMessageParam],
+        input_items: ResponseInputParam,
         previous_response_id: str | None = None,
-    ) -> tuple[AutoResponse, str]:
-        self.auto_step_calls.append((list(messages), previous_response_id))
-        resp = self._auto_responses[self._auto_call_count]
+    ) -> AutoStepResult:
+        self.auto_step_calls.append((list(input_items), previous_response_id))
+        result = self._auto_results[self._auto_call_count]
         self._auto_call_count += 1
-        if resp.status == "continue" and self._pty_w >= 0:
+        if result.tool_calls and self._pty_w >= 0:
             os.write(
                 self._pty_w,
                 f"output from step {self._auto_call_count}\n".encode(),
             )
-        response_id = f"resp_{self._auto_call_count}"
-        return resp, response_id
+        return result
 
     def build_auto_messages(
         self,
         query: str,
         screen_text: str,
-    ) -> list[EasyInputMessageParam]:
+    ) -> ResponseInputParam:
         return [
             {"role": "user", "content": f"goal: {query}\nscreen: {screen_text}"},
         ]
@@ -101,12 +152,7 @@ class TestCompletionMode:
 
             os.close(stdout_w)
             stdout_w = -1
-            stdout_output = b""
-            while True:
-                chunk = os.read(stdout_r, 4096)
-                if not chunk:
-                    break
-                stdout_output += chunk
+            stdout_output = _drain(stdout_r)
 
             assert b"thinking..." in stdout_output
             assert b"\x1b8" in stdout_output
@@ -118,14 +164,9 @@ class TestCompletionMode:
 
 class TestAutoMode:
     def test_done_immediately(self) -> None:
-        """LLM returns done on first step — no command, just done message."""
-        auto_responses = [
-            AutoResponse(
-                status="done",
-                explanation="task complete",
-            ),
-        ]
-        fake_llm = FakeLLMClient(auto_responses=auto_responses)
+        """LLM returns done on first step — no tool call, just done message."""
+        auto_results = [_final_result(1, "done", "task complete")]
+        fake_llm = FakeLLMClient(auto_results=auto_results)
         screen = ScreenBuffer()
         screen.feed(b"$ ")
 
@@ -163,13 +204,8 @@ class TestAutoMode:
 
     def test_fail_status(self) -> None:
         """LLM returns fail — shows failed message."""
-        auto_responses = [
-            AutoResponse(
-                status="fail",
-                explanation="cannot proceed",
-            ),
-        ]
-        fake_llm = FakeLLMClient(auto_responses=auto_responses)
+        auto_results = [_final_result(1, "fail", "cannot proceed")]
+        fake_llm = FakeLLMClient(auto_results=auto_results)
         screen = ScreenBuffer()
 
         pty_written: list[bytes] = []
@@ -202,22 +238,15 @@ class TestAutoMode:
                         pass
 
     def test_two_steps(self) -> None:
-        """LLM returns continue then done — settle wait between steps."""
+        """LLM calls run_command then returns done — settle wait between steps."""
         pty_r, pty_w = os.pipe()
 
-        auto_responses = [
-            AutoResponse(
-                action=AutoAction(type="command", value="ls"),
-                status="continue",
-                explanation="listing files",
-            ),
-            AutoResponse(
-                status="done",
-                explanation="complete",
-            ),
+        auto_results = [
+            _cmd_result(1, "ls"),
+            _final_result(2, "done", "complete"),
         ]
         fake_llm = FakeLLMClient(
-            auto_responses=auto_responses,
+            auto_results=auto_results,
             pty_w=pty_w,
         )
         screen = ScreenBuffer()
@@ -256,22 +285,15 @@ class TestAutoMode:
                         pass
 
     def test_control_char(self) -> None:
-        """LLM returns control action with continue, then done."""
+        """LLM calls send_control with ctrl-c, then done."""
         pty_r, pty_w = os.pipe()
 
-        auto_responses = [
-            AutoResponse(
-                action=AutoAction(type="control", value="ctrl-c"),
-                status="continue",
-                explanation="interrupting the command",
-            ),
-            AutoResponse(
-                status="done",
-                explanation="interrupted",
-            ),
+        auto_results = [
+            _control_result(1, "ctrl-c"),
+            _final_result(2, "done", "interrupted"),
         ]
         fake_llm = FakeLLMClient(
-            auto_responses=auto_responses,
+            auto_results=auto_results,
             pty_w=pty_w,
         )
         screen = ScreenBuffer()
@@ -305,16 +327,11 @@ class TestAutoMode:
         pty_r, pty_w = os.pipe()
         max_steps = 3
 
-        auto_responses = [
-            AutoResponse(
-                action=AutoAction(type="command", value=f"cmd{i}"),
-                status="continue",
-                explanation=f"step {i}",
-            )
-            for i in range(1, max_steps + 1)
+        auto_results = [
+            _cmd_result(i, f"cmd{i}") for i in range(1, max_steps + 1)
         ]
         fake_llm = FakeLLMClient(
-            auto_responses=auto_responses,
+            auto_results=auto_results,
             pty_w=pty_w,
         )
         screen = ScreenBuffer()
@@ -356,23 +373,16 @@ class TestAutoMode:
         pty_r, pty_w = os.pipe()
         stdin_r, stdin_w = os.pipe()
 
-        auto_responses = [
-            AutoResponse(
-                action=AutoAction(type="command", value="sleep 100"),
-                status="continue",
-                explanation="waiting",
-            ),
-        ]
+        class InterruptingLLMClient(FakeLLMClient):
+            def auto_step(
+                self,
+                input_items: ResponseInputParam,
+                previous_response_id: str | None = None,
+            ) -> AutoStepResult:
+                os.write(stdin_w, b"\x03")
+                return _cmd_result(1, "sleep 100")
 
-        def fake_auto_step(
-            messages: list[EasyInputMessageParam],
-            previous_response_id: str | None = None,
-        ) -> tuple[AutoResponse, str]:
-            os.write(stdin_w, b"\x03")
-            return auto_responses[0], "resp_fake"
-
-        fake_llm = FakeLLMClient(auto_responses=auto_responses)
-        fake_llm.auto_step = fake_auto_step  # type: ignore[assignment]
+        fake_llm = InterruptingLLMClient()
 
         screen = ScreenBuffer()
         stdout_r, stdout_w = os.pipe()
@@ -405,13 +415,8 @@ class TestAutoMode:
 
     def test_thinking_indicator(self) -> None:
         """Auto mode shows step-numbered thinking indicator."""
-        auto_responses = [
-            AutoResponse(
-                status="done",
-                explanation="done",
-            ),
-        ]
-        fake_llm = FakeLLMClient(auto_responses=auto_responses)
+        auto_results = [_final_result(1, "done", "done")]
+        fake_llm = FakeLLMClient(auto_results=auto_results)
         screen = ScreenBuffer()
 
         stdout_r, stdout_w = os.pipe()
@@ -441,24 +446,52 @@ class TestAutoMode:
                     except OSError:
                         pass
 
-    def test_previous_response_id_chaining(self) -> None:
-        """Auto mode chains calls via previous_response_id, sending only new output."""
+    def test_multiline_explanation_uses_crlf(self) -> None:
+        """Newlines in the final explanation are written as CRLF (raw mode has no ONLCR)."""
+        auto_results = [
+            _final_result(1, "done", "Summary:\n- item one\n- item two"),
+        ]
+        fake_llm = FakeLLMClient(auto_results=auto_results)
+        screen = ScreenBuffer()
+
+        stdout_r, stdout_w = os.pipe()
         pty_r, pty_w = os.pipe()
 
-        auto_responses = [
-            AutoResponse(
-                action=AutoAction(type="command", value="ls"),
-                status="continue",
-                explanation="listing",
-            ),
-            AutoResponse(
-                status="done",
-                explanation="done",
-            ),
-        ]
+        try:
+            executor = ModeExecutor(
+                llm_client=fake_llm,
+                screen_buffer=screen,
+                write_to_pty=lambda d: None,
+                stdout_fd=stdout_w,
+                get_pty_master_fd=lambda: pty_r,
+                settle_ms=10,
+            )
+            executor.execute("summarize", "auto")
 
+            os.close(stdout_w)
+            stdout_w = -1
+            stdout_output = _drain(stdout_r)
+            assert b"Summary:\r\n- item one\r\n- item two" in stdout_output
+            end_marker = stdout_output[stdout_output.index(b"[auto done:"):]
+            assert b"\r\n" in end_marker
+        finally:
+            for fd in [stdout_r, stdout_w, pty_r, pty_w]:
+                if fd >= 0:
+                    try:
+                        os.close(fd)
+                    except OSError:
+                        pass
+
+    def test_tool_output_chaining(self) -> None:
+        """Tool results are sent back as function_call_output with previous_response_id."""
+        pty_r, pty_w = os.pipe()
+
+        auto_results = [
+            _cmd_result(1, "ls"),
+            _final_result(2, "done", "done"),
+        ]
         fake_llm = FakeLLMClient(
-            auto_responses=auto_responses,
+            auto_results=auto_results,
             pty_w=pty_w,
         )
         screen = ScreenBuffer()
@@ -482,17 +515,173 @@ class TestAutoMode:
 
             assert len(fake_llm.auto_step_calls) == 2
 
-            first_msgs, first_prev_id = fake_llm.auto_step_calls[0]
+            first_items, first_prev_id = fake_llm.auto_step_calls[0]
             assert first_prev_id is None
-            assert len(first_msgs) == 1
-            assert "goal:" in str(first_msgs[0]["content"])
+            assert len(first_items) == 1
+            assert "goal:" in str(_item_dict(first_items[0])["content"])
 
-            second_msgs, second_prev_id = fake_llm.auto_step_calls[1]
+            second_items, second_prev_id = fake_llm.auto_step_calls[1]
             assert second_prev_id == "resp_1"
-            assert len(second_msgs) == 1
-            assert second_msgs[0]["role"] == "user"
-            assert "Command Output" in str(second_msgs[0]["content"])
+            assert len(second_items) == 1
+            second = _item_dict(second_items[0])
+            assert second["type"] == "function_call_output"
+            assert second["call_id"] == "call_1"
+            output = str(second["output"])
+            assert "Terminal Output" in output
+            assert "output from step 1" in output
         finally:
+            for fd in [stdout_r, stdout_w, pty_r, pty_w]:
+                if fd >= 0:
+                    try:
+                        os.close(fd)
+                    except OSError:
+                        pass
+
+    def test_tool_output_excludes_past_output(self) -> None:
+        """Tool results contain only output produced by the executed command."""
+        pty_r, pty_w = os.pipe()
+
+        auto_results = [
+            _cmd_result(1, "echo hi"),
+            _final_result(2, "done", "done"),
+        ]
+        fake_llm = FakeLLMClient(auto_results=auto_results, pty_w=pty_w)
+        screen = ScreenBuffer()
+        screen.feed(b"previous command output\r\nuser@host:~$ ")
+
+        stdout_r, stdout_w = os.pipe()
+
+        try:
+            executor = ModeExecutor(
+                llm_client=fake_llm,
+                screen_buffer=screen,
+                write_to_pty=lambda d: None,
+                stdout_fd=stdout_w,
+                stdin_fd=-1,
+                get_pty_master_fd=lambda: pty_r,
+                settle_ms=10,
+                threshold_ms=5000,
+                max_auto_steps=10,
+            )
+            executor.execute("say hi", "auto")
+
+            second_items, _ = fake_llm.auto_step_calls[1]
+            output = str(_item_dict(second_items[0])["output"])
+            assert "output from step 1" in output
+            assert "previous command output" not in output
+        finally:
+            for fd in [stdout_r, stdout_w, pty_r, pty_w]:
+                if fd >= 0:
+                    try:
+                        os.close(fd)
+                    except OSError:
+                        pass
+
+    def test_invalid_tool_call_returns_error(self) -> None:
+        """A tool call with invalid params sends an error output back, no pty write."""
+        pty_r, pty_w = os.pipe()
+
+        auto_results = [
+            AutoStepResult(
+                tool_calls=[
+                    ParsedToolCall(
+                        call_id="call_1",
+                        name="run_command",
+                        params=None,
+                        error="invalid arguments: boom",
+                    ),
+                ],
+                final=None,
+                response_id="resp_1",
+            ),
+            _final_result(2, "done", "done"),
+        ]
+        fake_llm = FakeLLMClient(auto_results=auto_results)
+        screen = ScreenBuffer()
+
+        pty_written: list[bytes] = []
+        stdout_r, stdout_w = os.pipe()
+
+        try:
+            executor = ModeExecutor(
+                llm_client=fake_llm,
+                screen_buffer=screen,
+                write_to_pty=lambda d: pty_written.append(d),
+                stdout_fd=stdout_w,
+                stdin_fd=-1,
+                get_pty_master_fd=lambda: pty_r,
+                settle_ms=10,
+                threshold_ms=5000,
+                max_auto_steps=10,
+            )
+            executor.execute("do something", "auto")
+
+            # No command was written to the pty, only the trailing newline.
+            assert pty_written == [b"\n"]
+
+            second_items, _ = fake_llm.auto_step_calls[1]
+            second = _item_dict(second_items[0])
+            assert second["type"] == "function_call_output"
+            assert second["call_id"] == "call_1"
+            assert str(second["output"]).startswith("Error:")
+        finally:
+            for fd in [stdout_r, stdout_w, pty_r, pty_w]:
+                if fd >= 0:
+                    try:
+                        os.close(fd)
+                    except OSError:
+                        pass
+
+    def test_threshold_note_in_tool_output(self) -> None:
+        """When output keeps flowing past the threshold, the tool output carries a note."""
+        pty_r, pty_w = os.pipe()
+
+        auto_results = [
+            _cmd_result(1, "long-running"),
+            _final_result(2, "done", "done"),
+        ]
+        fake_llm = FakeLLMClient(auto_results=auto_results)
+        screen = ScreenBuffer()
+
+        stop_writing = threading.Event()
+
+        def keep_writing() -> None:
+            while not stop_writing.is_set():
+                try:
+                    os.write(pty_w, b"tick\r\n")
+                except OSError:
+                    break
+                time.sleep(0.01)
+
+        writer = threading.Thread(target=keep_writing)
+        writer.start()
+
+        stdout_r, stdout_w = os.pipe()
+
+        try:
+            executor = ModeExecutor(
+                llm_client=fake_llm,
+                screen_buffer=screen,
+                write_to_pty=lambda d: None,
+                stdout_fd=stdout_w,
+                stdin_fd=-1,
+                get_pty_master_fd=lambda: pty_r,
+                settle_ms=500,
+                threshold_ms=50,
+                max_auto_steps=10,
+            )
+            executor.execute("run something long", "auto")
+
+            stop_writing.set()
+            writer.join()
+
+            second_items, _ = fake_llm.auto_step_calls[1]
+            output = str(_item_dict(second_items[0])["output"])
+            assert "Terminal Output" in output
+            assert "[Note] Output did not settle" in output
+        finally:
+            stop_writing.set()
+            writer.join()
             for fd in [stdout_r, stdout_w, pty_r, pty_w]:
                 if fd >= 0:
                     try:
