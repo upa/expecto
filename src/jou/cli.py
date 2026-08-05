@@ -13,6 +13,7 @@ from jou.pty_manager import PTYManager
 from jou.query_ui import QueryModeUI
 from jou.screen_buffer import ScreenBuffer
 from jou.tty_controller import TTYController
+from jou.working_summary import WorkingSummaryManager
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -36,6 +37,30 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Log file for queries and LLM requests/responses (JSONL format)",
     )
     parser.add_argument(
+        "--history-lines",
+        type=int,
+        default=None,
+        help="Number of screen history lines sent to the LLM (default: 500)",
+    )
+    parser.add_argument(
+        "--scrollback-lines",
+        type=int,
+        default=None,
+        help="Scrollback buffer capacity in lines (default: 5000)",
+    )
+    parser.add_argument(
+        "--summary-trigger-lines",
+        type=int,
+        default=None,
+        help="Scrolled lines that trigger a working summary update (default: 500)",
+    )
+    parser.add_argument(
+        "--summary-max-input-lines",
+        type=int,
+        default=None,
+        help="Maximum lines fed into one working summary update (default: 2000)",
+    )
+    parser.add_argument(
         "command",
         nargs="*",
         help="Command to run (after --)",
@@ -53,6 +78,14 @@ def main(argv: list[str] | None = None) -> None:
         config.raw_io_log_file = args.raw_io_log_file
     if args.log_file:
         config.log_file = args.log_file
+    if args.history_lines is not None:
+        config.history_lines = args.history_lines
+    if args.scrollback_lines is not None:
+        config.scrollback_lines = args.scrollback_lines
+    if args.summary_trigger_lines is not None:
+        config.summary_trigger_lines = args.summary_trigger_lines
+    if args.summary_max_input_lines is not None:
+        config.summary_max_input_lines = args.summary_max_input_lines
 
     command: str | list[str]
     if args.command:
@@ -69,11 +102,18 @@ def main(argv: list[str] | None = None) -> None:
     stdout_fd = sys.stdout.fileno()
 
     screen_buffer = ScreenBuffer(
-        history_lines=config.history_lines,
+        scrollback_lines=config.scrollback_lines,
     )
     query_ui = QueryModeUI(stdout_fd, get_cursor_col=screen_buffer.get_cursor_col)
 
     llm_client = LLMClient(config)
+
+    working_summary = WorkingSummaryManager(
+        llm_client=llm_client,
+        screen_buffer=screen_buffer,
+        trigger_lines=config.summary_trigger_lines,
+        max_input_lines=config.summary_max_input_lines,
+    )
 
     def write_to_pty(data: bytes) -> None:
         assert pty_mgr.master_fd is not None
@@ -93,6 +133,8 @@ def main(argv: list[str] | None = None) -> None:
         settle_ms=config.settle_ms,
         threshold_ms=config.threshold_ms,
         max_auto_steps=config.max_auto_steps,
+        history_lines=config.history_lines,
+        working_summary=working_summary,
     )
 
     def on_query_submit(query: str, mode: str) -> None:
@@ -114,7 +156,12 @@ def main(argv: list[str] | None = None) -> None:
 
     raw_io_log_fh = open(config.raw_io_log_file, "a") if config.raw_io_log_file else None
 
-    relay = IORelay(input_router=input_router, screen_buffer=screen_buffer, log_file=raw_io_log_fh)
+    relay = IORelay(
+        input_router=input_router,
+        screen_buffer=screen_buffer,
+        log_file=raw_io_log_fh,
+        working_summary=working_summary,
+    )
 
     tty_ctrl.enter_raw()
     try:

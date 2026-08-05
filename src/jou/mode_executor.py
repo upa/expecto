@@ -10,6 +10,7 @@ if TYPE_CHECKING:
     from openai.types.responses import ResponseInputParam
 
     from jou.screen_buffer import ScreenBuffer
+    from jou.working_summary import WorkingSummaryManager
 
 from jou.llm_client import (
     AutoStepResult,
@@ -27,12 +28,18 @@ CONTROL_CHAR_MAP: dict[str, bytes] = {
 
 
 class LLMCompleter(Protocol):
-    def complete(self, screen_text: str, query: str) -> CompletionResponse: ...
+    def complete(
+        self,
+        screen_text: str,
+        query: str,
+        working_summary: str | None = None,
+    ) -> CompletionResponse: ...
 
     def auto_step(
         self,
         input_items: ResponseInputParam,
         previous_response_id: str | None = None,
+        working_summary: str | None = None,
     ) -> AutoStepResult: ...
 
     def build_auto_messages(
@@ -54,6 +61,8 @@ class ModeExecutor:
         settle_ms: int = 500,
         threshold_ms: int = 30000,
         max_auto_steps: int = 10,
+        history_lines: int = 500,
+        working_summary: WorkingSummaryManager | None = None,
     ) -> None:
         self._llm = llm_client
         self._screen = screen_buffer
@@ -64,6 +73,8 @@ class ModeExecutor:
         self._settle_ms = settle_ms
         self._threshold_ms = threshold_ms
         self._max_auto_steps = max_auto_steps
+        self._history_lines = history_lines
+        self._working_summary = working_summary
 
     def execute(self, query: str, mode: str) -> None:
         if mode == "completion":
@@ -71,11 +82,19 @@ class ModeExecutor:
         elif mode == "auto":
             self._execute_auto(query)
 
+    def _ensure_working_summary(self) -> str | None:
+        """Bring the working summary up to date and return its prompt text."""
+        if self._working_summary is None:
+            return None
+        self._working_summary.ensure_summary()
+        return self._working_summary.summary_text
+
     def _execute_completion(self, query: str) -> None:
         os.write(self._stdout_fd, b"\x1b7\x1b[90m[thinking...]\x1b[0m")
 
-        screen_text = self._screen.get_text()
-        response = self._llm.complete(screen_text, query)
+        working_summary = self._ensure_working_summary()
+        screen_text = self._screen.get_text(last_n=self._history_lines)
+        response = self._llm.complete(screen_text, query, working_summary=working_summary)
 
         os.write(self._stdout_fd, b"\x1b8\x1b[J")
         self._write_to_pty(response.command.encode())
@@ -84,7 +103,11 @@ class ModeExecutor:
         assert self._get_pty_master_fd is not None
         pty_master_fd = self._get_pty_master_fd()
 
-        screen_text = self._screen.get_text()
+        os.write(self._stdout_fd, b"\x1b7\x1b[90m[thinking...]\x1b[0m")
+        working_summary = self._ensure_working_summary()
+        os.write(self._stdout_fd, b"\x1b8\x1b[J")
+
+        screen_text = self._screen.get_text(last_n=self._history_lines)
         input_items: ResponseInputParam = self._llm.build_auto_messages(query, screen_text)
         prev_response_id: str | None = None
 
@@ -92,7 +115,9 @@ class ModeExecutor:
             self._show_auto_thinking(step)
 
             result = self._llm.auto_step(
-                input_items, previous_response_id=prev_response_id,
+                input_items,
+                previous_response_id=prev_response_id,
+                working_summary=working_summary,
             )
             prev_response_id = result.response_id
 

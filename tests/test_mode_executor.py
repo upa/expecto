@@ -12,9 +12,11 @@ from jou.llm_client import (
     ParsedToolCall,
     RunCommandParams,
     SendControlParams,
+    SummaryResult,
 )
 from jou.mode_executor import ModeExecutor
 from jou.screen_buffer import ScreenBuffer
+from jou.working_summary import WorkingSummaryManager
 
 if TYPE_CHECKING:
     from openai.types.responses import ResponseInputParam
@@ -76,18 +78,27 @@ class FakeLLMClient:
         self._pty_w = pty_w
         self.last_screen_text: str = ""
         self.last_query: str = ""
+        self.last_working_summary: str | None = None
         self.auto_step_calls: list[tuple[ResponseInputParam, str | None]] = []
 
-    def complete(self, screen_text: str, query: str) -> CompletionResponse:
+    def complete(
+        self,
+        screen_text: str,
+        query: str,
+        working_summary: str | None = None,
+    ) -> CompletionResponse:
         self.last_screen_text = screen_text
         self.last_query = query
+        self.last_working_summary = working_summary
         return self._response
 
     def auto_step(
         self,
         input_items: ResponseInputParam,
         previous_response_id: str | None = None,
+        working_summary: str | None = None,
     ) -> AutoStepResult:
+        self.last_working_summary = working_summary
         self.auto_step_calls.append((list(input_items), previous_response_id))
         result = self._auto_results[self._auto_call_count]
         self._auto_call_count += 1
@@ -160,6 +171,130 @@ class TestCompletionMode:
             if stdout_w >= 0:
                 os.close(stdout_w)
             os.close(stdout_r)
+
+
+class TestWorkingSummaryIntegration:
+    def _make_summary_manager(
+        self, screen: ScreenBuffer,
+    ) -> WorkingSummaryManager:
+        class FakeSummaryLLM:
+            def summarize(
+                self,
+                previous: SummaryResult | None,
+                new_output: str,
+                truncated: bool = False,
+            ) -> SummaryResult:
+                return SummaryResult(
+                    environment="ssh to router1 (Junos)",
+                    activities="checking BGP",
+                    notes="none",
+                )
+
+        return WorkingSummaryManager(
+            llm_client=FakeSummaryLLM(),
+            screen_buffer=screen,
+            trigger_lines=5,
+        )
+
+    def test_completion_passes_summary_to_llm(self) -> None:
+        fake_llm = FakeLLMClient(
+            response=CompletionResponse(command="pwd", explanation=""),
+        )
+        screen = ScreenBuffer(rows=3, cols=40, scrollback_lines=50)
+        for i in range(20):
+            screen.feed(f"line {i}\r\n".encode())
+        manager = self._make_summary_manager(screen)
+        stdout_r, stdout_w = os.pipe()
+
+        try:
+            executor = ModeExecutor(
+                llm_client=fake_llm,
+                screen_buffer=screen,
+                write_to_pty=lambda d: None,
+                stdout_fd=stdout_w,
+                working_summary=manager,
+            )
+            executor.execute("where am i", "completion")
+
+            summary = fake_llm.last_working_summary
+            assert summary is not None
+            assert "## Session Context" in summary
+            assert "Junos" in summary
+        finally:
+            os.close(stdout_r)
+            os.close(stdout_w)
+
+    def test_completion_without_manager_passes_none(self) -> None:
+        fake_llm = FakeLLMClient(
+            response=CompletionResponse(command="pwd", explanation=""),
+        )
+        screen = ScreenBuffer()
+        stdout_r, stdout_w = os.pipe()
+
+        try:
+            executor = ModeExecutor(
+                llm_client=fake_llm,
+                screen_buffer=screen,
+                write_to_pty=lambda d: None,
+                stdout_fd=stdout_w,
+            )
+            executor.execute("where am i", "completion")
+            assert fake_llm.last_working_summary is None
+        finally:
+            os.close(stdout_r)
+            os.close(stdout_w)
+
+    def test_auto_passes_summary_to_llm(self) -> None:
+        fake_llm = FakeLLMClient(auto_results=[_final_result(1, "done", "finished")])
+        screen = ScreenBuffer(rows=3, cols=40, scrollback_lines=50)
+        for i in range(20):
+            screen.feed(f"line {i}\r\n".encode())
+        manager = self._make_summary_manager(screen)
+        stdout_r, stdout_w = os.pipe()
+
+        try:
+            executor = ModeExecutor(
+                llm_client=fake_llm,
+                screen_buffer=screen,
+                write_to_pty=lambda d: None,
+                stdout_fd=stdout_w,
+                get_pty_master_fd=lambda: -1,
+                working_summary=manager,
+            )
+            executor.execute("check bgp", "auto")
+
+            summary = fake_llm.last_working_summary
+            assert summary is not None
+            assert "## Session Context" in summary
+        finally:
+            os.close(stdout_r)
+            os.close(stdout_w)
+
+    def test_completion_screen_text_limited_to_history_lines(self) -> None:
+        fake_llm = FakeLLMClient(
+            response=CompletionResponse(command="pwd", explanation=""),
+        )
+        screen = ScreenBuffer(rows=3, cols=40, scrollback_lines=50)
+        for i in range(20):
+            screen.feed(f"line {i}\r\n".encode())
+        stdout_r, stdout_w = os.pipe()
+
+        try:
+            executor = ModeExecutor(
+                llm_client=fake_llm,
+                screen_buffer=screen,
+                write_to_pty=lambda d: None,
+                stdout_fd=stdout_w,
+                history_lines=5,
+            )
+            executor.execute("where am i", "completion")
+
+            lines = fake_llm.last_screen_text.split("\n")
+            assert len(lines) == 5
+            assert "line 0" not in fake_llm.last_screen_text
+        finally:
+            os.close(stdout_r)
+            os.close(stdout_w)
 
 
 class TestAutoMode:
@@ -378,6 +513,7 @@ class TestAutoMode:
                 self,
                 input_items: ResponseInputParam,
                 previous_response_id: str | None = None,
+                working_summary: str | None = None,
             ) -> AutoStepResult:
                 os.write(stdin_w, b"\x03")
                 return _cmd_result(1, "sleep 100")

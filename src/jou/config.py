@@ -32,11 +32,24 @@ class JouConfig:
     auto_hotkey: int
     raw_io_log_file: str | None
     log_file: str | None
+    scrollback_lines: int = 5000
+    summary_trigger_lines: int = 500
+    summary_max_input_lines: int = 2000
+    summary_model: str = ""
+    summary_openai_api_key: str = ""
+    summary_openai_base_url: str | None = None
+    summary_openai_reasoning_effort: ReasoningEffortLevel | None = None
 
     @classmethod
     def from_env(cls) -> JouConfig:
         raw_effort = os.environ.get("OPENAI_REASONING_EFFORT", "")
         effort = _REASONING_EFFORT_MAP.get(raw_effort)
+
+        # Working summary LLM settings: SUMMARY_OPENAI_* with fallback to OPENAI_*.
+        raw_summary_effort = (
+            os.environ.get("SUMMARY_OPENAI_REASONING_EFFORT") or raw_effort
+        )
+        summary_effort = _REASONING_EFFORT_MAP.get(raw_summary_effort)
 
         return cls(
             shell=os.environ.get("SHELL", "/bin/bash"),
@@ -44,7 +57,7 @@ class JouConfig:
             openai_api_key=os.environ.get("OPENAI_API_KEY", ""),
             openai_base_url=os.environ.get("OPENAI_BASE_URL") or None,
             openai_reasoning_effort=effort,
-            history_lines=200,
+            history_lines=500,
             settle_ms=500,
             threshold_ms=30000,
             max_auto_steps=10,
@@ -52,4 +65,21 @@ class JouConfig:
             auto_hotkey=0x1D,
             raw_io_log_file=None,
             log_file=None,
+            scrollback_lines=5000,
+            summary_trigger_lines=500,
+            summary_max_input_lines=2000,
+            summary_model=(
+                os.environ.get("SUMMARY_OPENAI_MODEL")
+                or os.environ.get("OPENAI_MODEL", "gpt-4o")
+            ),
+            summary_openai_api_key=(
+                os.environ.get("SUMMARY_OPENAI_API_KEY")
+                or os.environ.get("OPENAI_API_KEY", "")
+            ),
+            summary_openai_base_url=(
+                os.environ.get("SUMMARY_OPENAI_BASE_URL")
+                or os.environ.get("OPENAI_BASE_URL")
+                or None
+            ),
+            summary_openai_reasoning_effort=summary_effort,
         )
