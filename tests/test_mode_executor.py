@@ -323,7 +323,7 @@ class TestAutoMode:
             )
             executor.execute("say hello", "auto")
 
-            assert pty_written == [b"\n"]
+            assert pty_written == [b"\n", b"\n"]  # initial prompt nudge + final newline
 
             os.close(stdout_w)
             stdout_w = -1
@@ -358,7 +358,7 @@ class TestAutoMode:
             )
             executor.execute("do something", "auto")
 
-            assert pty_written == [b"\n"]
+            assert pty_written == [b"\n", b"\n"]  # initial prompt nudge + final newline
 
             os.close(stdout_w)
             stdout_w = -1
@@ -404,7 +404,7 @@ class TestAutoMode:
             )
             executor.execute("list then finish", "auto")
 
-            assert pty_written == [b"ls\n", b"\n"]
+            assert pty_written == [b"\n", b"ls\n", b"\n"]
 
             os.close(stdout_w)
             stdout_w = -1
@@ -447,7 +447,8 @@ class TestAutoMode:
             )
             executor.execute("stop it", "auto")
 
-            assert pty_written[0] == b"\x03"
+            assert pty_written[0] == b"\n"  # initial prompt nudge
+            assert pty_written[1] == b"\x03"
             assert pty_written[-1] == b"\n"
         finally:
             for fd in [stdout_r, stdout_w, pty_r, pty_w]:
@@ -488,7 +489,8 @@ class TestAutoMode:
             )
             executor.execute("keep going", "auto")
 
-            assert len(pty_written) == max_steps + 1
+            assert len(pty_written) == max_steps + 2
+            assert pty_written[0] == b"\n"  # initial prompt nudge
             assert pty_written[-1] == b"\n"
 
             os.close(stdout_w)
@@ -698,7 +700,7 @@ class TestAutoMode:
                 stdout_fd=stdout_w,
                 stdin_fd=stdin_r,
                 get_pty_master_fd=lambda: pty_r,
-                settle_ms=5000,
+                settle_ms=200,
                 threshold_ms=30000,
                 max_auto_steps=10,
             )
@@ -920,7 +922,7 @@ class TestAutoMode:
             executor.execute("do something", "auto")
 
             # No command was written to the pty, only the trailing newline.
-            assert pty_written == [b"\n"]
+            assert pty_written == [b"\n", b"\n"]  # initial prompt nudge + final newline
 
             second_items, _ = fake_llm.auto_step_calls[1]
             second = _item_dict(second_items[0])

@@ -103,6 +103,15 @@ class ModeExecutor:
         assert self._get_pty_master_fd is not None
         pty_master_fd = self._get_pty_master_fd()
 
+        # The finalized query line took over the prompt line on the outer
+        # tty; nudge the shell with a newline so a fresh prompt is shown
+        # (and captured) before the first command is injected.
+        self._write_to_pty(b"\n")
+        _, interrupted = self._wait_for_settle(pty_master_fd)
+        if interrupted:
+            self._show_auto_end("interrupted")
+            return
+
         os.write(self._stdout_fd, b"\x1b7\x1b[90m[thinking...]\x1b[0m")
         working_summary = self._ensure_working_summary()
         os.write(self._stdout_fd, b"\x1b8\x1b[J")
