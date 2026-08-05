@@ -178,7 +178,13 @@ class ModeExecutor:
 
         mark = self._screen.mark()
 
+        reset_color_at_newline = False
         if isinstance(call.params, RunCommandParams):
+            # Show the echoed command in gray, like jou's own status
+            # messages; the reset is emitted once the echoed Enter (first
+            # relayed newline) arrives.
+            os.write(self._stdout_fd, b"\x1b[90m")
+            reset_color_at_newline = True
             self._write_to_pty(call.params.command.encode() + b"\n")
         else:
             ctrl_bytes = CONTROL_CHAR_MAP.get(call.params.key)
@@ -186,7 +192,9 @@ class ModeExecutor:
                 return f"Error: unknown control key: {call.params.key}", False
             self._write_to_pty(ctrl_bytes)
 
-        settle_result, interrupted = self._wait_for_settle(pty_master_fd)
+        settle_result, interrupted = self._wait_for_settle(
+            pty_master_fd, reset_color_at_newline=reset_color_at_newline,
+        )
         if interrupted:
             return "", True
 
@@ -259,9 +267,14 @@ class ModeExecutor:
         )
 
     def _wait_for_settle(
-        self, pty_master_fd: int,
+        self, pty_master_fd: int, reset_color_at_newline: bool = False,
     ) -> tuple[SettleResult | None, bool]:
-        """Wait until output settles. Returns (settle result, interrupted by user)."""
+        """Wait until output settles. Returns (settle result, interrupted by user).
+
+        With reset_color_at_newline, the caller has switched the outer tty
+        color before injecting a command; an SGR reset is emitted right after
+        the first relayed newline (the echoed Enter, ending the echoed
+        command line). The reset is guaranteed on every exit path."""
         detector = SettleDetector(
             settle_ms=self._settle_ms,
             threshold_ms=self._threshold_ms,
@@ -272,35 +285,47 @@ class ModeExecutor:
         if self._stdin_fd >= 0:
             watch_fds.append(self._stdin_fd)
 
+        pending_reset = reset_color_at_newline
         result: SettleResult | None = None
-        while detector.active:
-            timeout_s = detector.remaining_ms() / 1000.0
-            try:
-                rlist, _, _ = select.select(watch_fds, [], [], timeout_s)
-            except (OSError, ValueError):
-                break
-
-            if pty_master_fd in rlist:
+        try:
+            while detector.active:
+                timeout_s = detector.remaining_ms() / 1000.0
                 try:
-                    data = os.read(pty_master_fd, 4096)
-                except OSError:
+                    rlist, _, _ = select.select(watch_fds, [], [], timeout_s)
+                except (OSError, ValueError):
                     break
-                if not data:
+
+                if pty_master_fd in rlist:
+                    try:
+                        data = os.read(pty_master_fd, 4096)
+                    except OSError:
+                        break
+                    if not data:
+                        break
+                    self._screen.feed(data)
+                    newline_at = data.find(b"\n") if pending_reset else -1
+                    if newline_at >= 0:
+                        os.write(self._stdout_fd, data[: newline_at + 1])
+                        os.write(self._stdout_fd, b"\x1b[0m")
+                        os.write(self._stdout_fd, data[newline_at + 1:])
+                        pending_reset = False
+                    else:
+                        os.write(self._stdout_fd, data)
+                    detector.on_output()
+
+                if self._stdin_fd in rlist:
+                    try:
+                        data = os.read(self._stdin_fd, 4096)
+                    except OSError:
+                        break
+                    if 0x03 in data:
+                        return result, True
+
+                result = detector.check()
+                if result is not None:
                     break
-                self._screen.feed(data)
-                os.write(self._stdout_fd, data)
-                detector.on_output()
 
-            if self._stdin_fd in rlist:
-                try:
-                    data = os.read(self._stdin_fd, 4096)
-                except OSError:
-                    break
-                if 0x03 in data:
-                    return result, True
-
-            result = detector.check()
-            if result is not None:
-                break
-
-        return result, False
+            return result, False
+        finally:
+            if pending_reset:
+                os.write(self._stdout_fd, b"\x1b[0m")

@@ -882,6 +882,100 @@ class TestAutoMode:
                     except OSError:
                         pass
 
+    def test_command_echo_colored_gray(self) -> None:
+        """The echoed command is bracketed in gray; reset follows the first newline."""
+        pty_r, pty_w = os.pipe()
+
+        auto_results = [
+            _cmd_result(1, "ls"),
+            _final_result(2, "done", "done"),
+        ]
+        fake_llm = FakeLLMClient(auto_results=auto_results, pty_w=pty_w)
+        screen = ScreenBuffer()
+        screen.feed(b"$ ")
+
+        stdout_r, stdout_w = os.pipe()
+
+        try:
+            executor = ModeExecutor(
+                llm_client=fake_llm,
+                screen_buffer=screen,
+                write_to_pty=lambda d: None,
+                stdout_fd=stdout_w,
+                stdin_fd=-1,
+                get_pty_master_fd=lambda: pty_r,
+                settle_ms=10,
+                threshold_ms=5000,
+            )
+            executor.execute("list files", "auto")
+
+            os.close(stdout_w)
+            stdout_w = -1
+            out = _drain(stdout_r)
+            # Gray starts right after the thinking indicator is cleared...
+            assert b"\x1b8\x1b[J\x1b[90m" in out
+            # ...and the reset comes right after the first relayed newline.
+            assert b"output from step 1\n\x1b[0m" in out
+        finally:
+            for fd in [stdout_r, stdout_w, pty_r, pty_w]:
+                if fd >= 0:
+                    try:
+                        os.close(fd)
+                    except OSError:
+                        pass
+
+    def test_echo_color_reset_without_newline(self) -> None:
+        """The gray is reset even when no newline arrives before settle."""
+        pty_r, pty_w = os.pipe()
+
+        auto_results = [
+            _cmd_result(1, "ls"),
+            _final_result(2, "done", "done"),
+        ]
+
+        class NoNewlineLLMClient(FakeLLMClient):
+            def auto_step(
+                self,
+                input_items: ResponseInputParam,
+                previous_response_id: str | None = None,
+                working_summary: str | None = None,
+            ) -> AutoStepResult:
+                result = self._auto_results[self._auto_call_count]
+                self._auto_call_count += 1
+                if result.tool_calls:
+                    os.write(pty_w, b"partial echo")
+                return result
+
+        fake_llm = NoNewlineLLMClient(auto_results=auto_results)
+        screen = ScreenBuffer()
+
+        stdout_r, stdout_w = os.pipe()
+
+        try:
+            executor = ModeExecutor(
+                llm_client=fake_llm,
+                screen_buffer=screen,
+                write_to_pty=lambda d: None,
+                stdout_fd=stdout_w,
+                stdin_fd=-1,
+                get_pty_master_fd=lambda: pty_r,
+                settle_ms=10,
+                threshold_ms=5000,
+            )
+            executor.execute("list files", "auto")
+
+            os.close(stdout_w)
+            stdout_w = -1
+            out = _drain(stdout_r)
+            assert b"partial echo\x1b[0m" in out
+        finally:
+            for fd in [stdout_r, stdout_w, pty_r, pty_w]:
+                if fd >= 0:
+                    try:
+                        os.close(fd)
+                    except OSError:
+                        pass
+
     def test_invalid_tool_call_returns_error(self) -> None:
         """A tool call with invalid params sends an error output back, no pty write."""
         pty_r, pty_w = os.pipe()
