@@ -179,27 +179,54 @@
 
 ### 5.7 LLMClient
 
-- OpenAI API (Chat Completions) を利用する。モデルは設定可能(既定は現行世代の高速モデル)。
-- 入力: システムプロンプト + ScreenBuffer由来のコンテキスト + ユーザーのquery。
-- 出力形式は OpenAI の **Structured Outputs** (`response_format` パラメータ) を使い、スキーマレベルで応答形式を強制する。システムプロンプトでの JSON 形式指示は不要。
-- completion mode 用スキーマ例:
+- OpenAI **Responses API** (`client.responses.parse()`) を利用する。モデルは設定可能(既定は現行世代の高速モデル)。
+- 入力: `instructions=` でシステムプロンプト、`input=` でユーザーメッセージ、`text_format=` で Pydantic モデルを指定し Structured Outputs を強制する。
+- システムプロンプトは英語で記述し、「コマンド以外の出力はユーザーのクエリの言語に合わせる」旨を指示する。
+- completion mode 用スキーマ (`CompletionResponse`):
   ```json
   {
     "command": "df -h",
-    "explanation": "ディスク使用量を確認します"
+    "explanation": "Check disk usage"
   }
   ```
-- auto mode 用スキーマ例:
+- auto mode 用スキーマ (`AutoResponse`):
   ```json
   {
-    "action": "command" | "control" | "done" | "failed",
-    "payload": "df -h",
-    "explanation": "ディスク使用量を確認します"
+    "action": {"type": "command", "value": "df -h"},
+    "status": "continue",
+    "explanation": "Checking disk usage"
   }
   ```
-  - `action: "command"` → `payload` のコマンド文字列 + Enter を pty master に書き込み。
-  - `action: "control"` → `payload` の制御文字(例: `"ctrl-c"`)を pty master に書き込み。LLMが長時間実行中のコマンドを中断する等の判断に使う。
-  - `action: "done"` / `"failed"` → auto mode ループを終了。
+  - `status: "continue"` + `action` → コマンドまたは制御文字を実行。
+  - `status: "done"` / `"fail"` → `action` なし、auto mode ループを終了。
+  - `action.type: "control"` → 制御文字(例: `"ctrl-c"`)を pty master に書き込み。
+
+#### Auto mode の会話チェーン (`previous_response_id`)
+
+Responses API は `previous_response_id` パラメータで会話の継続をサポートする。サーバー側に過去のやり取りが保持されるため、クライアントは新しいメッセージだけを `input=` に渡せばよい。
+
+- `store=True` で各レスポンスをサーバー側に保存する。
+- 次のリクエストで `previous_response_id=response.id` を渡すと、API 側が過去の会話コンテキストを自動的に前置きする。
+- `instructions=` は毎回送る必要がある（`previous_response_id` では引き継がれない）。
+- 課金上の差異はない（過去の入力トークンは毎回カウントされる）。コード側の簡素化とトークン転送量の削減が利点。
+
+Auto mode の各ステップにおけるメッセージ構築:
+
+```
+Step 1 (初回):
+  input = [{ role: "user", content: "## Goal\n{query}\n\n## Current Terminal Screen\n```\n{screen}\n```" }]
+  previous_response_id = なし
+  store = true
+  → response_id を記録
+
+Step N (フォローアップ):
+  input = [{ role: "user", content: "## Command Output\n```\n{new_screen}\n```" }]
+  previous_response_id = 前回の response_id
+  store = true
+  → response_id を更新
+```
+
+これにより、毎ステップで全画面履歴と過去のメッセージ列を再送する必要がなくなる。
 
 ### 5.8 ModeExecutor
 

@@ -1,8 +1,6 @@
 import json
 import tempfile
 
-from openai.types.responses import EasyInputMessageParam
-
 from jou.config import JouConfig
 from jou.llm_client import (
     AUTO_SYSTEM_PROMPT,
@@ -96,12 +94,11 @@ class TestLLMClient:
         assert "control" in AUTO_SYSTEM_PROMPT.lower()
         assert "same language" in AUTO_SYSTEM_PROMPT.lower()
 
-    def test_build_auto_messages_initial(self) -> None:
+    def test_build_auto_messages(self) -> None:
         client = LLMClient(_make_config())
         messages = client.build_auto_messages(
             query="ディスク使用量を確認して",
             screen_text="user@host:~$ ",
-            history=[],
         )
         assert len(messages) == 1
         assert messages[0]["role"] == "user"
@@ -109,46 +106,13 @@ class TestLLMClient:
         assert "ディスク使用量を確認して" in content
         assert "user@host:~$ " in content
 
-    def test_build_auto_messages_with_history(self) -> None:
-        client = LLMClient(_make_config())
-        history: list[EasyInputMessageParam] = [
-            {"role": "assistant", "content": '{"action":{"type":"command","value":"df -h"},"status":"continue","explanation":"checking"}'},
-            {"role": "user", "content": "## コマンド実行結果\n```\n/dev/sda1  50G  20G  30G  40% /\n```"},
-        ]
-        messages = client.build_auto_messages(
-            query="ディスク使用量を確認して",
-            screen_text="user@host:~$ ",
-            history=history,
-        )
-        assert len(messages) == 3
-        assert messages[0]["role"] == "user"
-        assert messages[1]["role"] == "assistant"
-        assert messages[2]["role"] == "user"
-
-    def test_build_auto_messages_query_always_first(self) -> None:
-        client = LLMClient(_make_config())
-        history: list[EasyInputMessageParam] = [
-            {"role": "assistant", "content": "action1"},
-            {"role": "user", "content": "output1"},
-            {"role": "assistant", "content": "action2"},
-            {"role": "user", "content": "output2"},
-        ]
-        messages = client.build_auto_messages(
-            query="setup nginx",
-            screen_text="$ ",
-            history=history,
-        )
-        assert messages[0]["role"] == "user"
-        assert "setup nginx" in str(messages[0]["content"])
-        assert len(messages) == 5
-
-    def test_log_query_on_build_auto_initial(self) -> None:
+    def test_log_query_on_build_auto(self) -> None:
         with tempfile.NamedTemporaryFile(mode="r", suffix=".jsonl", delete=False) as f:
             log_path = f.name
         config = _make_config()
         config.log_file = log_path
         client = LLMClient(config)
-        client.build_auto_messages(query="check disk", screen_text="$ ", history=[])
+        client.build_auto_messages(query="check disk", screen_text="$ ")
         with open(log_path) as f:
             lines = f.readlines()
         assert len(lines) == 1
@@ -158,21 +122,6 @@ class TestLLMClient:
         assert entry["query"] == "check disk"
         assert "timestamp" in entry
 
-    def test_no_log_query_on_build_auto_with_history(self) -> None:
-        with tempfile.NamedTemporaryFile(mode="r", suffix=".jsonl", delete=False) as f:
-            log_path = f.name
-        config = _make_config()
-        config.log_file = log_path
-        client = LLMClient(config)
-        history: list[EasyInputMessageParam] = [
-            {"role": "assistant", "content": "action"},
-            {"role": "user", "content": "output"},
-        ]
-        client.build_auto_messages(query="check disk", screen_text="$ ", history=history)
-        with open(log_path) as f:
-            content = f.read()
-        assert content == ""
-
     def test_no_log_when_log_file_none(self) -> None:
         client = LLMClient(_make_config())
-        client.build_auto_messages(query="test", screen_text="$ ", history=[])
+        client.build_auto_messages(query="test", screen_text="$ ")

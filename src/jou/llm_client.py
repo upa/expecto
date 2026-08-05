@@ -122,7 +122,11 @@ class LLMClient:
 
         return result
 
-    def auto_step(self, messages: list[EasyInputMessageParam]) -> AutoResponse:
+    def auto_step(
+        self,
+        messages: list[EasyInputMessageParam],
+        previous_response_id: str | None = None,
+    ) -> tuple[AutoResponse, str]:
         input_msgs: ResponseInputParam = list(messages)
         reasoning: Reasoning | None = (
             Reasoning(effort=self._config.openai_reasoning_effort)
@@ -136,6 +140,7 @@ class LLMClient:
             "model": self._config.model,
             "instructions": AUTO_SYSTEM_PROMPT,
             "input": list(input_msgs),
+            "previous_response_id": previous_response_id,
         })
 
         response = self._client.responses.parse(
@@ -144,6 +149,8 @@ class LLMClient:
             input=input_msgs,
             text_format=AutoResponse,
             reasoning=reasoning,
+            store=True,
+            previous_response_id=previous_response_id,
         )
 
         parsed = response.output_parsed
@@ -159,25 +166,20 @@ class LLMClient:
             "type": "llm_response",
             "mode": "auto",
             "response": result.model_dump(),
+            "response_id": response.id,
         })
 
-        return result
+        return result, response.id
 
     def build_auto_messages(
         self,
         query: str,
         screen_text: str,
-        history: list[EasyInputMessageParam],
     ) -> list[EasyInputMessageParam]:
-        if not history:
-            self._log({
-                "type": "query",
-                "mode": "auto",
-                "query": query,
-            })
+        self._log({
+            "type": "query",
+            "mode": "auto",
+            "query": query,
+        })
         user_content = f"## Goal\n{query}\n\n## Current Terminal Screen\n```\n{screen_text}\n```"
-        messages: list[EasyInputMessageParam] = [
-            {"role": "user", "content": user_content},
-        ]
-        messages.extend(history)
-        return messages
+        return [{"role": "user", "content": user_content}]

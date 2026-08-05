@@ -24,6 +24,7 @@ class FakeLLMClient:
         self._pty_w = pty_w
         self.last_screen_text: str = ""
         self.last_query: str = ""
+        self.auto_step_calls: list[tuple[list[EasyInputMessageParam], str | None]] = []
 
     def complete(self, screen_text: str, query: str) -> CompletionResponse:
         self.last_screen_text = screen_text
@@ -31,8 +32,11 @@ class FakeLLMClient:
         return self._response
 
     def auto_step(
-        self, messages: list[EasyInputMessageParam]
-    ) -> AutoResponse:
+        self,
+        messages: list[EasyInputMessageParam],
+        previous_response_id: str | None = None,
+    ) -> tuple[AutoResponse, str]:
+        self.auto_step_calls.append((list(messages), previous_response_id))
         resp = self._auto_responses[self._auto_call_count]
         self._auto_call_count += 1
         if resp.status == "continue" and self._pty_w >= 0:
@@ -40,19 +44,17 @@ class FakeLLMClient:
                 self._pty_w,
                 f"output from step {self._auto_call_count}\n".encode(),
             )
-        return resp
+        response_id = f"resp_{self._auto_call_count}"
+        return resp, response_id
 
     def build_auto_messages(
         self,
         query: str,
         screen_text: str,
-        history: list[EasyInputMessageParam],
     ) -> list[EasyInputMessageParam]:
-        messages: list[EasyInputMessageParam] = [
+        return [
             {"role": "user", "content": f"goal: {query}\nscreen: {screen_text}"},
         ]
-        messages.extend(history)
-        return messages
 
 
 class TestCompletionMode:
@@ -364,9 +366,10 @@ class TestAutoMode:
 
         def fake_auto_step(
             messages: list[EasyInputMessageParam],
-        ) -> AutoResponse:
+            previous_response_id: str | None = None,
+        ) -> tuple[AutoResponse, str]:
             os.write(stdin_w, b"\x03")
-            return auto_responses[0]
+            return auto_responses[0], "resp_fake"
 
         fake_llm = FakeLLMClient(auto_responses=auto_responses)
         fake_llm.auto_step = fake_auto_step  # type: ignore[assignment]
@@ -438,8 +441,8 @@ class TestAutoMode:
                     except OSError:
                         pass
 
-    def test_history_passed_to_llm(self) -> None:
-        """After settle, command output is included in history for next LLM call."""
+    def test_previous_response_id_chaining(self) -> None:
+        """Auto mode chains calls via previous_response_id, sending only new output."""
         pty_r, pty_w = os.pipe()
 
         auto_responses = [
@@ -454,25 +457,10 @@ class TestAutoMode:
             ),
         ]
 
-        call_messages: list[list[EasyInputMessageParam]] = []
-
         fake_llm = FakeLLMClient(
             auto_responses=auto_responses,
             pty_w=pty_w,
         )
-        original_build = fake_llm.build_auto_messages
-
-        def tracking_build(
-            query: str,
-            screen_text: str,
-            history: list[EasyInputMessageParam],
-        ) -> list[EasyInputMessageParam]:
-            msgs = original_build(query, screen_text, history)
-            call_messages.append(list(msgs))
-            return msgs
-
-        fake_llm.build_auto_messages = tracking_build  # type: ignore[assignment]
-
         screen = ScreenBuffer()
         screen.feed(b"$ ")
 
@@ -492,15 +480,18 @@ class TestAutoMode:
             )
             executor.execute("test history", "auto")
 
-            assert len(call_messages) == 2
-            first_call = call_messages[0]
-            assert len(first_call) == 1
+            assert len(fake_llm.auto_step_calls) == 2
 
-            second_call = call_messages[1]
-            assert len(second_call) == 3
-            assert second_call[1]["role"] == "assistant"
-            assert second_call[2]["role"] == "user"
-            assert "Command Output" in str(second_call[2]["content"])
+            first_msgs, first_prev_id = fake_llm.auto_step_calls[0]
+            assert first_prev_id is None
+            assert len(first_msgs) == 1
+            assert "goal:" in str(first_msgs[0]["content"])
+
+            second_msgs, second_prev_id = fake_llm.auto_step_calls[1]
+            assert second_prev_id == "resp_1"
+            assert len(second_msgs) == 1
+            assert second_msgs[0]["role"] == "user"
+            assert "Command Output" in str(second_msgs[0]["content"])
         finally:
             for fd in [stdout_r, stdout_w, pty_r, pty_w]:
                 if fd >= 0:

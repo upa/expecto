@@ -25,14 +25,15 @@ class LLMCompleter(Protocol):
     def complete(self, screen_text: str, query: str) -> CompletionResponse: ...
 
     def auto_step(
-        self, messages: list[EasyInputMessageParam]
-    ) -> AutoResponse: ...
+        self,
+        messages: list[EasyInputMessageParam],
+        previous_response_id: str | None = None,
+    ) -> tuple[AutoResponse, str]: ...
 
     def build_auto_messages(
         self,
         query: str,
         screen_text: str,
-        history: list[EasyInputMessageParam],
     ) -> list[EasyInputMessageParam]: ...
 
 
@@ -79,13 +80,24 @@ class ModeExecutor:
         pty_master_fd = self._get_pty_master_fd()
 
         screen_text = self._screen.get_text()
-        history: list[EasyInputMessageParam] = []
+        prev_response_id: str | None = None
 
         for step in range(1, self._max_auto_steps + 1):
             self._show_auto_thinking(step)
 
-            messages = self._llm.build_auto_messages(query, screen_text, history)
-            response = self._llm.auto_step(messages)
+            if step == 1:
+                messages = self._llm.build_auto_messages(query, screen_text)
+            else:
+                new_screen_text = self._screen.get_text()
+                output_msg: EasyInputMessageParam = {
+                    "role": "user",
+                    "content": f"## Command Output\n```\n{new_screen_text}\n```",
+                }
+                messages = [output_msg]
+
+            response, prev_response_id = self._llm.auto_step(
+                messages, previous_response_id=prev_response_id,
+            )
 
             os.write(self._stdout_fd, b"\x1b8\x1b[J")
 
@@ -110,18 +122,6 @@ class ModeExecutor:
             if interrupted:
                 self._show_auto_end("interrupted")
                 break
-
-            new_screen_text = self._screen.get_text()
-            history.append({
-                "role": "assistant",
-                "content": response.model_dump_json(),
-            })
-            history.append({
-                "role": "user",
-                "content": (
-                    f"## Command Output\n```\n{new_screen_text}\n```"
-                ),
-            })
         else:
             self._show_auto_end(
                 f"max steps ({self._max_auto_steps})"
