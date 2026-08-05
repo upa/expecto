@@ -5,6 +5,7 @@ import sys
 from dotenv import load_dotenv
 
 from jou.config import JouConfig
+from jou.dangerous import DangerousCommandMatcher
 from jou.input_router import InputRouter
 from jou.io_relay import IORelay
 from jou.llm_client import LLMClient
@@ -61,6 +62,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Maximum lines fed into one working summary update (default: 2000)",
     )
     parser.add_argument(
+        "--confirm-level",
+        choices=["destructive", "mutating", "none"],
+        default=None,
+        help="Auto mode: minimum command risk that requires user confirmation "
+        "(default: destructive)",
+    )
+    parser.add_argument(
+        "--dangerous-patterns-file",
+        default=None,
+        help="File with additional dangerous command regex patterns "
+        "(default: ~/.config/jou/dangerous_patterns.txt)",
+    )
+    parser.add_argument(
         "command",
         nargs="*",
         help="Command to run (after --)",
@@ -86,6 +100,10 @@ def main(argv: list[str] | None = None) -> None:
         config.summary_trigger_lines = args.summary_trigger_lines
     if args.summary_max_input_lines is not None:
         config.summary_max_input_lines = args.summary_max_input_lines
+    if args.confirm_level is not None:
+        config.confirm_level = args.confirm_level
+    if args.dangerous_patterns_file is not None:
+        config.dangerous_patterns_file = args.dangerous_patterns_file
 
     command: str | list[str]
     if args.command:
@@ -107,6 +125,12 @@ def main(argv: list[str] | None = None) -> None:
     query_ui = QueryModeUI(stdout_fd, get_cursor_col=screen_buffer.get_cursor_col)
 
     llm_client = LLMClient(config)
+
+    dangerous_matcher, pattern_errors = DangerousCommandMatcher.load(
+        config.dangerous_patterns_file or None,
+    )
+    for error in pattern_errors:
+        print(f"jou: warning: {error}", file=sys.stderr)
 
     working_summary = WorkingSummaryManager(
         llm_client=llm_client,
@@ -135,6 +159,8 @@ def main(argv: list[str] | None = None) -> None:
         max_auto_steps=config.max_auto_steps,
         history_lines=config.history_lines,
         working_summary=working_summary,
+        confirm_level=config.confirm_level,
+        dangerous_matcher=dangerous_matcher,
     )
 
     def on_query_submit(query: str, mode: str) -> None:

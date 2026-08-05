@@ -18,7 +18,6 @@ Phase 1 (completion mode) complete. Phase 2 (auto mode) core loop complete (Sett
 
 ### TODO
 
-- **Dangerous command confirmation**: auto mode での危険コマンド検知+ユーザー確認（`rm -rf`, `dd`, `mkfs` 等のブラックリスト）
 - **Secret masking**: LLM に送るスクリーン履歴からパスワード・APIキー等を簡易マスキング
 - **Prompt engineering**: completion mode / auto mode のシステムプロンプト内容の精査・改善（現状は最低限の指示のみ）
 
@@ -69,7 +68,7 @@ Core components (each a separate module under `src/jou/`):
 
 - No shell-specific dependencies (PS1, readline) — must work over ssh/vendor CLI
 - Settle detection is idle-timer only (no prompt markers). When settle threshold is exceeded without settling, current output is sent to LLM for decision (not treated as timeout error)
-- Dangerous command blocklist with user confirmation before execution in auto mode
+- Dangerous command gate in auto mode (3 layers): LLM self-classifies each command's risk (`read_only`/`mutating`/`destructive` in the run_command schema); a deterministic regex backstop (builtin + `~/.config/jou/dangerous_patterns.txt`) escalates matches to destructive (escalate-only); commands at/above `--confirm-level` (default: destructive) require y/n confirmation. Decline feeds back to the LLM as a tool result, not an abort
 - Auto mode asks user confirmation (continue? y/n) every `max_auto_steps` steps (default 15, checkpoint interval, keeps the response chain on continue) and supports Ctrl-C interrupt
 - LLM response format enforced via OpenAI Structured Outputs, not system prompt
 - Design document is in Japanese; code and comments should follow whatever language convention is established

@@ -50,6 +50,16 @@ class TestToolParams:
     def test_run_command_params(self) -> None:
         params = RunCommandParams(command="ls -la")
         assert params.command == "ls -la"
+        assert params.risk == "read_only"
+
+    def test_run_command_params_with_risk(self) -> None:
+        params = RunCommandParams(
+            command="rm -rf /tmp/work",
+            risk="destructive",
+            risk_reason="deletes files irreversibly",
+        )
+        assert params.risk == "destructive"
+        assert params.risk_reason == "deletes files irreversibly"
 
     def test_send_control_params(self) -> None:
         params = SendControlParams(key="ctrl-c")
@@ -84,6 +94,15 @@ class TestAutoTools:
             assert params is not None
             assert params["additionalProperties"] is False
 
+    def test_run_command_schema_requires_risk(self) -> None:
+        run_command = AUTO_TOOLS[0]
+        params = run_command["parameters"]
+        assert params is not None
+        required = cast("list[str]", params["required"])
+        assert set(required) == {"command", "risk", "risk_reason"}
+        properties = cast("dict[str, dict[str, object]]", params["properties"])
+        assert properties["risk"]["enum"] == ["read_only", "mutating", "destructive"]
+
 
 class TestParseToolCall:
     def test_run_command(self) -> None:
@@ -92,13 +111,14 @@ class TestParseToolCall:
             type="function_call",
             call_id="call_1",
             name="run_command",
-            arguments='{"command": "df -h"}',
+            arguments='{"command": "df -h", "risk": "read_only", "risk_reason": "only reads disk usage"}',
         )
         parsed = client._parse_tool_call(item)
         assert parsed.call_id == "call_1"
         assert parsed.name == "run_command"
         assert isinstance(parsed.params, RunCommandParams)
         assert parsed.params.command == "df -h"
+        assert parsed.params.risk == "read_only"
         assert parsed.error is None
 
     def test_send_control(self) -> None:

@@ -6,6 +6,10 @@ from typing import Literal
 
 ReasoningEffortLevel = Literal["none", "minimal", "low", "medium", "high", "xhigh", "max"]
 
+ConfirmLevel = Literal["destructive", "mutating", "none"]
+
+DEFAULT_DANGEROUS_PATTERNS_FILE = "~/.config/jou/dangerous_patterns.txt"
+
 _REASONING_EFFORT_MAP: dict[str, ReasoningEffortLevel] = {
     "none": "none",
     "minimal": "minimal",
@@ -39,6 +43,8 @@ class JouConfig:
     summary_openai_api_key: str = ""
     summary_openai_base_url: str | None = None
     summary_openai_reasoning_effort: ReasoningEffortLevel | None = None
+    confirm_level: ConfirmLevel = "destructive"
+    dangerous_patterns_file: str = ""
 
     @classmethod
     def from_env(cls) -> JouConfig:
@@ -82,4 +88,6 @@ class JouConfig:
                 or None
             ),
             summary_openai_reasoning_effort=summary_effort,
+            confirm_level="destructive",
+            dangerous_patterns_file=os.path.expanduser(DEFAULT_DANGEROUS_PATTERNS_FILE),
         )

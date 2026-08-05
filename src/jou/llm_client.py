@@ -38,6 +38,14 @@ the terminal screen content after the output settles.
 - Use the send_control tool to send a control character (e.g. "ctrl-c") to \
 the terminal, for example to interrupt a long-running command.
 - Call one tool at a time: review each result before deciding the next action.
+- Classify every run_command call's risk on the target system: "read_only" \
+(no state change: show/get/list/ping etc.), "mutating" (changes state but \
+recoverable and limited in scope: file creation, candidate config edits, \
+service restarts), or "destructive" (irreversible or high blast radius: \
+data deletion, device reload/erase/format, changes that may cut your own \
+connectivity). Give a short risk_reason. Destructive commands are shown to \
+the user for confirmation before execution; classify honestly and never \
+understate the risk.
 - If you are not sure what environment the CLI is running on (which OS, or \
 which router/switch product, etc.), first run a command that reveals it \
 (e.g. `uname` on a Unix system, `show version` on a network device).
@@ -78,8 +86,13 @@ class SummaryResult(BaseModel):
     notes: str
 
 
+RiskLevel = Literal["read_only", "mutating", "destructive"]
+
+
 class RunCommandParams(BaseModel):
     command: str
+    risk: RiskLevel = "read_only"
+    risk_reason: str = ""
 
 
 class SendControlParams(BaseModel):
@@ -109,8 +122,24 @@ AUTO_TOOLS: list[FunctionToolParam] = [
                     "type": "string",
                     "description": "The command to execute, in the syntax of the target system.",
                 },
+                "risk": {
+                    "type": "string",
+                    "enum": ["read_only", "mutating", "destructive"],
+                    "description": (
+                        "Risk classification of this command on the target "
+                        "system: read_only = no state change; mutating = "
+                        "changes state but recoverable and limited in scope; "
+                        "destructive = irreversible or high blast radius "
+                        "(data deletion, device reload/erase, changes that "
+                        "may cut connectivity)."
+                    ),
+                },
+                "risk_reason": {
+                    "type": "string",
+                    "description": "Short justification for the risk classification.",
+                },
             },
-            "required": ["command"],
+            "required": ["command", "risk", "risk_reason"],
             "additionalProperties": False,
         },
         "strict": True,

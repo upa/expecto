@@ -297,6 +297,206 @@ class TestWorkingSummaryIntegration:
             os.close(stdout_w)
 
 
+def _risky_cmd_result(step: int, command: str, risk: str = "destructive") -> AutoStepResult:
+    return AutoStepResult(
+        tool_calls=[
+            ParsedToolCall(
+                call_id=f"call_{step}",
+                name="run_command",
+                params=RunCommandParams(
+                    command=command,
+                    risk=cast('Literal["read_only", "mutating", "destructive"]', risk),
+                    risk_reason="test reason",
+                ),
+            ),
+        ],
+        final=None,
+        response_id=f"resp_{step}",
+    )
+
+
+class TestDangerousCommandConfirmation:
+    def _run(
+        self,
+        auto_results: list[AutoStepResult],
+        answers: list[bytes],
+        confirm_level: str = "destructive",
+        with_matcher: bool = False,
+    ) -> tuple[FakeLLMClient, list[bytes], bytearray]:
+        from jou.dangerous import DangerousCommandMatcher
+        from jou.mode_executor import ConfirmLevel
+
+        pty_r, pty_w = os.pipe()
+        stdin_r, stdin_w = os.pipe()
+        fake_llm = FakeLLMClient(auto_results=auto_results, pty_w=pty_w)
+        screen = ScreenBuffer()
+        stdout_r, stdout_w = os.pipe()
+        pty_written: list[bytes] = []
+        collected = bytearray()
+        pump = self._answer_prompts(stdout_r, stdin_w, answers, collected)
+        matcher = DangerousCommandMatcher.load(None)[0] if with_matcher else None
+
+        try:
+            executor = ModeExecutor(
+                llm_client=fake_llm,
+                screen_buffer=screen,
+                write_to_pty=lambda d: pty_written.append(d),
+                stdout_fd=stdout_w,
+                stdin_fd=stdin_r,
+                get_pty_master_fd=lambda: pty_r,
+                settle_ms=10,
+                threshold_ms=5000,
+                max_auto_steps=50,
+                confirm_level=cast("ConfirmLevel", confirm_level),
+                dangerous_matcher=matcher,
+            )
+            executor.execute("do something", "auto")
+            os.close(stdout_w)
+            stdout_w = -1
+            pump.join(timeout=5)
+            return fake_llm, pty_written, collected
+        finally:
+            for fd in [stdout_r, stdout_w, pty_r, pty_w, stdin_r, stdin_w]:
+                if fd >= 0:
+                    try:
+                        os.close(fd)
+                    except OSError:
+                        pass
+
+    def _answer_prompts(
+        self,
+        stdout_r: int,
+        stdin_w: int,
+        answers: list[bytes],
+        collected: bytearray,
+    ) -> threading.Thread:
+        def run() -> None:
+            pending = list(answers)
+            answered = 0
+            while True:
+                try:
+                    data = os.read(stdout_r, 4096)
+                except OSError:
+                    return
+                if not data:
+                    return
+                collected.extend(data)
+                if pending and collected.count(b"run? (y/n)") > answered:
+                    answered += 1
+                    os.write(stdin_w, pending.pop(0))
+
+        thread = threading.Thread(target=run, daemon=True)
+        thread.start()
+        return thread
+
+    def test_destructive_confirmed_y_runs(self) -> None:
+        results = [
+            _risky_cmd_result(1, "reload"),
+            _final_result(2, "done", "finished"),
+        ]
+        fake_llm, pty_written, collected = self._run(results, [b"y"])
+        assert b"reload\n" in pty_written
+        assert b"destructive command (test reason): reload" in collected
+
+    def test_destructive_declined_feeds_back_to_llm(self) -> None:
+        """'n' does not abort the loop: the LLM gets a declined tool result."""
+        results = [
+            _risky_cmd_result(1, "reload"),
+            _final_result(2, "done", "gave up"),
+        ]
+        fake_llm, pty_written, collected = self._run(results, [b"n"])
+        assert b"reload\n" not in pty_written
+        assert len(fake_llm.auto_step_calls) == 2
+        second_input, _ = fake_llm.auto_step_calls[1]
+        output_item = _item_dict(second_input[0])
+        assert "user declined" in str(output_item["output"])
+
+    def test_read_only_not_confirmed(self) -> None:
+        results = [
+            _risky_cmd_result(1, "ls -la", risk="read_only"),
+            _final_result(2, "done", "finished"),
+        ]
+        _, pty_written, collected = self._run(results, [])
+        assert b"ls -la\n" in pty_written
+        assert b"run? (y/n)" not in collected
+
+    def test_mutating_not_confirmed_at_default_level(self) -> None:
+        results = [
+            _risky_cmd_result(1, "touch /tmp/x", risk="mutating"),
+            _final_result(2, "done", "finished"),
+        ]
+        _, pty_written, collected = self._run(results, [])
+        assert b"touch /tmp/x\n" in pty_written
+        assert b"run? (y/n)" not in collected
+
+    def test_mutating_confirmed_at_mutating_level(self) -> None:
+        results = [
+            _risky_cmd_result(1, "touch /tmp/x", risk="mutating"),
+            _final_result(2, "done", "finished"),
+        ]
+        _, pty_written, collected = self._run(
+            results, [b"y"], confirm_level="mutating",
+        )
+        assert b"touch /tmp/x\n" in pty_written
+        assert b"run? (y/n)" in collected
+
+    def test_confirm_level_none_skips_confirmation(self) -> None:
+        results = [
+            _risky_cmd_result(1, "reload"),
+            _final_result(2, "done", "finished"),
+        ]
+        _, pty_written, collected = self._run(results, [], confirm_level="none")
+        assert b"reload\n" in pty_written
+        assert b"run? (y/n)" not in collected
+
+    def test_backstop_escalates_underreported_risk(self) -> None:
+        """A pattern match forces confirmation even when the LLM claims
+        read_only, and the prompt shows the matched pattern."""
+        results = [
+            _risky_cmd_result(1, "write erase", risk="read_only"),
+            _final_result(2, "done", "finished"),
+        ]
+        _, pty_written, collected = self._run(
+            results, [b"n"], with_matcher=True,
+        )
+        assert b"write erase\n" not in pty_written
+        assert b"destructive command (matched pattern:" in collected
+
+    def test_non_interactive_declines_destructive(self) -> None:
+        """Without stdin, a destructive command is declined, not executed."""
+        pty_r, pty_w = os.pipe()
+        results = [
+            _risky_cmd_result(1, "reload"),
+            _final_result(2, "done", "gave up"),
+        ]
+        fake_llm = FakeLLMClient(auto_results=results, pty_w=pty_w)
+        screen = ScreenBuffer()
+        stdout_r, stdout_w = os.pipe()
+        pty_written: list[bytes] = []
+
+        try:
+            executor = ModeExecutor(
+                llm_client=fake_llm,
+                screen_buffer=screen,
+                write_to_pty=lambda d: pty_written.append(d),
+                stdout_fd=stdout_w,
+                stdin_fd=-1,
+                get_pty_master_fd=lambda: pty_r,
+                settle_ms=10,
+                threshold_ms=5000,
+                max_auto_steps=50,
+            )
+            executor.execute("do something", "auto")
+            assert b"reload\n" not in pty_written
+        finally:
+            for fd in [stdout_r, stdout_w, pty_r, pty_w]:
+                if fd >= 0:
+                    try:
+                        os.close(fd)
+                    except OSError:
+                        pass
+
+
 class TestAutoMode:
     def test_done_immediately(self) -> None:
         """LLM returns done on first step — no tool call, just done message."""

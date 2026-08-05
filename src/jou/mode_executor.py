@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import os
 import select
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
     from openai.types.responses import ResponseInputParam
 
+    from jou.dangerous import DangerousCommandMatcher
     from jou.screen_buffer import ScreenBuffer
     from jou.working_summary import WorkingSummaryManager
 
@@ -16,9 +17,18 @@ from jou.llm_client import (
     AutoStepResult,
     CompletionResponse,
     ParsedToolCall,
+    RiskLevel,
     RunCommandParams,
 )
 from jou.settle import SettleDetector, SettleResult
+
+ConfirmLevel = Literal["destructive", "mutating", "none"]
+
+DECLINED_TOOL_OUTPUT = (
+    "Command was not executed: the user declined to run it. "
+    "Take a different approach, or finish with status \"fail\" if the goal "
+    "cannot be achieved without it."
+)
 
 CONTROL_CHAR_MAP: dict[str, bytes] = {
     "ctrl-c": b"\x03",
@@ -63,6 +73,8 @@ class ModeExecutor:
         max_auto_steps: int = 15,
         history_lines: int = 500,
         working_summary: WorkingSummaryManager | None = None,
+        confirm_level: ConfirmLevel = "destructive",
+        dangerous_matcher: DangerousCommandMatcher | None = None,
     ) -> None:
         self._llm = llm_client
         self._screen = screen_buffer
@@ -75,6 +87,8 @@ class ModeExecutor:
         self._max_auto_steps = max_auto_steps
         self._history_lines = history_lines
         self._working_summary = working_summary
+        self._confirm_level = confirm_level
+        self._dangerous_matcher = dangerous_matcher
 
     def execute(self, query: str, mode: str) -> None:
         if mode == "completion":
@@ -169,12 +183,44 @@ class ModeExecutor:
 
         self._write_to_pty(b"\n")
 
+    def _effective_risk(self, params: RunCommandParams) -> tuple[RiskLevel, str | None]:
+        """The command's risk after the deterministic backstop.
+
+        A pattern match escalates to destructive regardless of the LLM's
+        own classification; it never de-escalates."""
+        matched: str | None = None
+        if self._dangerous_matcher is not None:
+            matched = self._dangerous_matcher.match(params.command)
+        if matched is not None:
+            return "destructive", matched
+        return params.risk, None
+
+    def _needs_confirmation(self, risk: RiskLevel) -> bool:
+        if self._confirm_level == "none":
+            return False
+        if self._confirm_level == "mutating":
+            return risk in ("mutating", "destructive")
+        return risk == "destructive"
+
     def _run_tool_call(
         self, call: ParsedToolCall, pty_master_fd: int,
     ) -> tuple[str, bool]:
         """Execute one tool call and build its output. Returns (output, interrupted)."""
         if call.params is None:
             return f"Error: {call.error}", False
+
+        if isinstance(call.params, RunCommandParams):
+            risk, matched = self._effective_risk(call.params)
+            if self._needs_confirmation(risk):
+                detail = (
+                    f"matched pattern: {matched}"
+                    if matched is not None
+                    else call.params.risk_reason
+                )
+                if not self._confirm_command(
+                    pty_master_fd, call.params.command, risk, detail,
+                ):
+                    return DECLINED_TOOL_OUTPUT, False
 
         mark = self._screen.mark()
 
@@ -204,7 +250,22 @@ class ModeExecutor:
         os.write(self._stdout_fd, b"\x1b[90m[auto: thinking...]\x1b[0m")
 
     def _confirm_continue(self, pty_master_fd: int, step: int) -> bool:
-        """Ask the user whether to continue past the step checkpoint.
+        """Ask the user whether to continue past the step checkpoint."""
+        return self._prompt_yes_no(
+            pty_master_fd, f"[auto] reached step {step} — continue?",
+        )
+
+    def _confirm_command(
+        self, pty_master_fd: int, command: str, risk: str, detail: str,
+    ) -> bool:
+        """Ask the user whether to run a command that hit the confirm level."""
+        return self._prompt_yes_no(
+            pty_master_fd,
+            f"[auto] {risk} command ({detail}): {command} — run?",
+        )
+
+    def _prompt_yes_no(self, pty_master_fd: int, message: str) -> bool:
+        """Show a y/n prompt and wait for the answer.
 
         Keeps relaying pty output while waiting so the screen stays live.
         Returns False when no interactive stdin is available."""
@@ -213,7 +274,7 @@ class ModeExecutor:
 
         os.write(
             self._stdout_fd,
-            f"\r\n\x1b[90m[auto] reached step {step} — continue? (y/n) \x1b[0m".encode(),
+            f"\r\n\x1b[90m{message} (y/n) \x1b[0m".encode(),
         )
 
         watch_fds: list[int] = [self._stdin_fd]
