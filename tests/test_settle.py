@@ -1,75 +1,51 @@
-import time
+import asyncio
 
-from jou.settle import SettleDetector, SettleResult
+from jou.settle import SettleResult, wait_settle
 
 
-class TestSettleDetector:
-    def test_not_active_before_start(self) -> None:
-        detector = SettleDetector()
-        assert not detector.active
-        assert detector.check() is None
-
-    def test_active_after_start(self) -> None:
-        detector = SettleDetector()
-        detector.start()
-        assert detector.active
-
-    def test_settle_after_idle(self) -> None:
-        detector = SettleDetector(settle_ms=50)
-        detector.start()
-        assert detector.check() is None
-        time.sleep(0.06)
-        result = detector.check()
-        assert result == SettleResult.SETTLED
-        assert not detector.active
-
-    def test_output_resets_idle_timer(self) -> None:
-        detector = SettleDetector(settle_ms=50)
-        detector.start()
-        time.sleep(0.03)
-        detector.on_output()
-        time.sleep(0.03)
-        assert detector.check() is None
-        time.sleep(0.03)
-        result = detector.check()
+class TestWaitSettle:
+    async def test_settles_when_no_output(self) -> None:
+        event = asyncio.Event()
+        result = await wait_settle(event, settle_ms=10, threshold_ms=1000)
         assert result == SettleResult.SETTLED
 
-    def test_threshold_exceeded(self) -> None:
-        detector = SettleDetector(settle_ms=500, threshold_ms=50)
-        detector.start()
-        detector.on_output()
-        time.sleep(0.06)
-        result = detector.check()
+    async def test_output_resets_idle_timer(self) -> None:
+        event = asyncio.Event()
+
+        async def produce_bursts() -> None:
+            for _ in range(3):
+                await asyncio.sleep(0.01)
+                event.set()
+
+        producer = asyncio.create_task(produce_bursts())
+        loop = asyncio.get_running_loop()
+        start = loop.time()
+        result = await wait_settle(event, settle_ms=30, threshold_ms=5000)
+        await producer
+        assert result == SettleResult.SETTLED
+        # Settled only after the last burst (~30ms) plus the idle window,
+        # not after the initial 10ms of silence.
+        assert loop.time() - start >= 0.05
+
+    async def test_threshold_when_output_keeps_flowing(self) -> None:
+        event = asyncio.Event()
+        stop = False
+
+        async def keep_producing() -> None:
+            while not stop:
+                event.set()
+                await asyncio.sleep(0.005)
+
+        producer = asyncio.create_task(keep_producing())
+        result = await wait_settle(event, settle_ms=100, threshold_ms=30)
+        stop = True
+        await producer
         assert result == SettleResult.THRESHOLD
-        assert not detector.active
 
-    def test_settle_before_threshold(self) -> None:
-        detector = SettleDetector(settle_ms=30, threshold_ms=200)
-        detector.start()
-        time.sleep(0.04)
-        result = detector.check()
+    async def test_output_from_before_the_call_does_not_count(self) -> None:
+        # The coroutine owns clearing the event: a leftover set() from
+        # before the command must not defer settling.
+        event = asyncio.Event()
+        event.set()
+        result = await wait_settle(event, settle_ms=10, threshold_ms=50)
         assert result == SettleResult.SETTLED
-
-    def test_remaining_ms(self) -> None:
-        detector = SettleDetector(settle_ms=100)
-        detector.start()
-        remaining = detector.remaining_ms()
-        assert 50 <= remaining <= 100
-
-    def test_remaining_ms_when_inactive(self) -> None:
-        detector = SettleDetector()
-        assert detector.remaining_ms() == 0
-
-    def test_on_output_when_inactive_is_noop(self) -> None:
-        detector = SettleDetector()
-        detector.on_output()
-        assert not detector.active
-
-    def test_restart_resets_state(self) -> None:
-        detector = SettleDetector(settle_ms=50)
-        detector.start()
-        time.sleep(0.06)
-        assert detector.check() == SettleResult.SETTLED
-        detector.start()
-        assert detector.active
-        assert detector.check() is None

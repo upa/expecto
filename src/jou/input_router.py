@@ -16,6 +16,7 @@ class State(enum.Enum):
     PASSTHROUGH = "passthrough"
     QUERY_COMPLETION = "query_completion"
     QUERY_AUTO = "query_auto"
+    EXECUTING = "executing"
 
 
 class InputRouter:
@@ -39,6 +40,7 @@ class InputRouter:
         self._state: State = State.PASSTHROUGH
         self._query_buf: list[str] = []
         self._utf8_pending: bytearray = bytearray()
+        self._on_executing_input: Callable[[int], None] | None = None
 
     @property
     def state(self) -> State:
@@ -48,6 +50,17 @@ class InputRouter:
     def query_text(self) -> str:
         return "".join(self._query_buf)
 
+    def set_executing_input_handler(self, handler: Callable[[int], None]) -> None:
+        """Set the receiver for bytes typed while a mode is executing
+        (wired by IORelay: key requests, Ctrl-C cancellation)."""
+        self._on_executing_input = handler
+
+    def set_passthrough(self) -> None:
+        """Return to passthrough (called when a mode execution finishes)."""
+        self._state = State.PASSTHROUGH
+        self._query_buf.clear()
+        self._utf8_pending.clear()
+
     def handle(self, data: bytes) -> None:
         for byte in data:
             self._handle_byte(byte)
@@ -55,6 +68,9 @@ class InputRouter:
     def _handle_byte(self, byte: int) -> None:
         if self._state == State.PASSTHROUGH:
             self._handle_passthrough(byte)
+        elif self._state == State.EXECUTING:
+            if self._on_executing_input is not None:
+                self._on_executing_input(byte)
         else:
             self._handle_query(byte)
 
@@ -94,7 +110,10 @@ class InputRouter:
         if byte == 0x0D:  # Enter
             mode = "completion" if self._state == State.QUERY_COMPLETION else "auto"
             query = self.query_text
-            self._state = State.PASSTHROUGH
+            # The submit callback starts the mode task; input stays routed
+            # to the executing handler until the task's done callback
+            # calls set_passthrough().
+            self._state = State.EXECUTING
             self._on_query_submit(query, mode)
         elif byte in (0x1B, 0x03):  # Esc, Ctrl-C
             self._state = State.PASSTHROUGH

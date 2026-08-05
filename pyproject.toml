@@ -22,8 +22,13 @@ packages = ["src/jou"]
 [dependency-groups]
 dev = [
     "pytest>=9.1.1",
+    "pytest-asyncio>=1.0",
     "ty>=0.0.66",
 ]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 
 [tool.ty.environment]
 python-version = "3.11"

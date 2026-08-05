@@ -14,7 +14,7 @@ Two hotkeys, two modes — the hotkey pressed determines the execution mode:
 
 ## Status
 
-Phase 1 (completion mode) complete. Phase 2 (auto mode) core loop complete (SettleDetector, LLMClient with Responses API function calling — `run_command` / `send_control` tools, ModeExecutor tool-call loop). Working Summary implemented (`working_summary.py`, see `DESIGN-WorkingSummary.md`). `DESIGN.md` is the authoritative specification.
+Phase 1 (completion mode) complete. Phase 2 (auto mode) core loop complete (LLMClient with Responses API function calling — `run_command` / `send_control` tools, ModeExecutor tool-call loop, idle-timer settle detection). Working Summary implemented (`working_summary.py`, see `DESIGN-WorkingSummary.md`). Concurrency is a single-threaded asyncio event loop — one always-on relay pump, mode executions as cancellable tasks, no threads/locks (see `DESIGN-Async.md`). `DESIGN.md` is the authoritative specification.
 
 ### TODO
 
@@ -25,8 +25,8 @@ Phase 1 (completion mode) complete. Phase 2 (auto mode) core loop complete (Sett
 
 - Python 3.11+
 - Target OS: macOS, Linux
-- Key dependencies: `pyte` (terminal emulation), `openai` (LLM SDK with Structured Outputs)
-- Heavy use of stdlib: `pty`, `termios`, `tty`, `select`, `os`, `signal`, `fcntl`
+- Key dependencies: `pyte` (terminal emulation), `openai` (LLM SDK, AsyncOpenAI with Structured Outputs)
+- Heavy use of stdlib: `asyncio`, `pty`, `termios`, `tty`, `os`, `signal`, `fcntl`
 - Build/packaging: `pyproject.toml` (planned)
 - Config: `~/.config/jou/config.toml`, CLI flags override
 - API key: `OPENAI_API_KEY` env var
@@ -38,7 +38,7 @@ State machine: `PASSTHROUGH` → (completion hotkey) `QUERY_COMPLETION` / (auto 
 Core components (each a separate module under `src/jou/`):
 - `tty_controller` — raw mode, termios save/restore, SIGWINCH propagation
 - `pty_manager` — pty allocation, child process fork/exec
-- `io_relay` — main select loop, bidirectional byte relay
+- `io_relay` — always-on asyncio relay pump (loop.add_reader), bidirectional byte relay, mode-task management
 - `input_router` — per-byte state machine, dual hotkey detection, UTF-8 buffering
 - `screen_buffer` — pyte-based screen capture + scrollback ring buffer for LLM context
 - `query_ui` — ANSI-based miniprompt overlay on bottom line

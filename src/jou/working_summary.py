@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import threading
+import asyncio
 from typing import TYPE_CHECKING, Protocol
-
-from jou.background import BackgroundCall
 
 if TYPE_CHECKING:
     from jou.llm_client import SummaryResult
@@ -11,7 +9,7 @@ if TYPE_CHECKING:
 
 
 class SummaryGenerator(Protocol):
-    def summarize(
+    async def summarize(
         self,
         previous: SummaryResult | None,
         new_output: str,
@@ -23,11 +21,11 @@ class WorkingSummaryManager:
     """Maintains a working summary of the session (long-term memory of
     output that has scrolled out of the visible window).
 
-    check_trigger() runs on the main thread (IORelay); ensure_summary()
-    runs on the main thread or on a ModeExecutor BackgroundCall thread —
-    never concurrently with check_trigger, because the relay loop is not
-    processing output while a query is being handled. Shared state is
-    guarded by _lock; _inflight tracks the background update."""
+    Runs entirely on the event loop: check_trigger() is called from the
+    relay's pty callback and starts a background asyncio.Task;
+    ensure_summary() is awaited by ModeExecutor before an LLM query.
+    pty reading is paused while ensure_summary() runs (the thinking
+    overlay is up), so check_trigger() cannot start a concurrent update."""
 
     def __init__(
         self,
@@ -40,16 +38,14 @@ class WorkingSummaryManager:
         self._screen = screen_buffer
         self._trigger_lines = trigger_lines
         self._max_input_lines = max_input_lines
-        self._lock = threading.Lock()
         self._summary: SummaryResult | None = None
         self._last_gen_scrolled: int = 0
-        self._inflight: BackgroundCall[None] | None = None
+        self._inflight: asyncio.Task[None] | None = None
 
     @property
     def summary_text(self) -> str | None:
         """The current summary formatted for the system prompt, or None."""
-        with self._lock:
-            summary = self._summary
+        summary = self._summary
         if summary is None:
             return None
         return (
@@ -60,42 +56,41 @@ class WorkingSummaryManager:
         )
 
     def _pending_lines(self) -> int:
-        with self._lock:
-            last = self._last_gen_scrolled
-        return self._screen.scrolled_lines_total - last
+        return self._screen.scrolled_lines_total - self._last_gen_scrolled
 
     def check_trigger(self) -> None:
         """Start a background update if enough new lines have scrolled out
         since the last generation and no update is in flight."""
-        if self._inflight is not None and not self._inflight.done:
+        if self._inflight is not None and not self._inflight.done():
             return
         if self._pending_lines() < self._trigger_lines:
             return
-        self._inflight = BackgroundCall(self._refresh).start()
+        self._inflight = asyncio.get_running_loop().create_task(self._refresh())
 
-    def ensure_summary(self) -> None:
-        """Synchronous path called before an LLM query. Waits for any
+    async def ensure_summary(self) -> None:
+        """Bring the summary up to date before an LLM query. Waits for any
         in-flight update; generates one inline if there is none yet and
         enough output has accumulated."""
         inflight = self._inflight
-        if inflight is not None:
-            inflight.wait()
-        with self._lock:
-            have_summary = self._summary is not None
-        if have_summary or self._pending_lines() < self._trigger_lines:
+        if inflight is not None and not inflight.done():
+            # asyncio.wait (unlike a bare await) does not re-raise into us
+            # when the update task itself was cancelled at shutdown.
+            await asyncio.wait([inflight])
+        if self._summary is not None or self._pending_lines() < self._trigger_lines:
             return
-        self._refresh()
+        await self._refresh()
 
-    def _refresh(self) -> None:
-        with self._lock:
-            previous = self._summary
-            last = self._last_gen_scrolled
+    async def _refresh(self) -> None:
+        previous = self._summary
+        # Read everything from the screen before the first await: the
+        # buffer only advances in event-loop callbacks, never mid-await
+        # of this coroutine's own step.
         scrolled_now = self._screen.scrolled_lines_total
-        pending = scrolled_now - last
+        pending = scrolled_now - self._last_gen_scrolled
         take = min(pending, self._max_input_lines)
         new_output = self._screen.get_scrolled_tail(take)
         try:
-            result = self._llm.summarize(
+            result = await self._llm.summarize(
                 previous,
                 new_output,
                 truncated=pending > self._max_input_lines,
@@ -105,6 +100,5 @@ class WorkingSummaryManager:
             # _last_gen_scrolled stays put so the next trigger retries.
             # The LLM client logs the error to the JSONL log.
             return
-        with self._lock:
-            self._summary = result
-            self._last_gen_scrolled = scrolled_now
+        self._summary = result
+        self._last_gen_scrolled = scrolled_now

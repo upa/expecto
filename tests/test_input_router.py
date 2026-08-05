@@ -102,7 +102,9 @@ class TestQueryMode:
         router.handle(b"df -h")
         router.handle(bytes([0x0D]))
         assert submitted == [("df -h", "completion")]
-        assert router.state == State.PASSTHROUGH
+        # Input routes to the executing handler until the mode task
+        # finishes and set_passthrough() is called.
+        assert router.state == State.EXECUTING
 
     def test_enter_submits_auto(self) -> None:
         submitted: list[tuple[str, str]] = []
@@ -115,7 +117,7 @@ class TestQueryMode:
         router.handle(b"deploy")
         router.handle(bytes([0x0D]))
         assert submitted == [("deploy", "auto")]
-        assert router.state == State.PASSTHROUGH
+        assert router.state == State.EXECUTING
 
     def test_esc_cancels(self) -> None:
         cancelled: list[bool] = []
@@ -166,6 +168,7 @@ class TestQueryMode:
         router.handle(bytes([0x1F]))
         router.handle(b"query text")
         router.handle(bytes([0x0D]))
+        router.set_passthrough()
         assert forwarded == []
 
 
@@ -218,7 +221,7 @@ class TestQueryMode:
 
 
 class TestRoundTrip:
-    def test_passthrough_query_passthrough(self) -> None:
+    def test_passthrough_query_execute_passthrough(self) -> None:
         forwarded: list[bytes] = []
         submitted: list[tuple[str, str]] = []
         router = InputRouter(
@@ -230,8 +233,38 @@ class TestRoundTrip:
         router.handle(bytes([0x1F]))
         router.handle(b"query")
         router.handle(bytes([0x0D]))
+        # While executing: keys go to the executing handler, not the pty.
+        router.handle(b"during")
+        router.set_passthrough()  # the mode task finished
         router.handle(b"after")
 
         assert b"".join(forwarded) == b"beforeafter"
         assert submitted == [("query", "completion")]
         assert router.state == State.PASSTHROUGH
+
+
+class TestExecuting:
+    def test_bytes_forwarded_to_executing_handler(self) -> None:
+        received: list[int] = []
+        router = InputRouter(
+            write_to_pty=lambda d: None,
+            on_query_submit=lambda q, m: None,
+            on_query_cancel=lambda: None,
+        )
+        router.set_executing_input_handler(received.append)
+        router.handle(bytes([0x1F]))
+        router.handle(bytes([0x0D]))
+        assert router.state == State.EXECUTING
+        router.handle(b"y\x03")
+        assert received == [0x79, 0x03]
+
+    def test_bytes_discarded_without_handler(self) -> None:
+        router = InputRouter(
+            write_to_pty=lambda d: None,
+            on_query_submit=lambda q, m: None,
+            on_query_cancel=lambda: None,
+        )
+        router.handle(bytes([0x1F]))
+        router.handle(bytes([0x0D]))
+        router.handle(b"ignored")
+        assert router.state == State.EXECUTING

@@ -106,13 +106,16 @@
 │  TTYController      : outer ttyのraw化/復元        │
 │  InputRouter         : 1バイトずつ見て              │
 │                        hotkey検出 / モード分岐       │
-│  IORelay(select loop): outer <-> pty master 中継   │
+│  IORelay(asyncioポンプ): outer <-> pty master 中継  │
 │  ScreenBuffer        : pty出力の履歴保持(pyte併用)  │
 │  QueryModeUI         : ミニプロンプトの描画/入力回収  │
-│  LLMClient           : OpenAI API呼び出し           │
+│  LLMClient           : OpenAI API呼び出し(async)    │
 │  ModeExecutor        : completion / auto の実行制御 │
-│  SettleDetector      : 出力安定検知(auto mode用)    │
+│  settle.wait_settle  : 出力安定検知(auto mode用)    │
 └───────────────────────────────────────────────┘
+
+並行処理は asyncio 単一スレッドのイベントループで行う(スレッド・Lock は
+使わない)。詳細は **`DESIGN-Async.md`** を参照。
         │ pty master fd
         ▼
    pty slave ── child process ($SHELL, ssh, など)
@@ -137,22 +140,18 @@
 - child の終了(exit)を検知したら `jou` 自体も終了する。
 - child process には環境変数 `JOU_ACTIVE=1` を設定する(`execvp` で子孫プロセスに伝播)。`jou` は起動時にこの変数を検査し、既に設定されていれば「jou セッション内でのネスト起動」としてエラーメッセージを出して終了する(§10 参照)。意図的にネストしたい場合は `env -u JOU_ACTIVE jou` で回避できる。
 
-### 5.3 IORelay (メインループ)
+### 5.3 IORelay (常時ポンプ + イベントハブ)
 
-- 責務: `select.select()`(または `selectors` モジュール)で outer tty の stdin fd と pty master fd を監視し、双方向にバイトを中継する。
-- ループの概形:
+- 責務: asyncio イベントループ上で `loop.add_reader()` により outer tty の stdin fd と pty master fd を監視し、双方向にバイトを中継する常時ポンプ。加えて、モード実行のためのイベントハブ (settle 待ち・キー待ち・pty 読み取りの一時停止・モードタスク管理) を担う (DESIGN-Async.md §4.1)。
+- fd コールバックの概形 (同期処理のみ):
   ```
-  while running:
-      readable = select([outer_stdin_fd, pty_master_fd], [], [])
-      if outer_stdin_fd in readable:
-          data = os.read(outer_stdin_fd, 4096)
-          InputRouter.handle(data)   # hotkey検出 & 分岐
-      if pty_master_fd in readable:
-          data = os.read(pty_master_fd, 4096)
-          ScreenBuffer.feed(data)
-          os.write(outer_stdout_fd, data)   # passthrough中のみ描画
+  stdin_fd 読み取り → InputRouter.handle(data)   # hotkey検出 & 状態別ルーティング
+  pty_fd 読み取り   → ScreenBuffer.feed(data)
+                    → outer stdout へ書き込み
+                    → 出力イベント通知(settle検知用) / summary トリガー
   ```
-- query mode 中は pty master への書き込みを止める(ユーザー入力を child に渡さない)が、pty master からの出力読み取り自体は継続してバッファに溜め続けても良い(表示は保留)。
+- query mode 中は pty master への書き込みを止める(ユーザー入力を child に渡さない)。`[thinking...]` オーバーレイ表示中は `pause_pty()` で pty の読み取り自体を止める(カーネル背圧。オーバーレイと子プロセス出力の混線を防ぐ)。
+- クエリ確定でモード実行 (`ModeExecutor.execute`) を asyncio タスクとして起動し、実行中のユーザー Ctrl-C はこのタスクの `cancel()` になる。タスク終了 (done callback) で InputRouter を PASSTHROUGH に戻す。
 
 ### 5.4 InputRouter / ホットキー検出
 
@@ -187,7 +186,7 @@
 
 ### 5.7 LLMClient
 
-- OpenAI **Responses API** (`client.responses.parse()`) を利用する。モデルは設定可能(既定は現行世代の高速モデル)。
+- OpenAI **Responses API** (`AsyncOpenAI` の `client.responses.parse()` を await) を利用する。モデルは設定可能(既定は現行世代の高速モデル)。
 - 入力: `instructions=` でシステムプロンプト、`input=` でユーザーメッセージ、`text_format=` で Pydantic モデルを指定し Structured Outputs を強制する。
 - システムプロンプトは英語で記述し、「コマンド以外の出力はユーザーのクエリの言語に合わせる」旨を指示する。
 - completion mode 用スキーマ (`CompletionResponse`):
@@ -269,15 +268,15 @@ function_call 本体はサーバー側に保存されているため、クライ
   - LLM が function calling で `run_command` / `send_control` を呼び出すループとして実装する(§5.7)。tool call の実行(pty master への書き込み + settle 待ち + 新規出力の回収(§5.5 の mark / get_text_since)と `function_call_output` の構築)は ModeExecutor が担う。
   - **危険コマンドの確認ゲート(3層)**: (1) LLM が `run_command` の必須フィールド `risk`(`read_only` / `mutating` / `destructive`)+ `risk_reason` で毎コマンドのリスクを自己申告する(環境適応の主判定。ベンダー CLI の知識は LLM 側にあり、working summary の環境推測が精度を支える)。(2) 決定論的バックストップ: 組み込み + ユーザー定義(`~/.config/jou/dangerous_patterns.txt`、1行1正規表現・`#`コメント・大文字小文字無視)の正規表現にマッチしたコマンドは LLM の申告に関係なく `destructive` に**昇格**する(昇格専用 — 確認を免除する方向には働かない)。(3) `--confirm-level`(既定 `destructive`)以上のリスクのコマンドは実行前にユーザーへ y/n 確認。**拒否は abort ではなく** `function_call_output` で「ユーザーが拒否した」を LLM に返し、代替アプローチを取らせる。非対話環境では確認できないため拒否扱い。この機構は保証ではなくプロンプト削減であり(LLM 自己申告は prompt injection・自己評価バイアスに対し堅牢でない)、最終的な安全装置は「全コマンドと出力が常にユーザーの画面に見える」構造 + ユーザー在席 + Ctrl-C + チェックポイントである。
   - `run_command` のコマンドエコーは、jou のステータス表示と同じグレーで表示する。コマンド注入直前に outer tty へ SGR(グレー)を書き、エコーの最初の改行(Enter のエコー)が中継された時点でリセットする。改行が来ないまま settle・中断・EOF となった場合も必ずリセットする。SGR は outer tty にのみ書き、ScreenBuffer には入らないため LLM へ渡すテキストには影響しない(シェル自身がエコーに色を付ける場合はそちらが優先されうる、ベストエフォート)。
-  - ループ処理は下記 SettleDetector を利用する。`max_auto_steps`(既定 15、LLM 呼び出し回数でカウント)ステップごとに**チェックポイント**としてユーザーに継続確認(`continue? (y/n)`)を行う。y なら `previous_response_id` チェーンを維持したまま続行、n / Esc / Ctrl-C なら終了。hard-abort ではなく確認にすることで、上限が「タスク失敗」ではなく「人間の目を挟む機会」として機能する(対話型ツールとして、ユーザー在席が第一の安全装置)。確認待ちの間も pty 出力の中継は継続する。非対話環境(stdin なし)では確認できないため終了する。
+  - ループ処理は下記 settle 検知 (§5.9) を利用する。`max_auto_steps`(既定 15、LLM 呼び出し回数でカウント)ステップごとに**チェックポイント**としてユーザーに継続確認(`continue? (y/n)`)を行う。y なら `previous_response_id` チェーンを維持したまま続行、n / Esc / Ctrl-C なら終了。hard-abort ではなく確認にすることで、上限が「タスク失敗」ではなく「人間の目を挟む機会」として機能する(対話型ツールとして、ユーザー在席が第一の安全装置)。確認待ちの間も pty 出力の中継は継続する(常時ポンプが担う)。stdin が失われた場合(EOF)はセッション終了としてモードタスクがキャンセルされる。
   - LLMは `send_control` tool で制御文字（Ctrl-C等）を送信できる。これにより、長時間実行中のコマンドの中断などをLLM自身が判断できる。
   - ユーザーはいつでも `Ctrl-C` で auto mode を中断できるようにする(中断検知は InputRouter が auto mode 中の入力を優先的にハンドルする形にする)。
-  - LLM 呼び出し(各ステップの auto_step、およびクエリ直前の WorkingSummary 生成)は `BackgroundCall`(`jou.background`、daemon スレッド + 完了イベント)で実行し、メインスレッドは完了まで stdin を select で監視する。これにより **LLM 応答待ち中の Ctrl-C でも即座に中断**できる(応答は破棄され、tool call は実行されない)。HTTP リクエスト自体はキャンセルせず、abandon されたスレッドは裏で完走して結果ごと破棄される。バックグラウンドの LLM 呼び出しのスレッド起動は WorkingSummary の行数トリガー更新も含め、すべて `BackgroundCall` に統一する。
+  - LLM 呼び出し(各ステップの auto_step、およびクエリ直前の WorkingSummary 生成)は `AsyncOpenAI` を await する。モード実行全体が 1 つの asyncio タスクであり、**LLM 応答待ち中を含むあらゆる await 点で Ctrl-C により即座に中断**できる(タスクキャンセル)。キャンセル時は in-flight の HTTP リクエスト自体も中断され、後始末(オーバーレイ消去・SGR リセット・末尾改行)は finally で保証される (DESIGN-Async.md §5)。
 
-### 5.9 SettleDetector (出力安定検知)
+### 5.9 settle 検知 (出力安定検知)
 
-- auto mode でコマンド実行後、「出力が落ち着いた」タイミングを検知するために、シンプルなアイドルタイマー方式を採用する:
-  - コマンド送信後、pty master からの出力が最後に届いた時刻を記録。
+- auto mode でコマンド実行後、「出力が落ち着いた」タイミングを検知するために、シンプルなアイドルタイマー方式を採用する。実装は `settle.wait_settle()` コルーチン (IORelay の出力イベントを `asyncio.Event` 経由で待つ):
+  - コマンド送信後、pty master からの出力到着イベントを監視。
   - 一定時間(既定 300ms 〜 800ms、設定可能)出力が来なければ「settle」と判断。
   - settle せずに閾値時間(既定 30秒、設定可能)を超えた場合: タイムアウトエラーとはせず、その時点までの出力を tool の実行結果として LLM に送る。このとき「出力が settle しなかった(コマンドはまだ実行中の可能性がある)」旨の注記を結果に含め、LLM が次のアクションを判断する（例: `send_control` で Ctrl-C を送信してコマンドを中断する、さらに待つ、別のアプローチに切り替える等）。30秒以上継続するコマンド（ダウンロード、ビルド等）は日常的にあるため、一律でタイムアウト扱いにはしない。
 - シェル固有のプロンプトマーカー注入(PS1書き換え)には**依存しない**。これは ssh 越しやルーターCLIでは使えないため、汎用性を優先してアイドル検知のみで v0.1 を組む。将来的に「対応シェルではPS1マーカーも併用してより正確に検知する」拡張は可能(§11参照)。
@@ -309,7 +308,7 @@ function_call 本体はサーバー側に保存されているため、クライ
 | `COMPLETION_INJECT` | コマンド文字列をpty masterへ書き込み | 書き込み完了 → `PASSTHROUGH`                                 |
 | `AUTO_LOOP`         | 自動実行ループ                       | ゴール達成/失敗/上限到達/Ctrl-C → `PASSTHROUGH`              |
 
-※ 実装上は `QUERY_COMPLETION` と `QUERY_AUTO` のUI処理は共通化し、内部フラグで分岐すればよい。`LLM_COMPLETION` と `LLM_AUTO` も同様にLLMClient呼び出し自体は共通で、応答後のディスパッチのみ異なる。
+※ 実装上は `QUERY_COMPLETION` と `QUERY_AUTO` のUI処理は共通化し、内部フラグで分岐すればよい。`LLM_COMPLETION` と `LLM_AUTO` も同様にLLMClient呼び出し自体は共通で、応答後のディスパッチのみ異なる。InputRouter の実装では `LLM_*` 以降のモード実行中状態を `EXECUTING` に集約し、モードタスク (asyncio) の完了で `PASSTHROUGH` に戻る (DESIGN-Async.md §4.2)。
 
 ---
 
@@ -398,7 +397,7 @@ Working summary 生成用の LLM 接続 (URL・APIキー・モデル・reasoning
 
 ## 12. プロトタイプの実装スコープ (v0.1 MVP)
 
-実装は2段階で進める。ただし、Phase 1 の時点から auto mode を見据えた設計(状態機械、LLMClient のモード分岐、SettleDetector のインターフェース等)を組み込んでおくこと。
+実装は2段階で進める。ただし、Phase 1 の時点から auto mode を見据えた設計(状態機械、LLMClient のモード分岐、settle 検知のインターフェース等)を組み込んでおくこと。
 
 ### Phase 1: completion mode
 
@@ -445,9 +444,9 @@ jou/
 ## 14. 依存ライブラリ (想定)
 
 - `pyte` — 端末エミュレーション / クリーンテキスト化
-- `openai` — LLM呼び出し (OpenAI公式Python SDK、Structured Outputs対応)
-- `pytest` — テストフレームワーク (dev dependency)
-- 標準ライブラリ: `pty`, `termios`, `tty`, `select`, `os`, `signal`, `fcntl`, `struct`
+- `openai` — LLM呼び出し (OpenAI公式Python SDK、AsyncOpenAI / Structured Outputs対応)
+- `pytest` / `pytest-asyncio` — テストフレームワーク (dev dependency)
+- 標準ライブラリ: `asyncio`, `pty`, `termios`, `tty`, `os`, `signal`, `fcntl`, `struct`
 
 ## 16. テスト・型チェック方針
 

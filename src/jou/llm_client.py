@@ -213,14 +213,14 @@ def _build_summary_input(
 class LLMClient:
     def __init__(self, config: JouConfig) -> None:
         self._config = config
-        self._client: openai.OpenAI = openai.OpenAI(
+        self._client: openai.AsyncOpenAI = openai.AsyncOpenAI(
             api_key=config.openai_api_key,
             base_url=config.openai_base_url,
         )
         # Summary settings fall back to the main ones when unset, mirroring
         # the SUMMARY_OPENAI_* -> OPENAI_* env var fallback for configs
         # constructed without from_env().
-        self._summary_client: openai.OpenAI = openai.OpenAI(
+        self._summary_client: openai.AsyncOpenAI = openai.AsyncOpenAI(
             api_key=config.summary_openai_api_key or config.openai_api_key,
             base_url=config.summary_openai_base_url or config.openai_base_url,
         )
@@ -239,7 +239,7 @@ class LLMClient:
         with open(self._log_file, "a") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
-    def complete(
+    async def complete(
         self,
         screen_text: str,
         query: str,
@@ -271,7 +271,7 @@ class LLMClient:
             "input": list(input_msgs),
         })
 
-        response = self._client.responses.parse(
+        response = await self._client.responses.parse(
             model=self._config.model,
             instructions=instructions,
             input=input_msgs,
@@ -293,7 +293,7 @@ class LLMClient:
 
         return result
 
-    def auto_step(
+    async def auto_step(
         self,
         input_items: ResponseInputParam,
         previous_response_id: str | None = None,
@@ -315,7 +315,7 @@ class LLMClient:
             "previous_response_id": previous_response_id,
         })
 
-        response = self._client.responses.parse(
+        response = await self._client.responses.parse(
             model=self._config.model,
             instructions=instructions,
             input=input_items,
@@ -383,7 +383,7 @@ class LLMClient:
             )
         return ParsedToolCall(call_id=call_id, name=item.name, params=params)
 
-    def summarize(
+    async def summarize(
         self,
         previous: SummaryResult | None,
         new_output: str,
@@ -407,7 +407,7 @@ class LLMClient:
         })
 
         try:
-            response = self._summary_client.responses.parse(
+            response = await self._summary_client.responses.parse(
                 model=self._summary_model,
                 instructions=SUMMARY_SYSTEM_PROMPT,
                 input=input_msgs,

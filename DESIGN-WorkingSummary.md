@@ -82,8 +82,8 @@ LLM 呼び出し時 (completion mode / auto mode 共通) にシステムプロ�
    必ず一度は要約対象になる」ことを実用上保証する (§7 の不変条件)。
    蓄積量の計測には `ScreenBuffer` の「スクロールバックへ押し出した累計行数」
    単調カウンタ (`_CountingDeque.total_appended`、DESIGN.md §5.5) を利用する。
-3. **非ブロッキング**: 行数トリガーの更新はバックグラウンドスレッドで行い、
-   パススルー中継 (select ループ) は一切ブロックしない。
+3. **非ブロッキング**: 行数トリガーの更新はバックグラウンドの asyncio タスクで
+   行い、パススルー中継 (relay ポンプ) は一切ブロックしない。
 4. **要約が無意味な序盤はスキップ**: 出力が生画面ウィンドウ以内に収まっているうちは
    生画面が全履歴をカバーしており summary は冗長。遅延同期生成は
    「トリガー行数以上溜まっているのに summary がない」場合のみ行う。
@@ -107,7 +107,7 @@ class SummaryResult(BaseModel):
 ### 4.2 生成メソッド
 
 ```python
-def summarize(
+async def summarize(
     self,
     previous: SummaryResult | None,
     new_output: str,
@@ -180,21 +180,22 @@ class WorkingSummaryManager:
         """システムプロンプト用に整形済みの要約。未生成なら None"""
 
     def check_trigger(self) -> None:
-        """IORelay ループから毎回呼ばれる。前回生成以降 trigger_lines 行
-        溜まっていて、更新が in-flight でなければバックグラウンド更新を開始"""
+        """IORelay の pty コールバックから毎回呼ばれる。前回生成以降
+        trigger_lines 行溜まっていて、更新が in-flight でなければ
+        バックグラウンド更新 (asyncio.Task) を開始"""
 
-    def ensure_summary(self) -> None:
-        """ModeExecutor.execute() 冒頭から呼ばれる同期パス。
-        - 更新が in-flight → 完了を待つ (Event.wait)
-        - summary が無く、かつ蓄積行数 >= trigger_lines → 同期生成
+    async def ensure_summary(self) -> None:
+        """ModeExecutor.execute() 冒頭で await される。
+        - 更新が in-flight → 完了を待つ (asyncio.wait)
+        - summary が無く、かつ蓄積行数 >= trigger_lines → インライン生成
         - それ以外 → 何もしない"""
 ```
 
-### 5.1 内部状態 (`threading.Lock` で保護)
+### 5.1 内部状態 (イベントループ単一スレッドのため Lock 不要)
 
 - `_summary: SummaryResult | None` — 最新の要約
 - `_last_gen_scrolled: int` — 前回生成時点の `screen_buffer.scrolled_lines_total`
-- `_inflight: BackgroundCall[None] | None` — 実行中のバックグラウンド更新(`jou.background.BackgroundCall`。完了判定・待機はこのオブジェクトの `done` / `wait()` で行う)
+- `_inflight: asyncio.Task[None] | None` — 実行中のバックグラウンド更新
 
 ### 5.2 蓄積量の計測と差分更新の入力
 
@@ -225,24 +226,35 @@ new_output = screen_buffer.get_scrolled_tail(min(pending, max_input_lines))
 
 ---
 
-## 6. スレッドモデル
+## 6. 並行処理モデル (asyncio 単一スレッド)
 
-- **メインスレッド**: select ループ (passthrough) / auto ループ。
-- **背景スレッド**: LLM 呼び出しのみ。スレッド起動は `jou.background.BackgroundCall`
-  (daemon スレッド + 完了イベント + 結果/例外の受け渡し) に統一されており、
-  行数トリガーの要約更新は更新 1 回につき `BackgroundCall` を 1 本起動する。
-  共有状態は §5.1 の 3 つのみで、すべて Lock 経由でアクセスする。
-  HTTP 待ちで GIL は解放されるためパススルーの体感遅延はない。
+すべて asyncio イベントループ上で動く。スレッド・Lock は使わない
+(全体設計は DESIGN-Async.md 参照)。
+
+- **fd コールバック**: IORelay の pty コールバックが `check_trigger()` を呼び、
+  条件を満たせば `_refresh()` を `asyncio.Task` として起動する。
+  HTTP 待ちは await であり、パススルー中継をブロックしない。
 - **競合ケース**: 背景更新中にユーザーがクエリを確定 → `ensure_summary()` が
-  `_inflight.wait()` で完了を待つ (summary が古い/無い状態で本来の呼び出しを行うと
-  品質が下がるため、同期的に待つ)。待ち時間は `[thinking...]` 表示でカバーされる。
-- **auto mode からの呼び出し**: `ensure_summary()` 自体も ModeExecutor が
-  `BackgroundCall` で実行し、メインスレッドは stdin を監視する (LLM 待ち中の
-  Ctrl-C 中断のため。DESIGN.md §5.8 参照)。`check_trigger()` はメインスレッド
-  (IORelay) からのみ呼ばれ、クエリ処理中は relay ループが止まっているため
-  `ensure_summary()` と並行実行されることはない。
-- **auto ループ中はトリガーチェックを行わない**: チェーン内で instructions が揺れない・
-  スレッド競合を避けるため。auto ループ中の出力は passthrough 復帰後にまとめて要約される。
+  in-flight タスクの完了を `asyncio.wait` で待つ (summary が古い/無い状態で
+  本来の呼び出しを行うと品質が下がるため)。待ち時間は `[thinking...]` 表示で
+  カバーされる。
+- **Ctrl-C との関係**: `ensure_summary()` はモードタスク内で await されるため、
+  ユーザー Ctrl-C (モードタスクのキャンセル) で即座に中断できる。
+  行数トリガー起動の背景タスクは await 側のキャンセルに巻き込まれず完走し、
+  結果は次回のクエリに活きる。インライン生成は一緒にキャンセルされ、
+  次回トリガーで再試行される。
+- **`_refresh()` 内のスクリーン読み取りは最初の await より前に完了させる**:
+  単一スレッドのため、これで feed との競合は構造上起きない
+  (旧スレッド実装に存在した deque 走査と append の潜在競合の解消)。
+- **`[thinking...]` 中は pty 読み取りが止まる** (`pause_pty`) ため、
+  `ensure_summary()` の実行中に `check_trigger()` が並行して新しい更新を
+  始めることはない。
+- **auto ループ中のトリガー**: settle 待ち中はポンプが動くため
+  `check_trigger()` による背景更新は auto ループと並行して走りうる。
+  背景更新は読み取り専用 API (`get_scrolled_tail` 等) しか使わないため
+  auto mode の `mark()`/`get_text_since()` と干渉しない (§10-5)。
+  auto ループは開始時に取得した summary を実行中ずっと使う
+  (1 回の auto 実行内では同一 summary) ため、instructions が揺れることもない。
 
 ---
 

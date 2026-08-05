@@ -1,5 +1,7 @@
 import argparse
+import asyncio
 import os
+import signal
 import sys
 
 from dotenv import load_dotenv
@@ -150,32 +152,14 @@ def main(argv: list[str] | None = None) -> None:
         assert pty_mgr.master_fd is not None
         os.write(pty_mgr.master_fd, data)
 
-    def get_pty_master_fd() -> int:
-        assert pty_mgr.master_fd is not None
-        return pty_mgr.master_fd
-
-    mode_executor = ModeExecutor(
-        llm_client=llm_client,
-        screen_buffer=screen_buffer,
-        write_to_pty=write_to_pty,
-        stdout_fd=stdout_fd,
-        stdin_fd=stdin_fd,
-        get_pty_master_fd=get_pty_master_fd,
-        settle_ms=config.settle_ms,
-        threshold_ms=config.threshold_ms,
-        max_auto_steps=config.max_auto_steps,
-        history_lines=config.history_lines,
-        working_summary=working_summary,
-        confirm_level=config.confirm_level,
-        dangerous_matcher=dangerous_matcher,
-    )
-
+    # on_query_submit closes over relay and mode_executor, which are
+    # created below; both exist before any input can arrive.
     def on_query_submit(query: str, mode: str) -> None:
         if mode == "auto":
             query_ui.finalize()
         else:
             query_ui.deactivate()
-        mode_executor.execute(query, mode)
+        relay.start_mode(mode_executor.execute(query, mode))
 
     input_router = InputRouter(
         write_to_pty=write_to_pty,
@@ -196,20 +180,46 @@ def main(argv: list[str] | None = None) -> None:
         working_summary=working_summary,
     )
 
-    tty_ctrl.enter_raw()
-    try:
+    mode_executor = ModeExecutor(
+        llm_client=llm_client,
+        screen_buffer=screen_buffer,
+        write_to_pty=write_to_pty,
+        stdout_fd=stdout_fd,
+        relay=relay,
+        settle_ms=config.settle_ms,
+        threshold_ms=config.threshold_ms,
+        max_auto_steps=config.max_auto_steps,
+        history_lines=config.history_lines,
+        working_summary=working_summary,
+        confirm_level=config.confirm_level,
+        dangerous_matcher=dangerous_matcher,
+    )
+
+    async def run_session() -> int:
+        loop = asyncio.get_running_loop()
         pty_mgr.spawn(command)
         assert pty_mgr.master_fd is not None
+        master_fd = pty_mgr.master_fd
         rows, cols = tty_ctrl.get_window_size()
-        tty_ctrl.set_pty_window_size(pty_mgr.master_fd, rows, cols)
+        tty_ctrl.set_pty_window_size(master_fd, rows, cols)
         screen_buffer.resize(rows, cols)
-        tty_ctrl.setup_sigwinch(pty_mgr.master_fd)
 
-        relay.run(pty_mgr.master_fd, stdin_fd=stdin_fd, stdout_fd=stdout_fd)
+        def on_sigwinch() -> None:
+            rows, cols = tty_ctrl.get_window_size()
+            tty_ctrl.set_pty_window_size(master_fd, rows, cols)
+            screen_buffer.resize(rows, cols)
 
-        exit_code = pty_mgr.wait()
+        loop.add_signal_handler(signal.SIGWINCH, on_sigwinch)
+        try:
+            await relay.run(master_fd, stdin_fd=stdin_fd, stdout_fd=stdout_fd)
+        finally:
+            loop.remove_signal_handler(signal.SIGWINCH)
+        return pty_mgr.wait()
+
+    tty_ctrl.enter_raw()
+    try:
+        exit_code = asyncio.run(run_session())
     finally:
-        tty_ctrl.cleanup_sigwinch()
         pty_mgr.close()
         tty_ctrl.restore()
         if raw_io_log_fh is not None:

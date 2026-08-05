@@ -21,8 +21,6 @@ class TestTTYControllerWithPTY:
         ctrl._fd = self.slave_fd
         ctrl._is_tty = True
         ctrl._original_termios = None
-        ctrl._original_sigwinch = None
-        ctrl._pty_fd = None
 
         original = termios.tcgetattr(self.slave_fd)
         ctrl.enter_raw()
@@ -39,8 +37,6 @@ class TestTTYControllerWithPTY:
         ctrl._fd = self.slave_fd
         ctrl._is_tty = True
         ctrl._original_termios = None
-        ctrl._original_sigwinch = None
-        ctrl._pty_fd = None
 
         ctrl.set_pty_window_size(self.slave_fd, 40, 120)
         rows, cols = ctrl.get_window_size()
@@ -56,8 +52,6 @@ class TestTTYControllerNonTTY:
             ctrl._fd = r
             ctrl._is_tty = False
             ctrl._original_termios = None
-            ctrl._original_sigwinch = None
-            ctrl._pty_fd = None
 
             ctrl.enter_raw()
             assert ctrl._original_termios is None
@@ -72,8 +66,6 @@ class TestTTYControllerNonTTY:
             ctrl._fd = r
             ctrl._is_tty = False
             ctrl._original_termios = None
-            ctrl._original_sigwinch = None
-            ctrl._pty_fd = None
 
             rows, cols = ctrl.get_window_size()
             assert rows == 24

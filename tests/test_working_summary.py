@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import threading
+import asyncio
 
 from jou.llm_client import SummaryResult
 from jou.screen_buffer import ScreenBuffer
@@ -11,21 +11,21 @@ class FakeSummaryLLM:
     def __init__(self) -> None:
         self.calls: list[tuple[SummaryResult | None, str, bool]] = []
         self.fail: bool = False
-        self.block: threading.Event | None = None
+        self.block: asyncio.Event | None = None
         self.result: SummaryResult = SummaryResult(
             environment="local shell (bash)",
             activities="listing files",
             notes="no errors",
         )
 
-    def summarize(
+    async def summarize(
         self,
         previous: SummaryResult | None,
         new_output: str,
         truncated: bool = False,
     ) -> SummaryResult:
         if self.block is not None:
-            self.block.wait(timeout=5)
+            await asyncio.wait_for(self.block.wait(), timeout=5)
         self.calls.append((previous, new_output, truncated))
         if self.fail:
             raise RuntimeError("summary LLM failed")
@@ -53,19 +53,19 @@ def _feed_lines(screen: ScreenBuffer, n: int, prefix: str = "line") -> None:
 
 
 class TestCheckTrigger:
-    def test_below_trigger_does_nothing(self) -> None:
+    async def test_below_trigger_does_nothing(self) -> None:
         manager, llm, screen = _make_manager(trigger_lines=100)
         _feed_lines(screen, 10)
         manager.check_trigger()
-        manager.ensure_summary()  # would wait for any in-flight update
+        await manager.ensure_summary()  # would wait for any in-flight update
         assert llm.calls == []
         assert manager.summary_text is None
 
-    def test_above_trigger_generates_in_background(self) -> None:
+    async def test_above_trigger_generates_in_background(self) -> None:
         manager, llm, screen = _make_manager(trigger_lines=5)
         _feed_lines(screen, 20)
         manager.check_trigger()
-        manager.ensure_summary()  # wait for the background update
+        await manager.ensure_summary()  # wait for the background update
         assert len(llm.calls) == 1
         text = manager.summary_text
         assert text is not None
@@ -74,24 +74,24 @@ class TestCheckTrigger:
         assert "Activities so far: listing files" in text
         assert "Notes: no errors" in text
 
-    def test_first_generation_has_no_previous(self) -> None:
+    async def test_first_generation_has_no_previous(self) -> None:
         manager, llm, screen = _make_manager(trigger_lines=5)
         _feed_lines(screen, 20)
         manager.check_trigger()
-        manager.ensure_summary()
+        await manager.ensure_summary()
         previous, new_output, truncated = llm.calls[0]
         assert previous is None
         assert "line 0" in new_output
         assert truncated is False
 
-    def test_incremental_update_passes_previous(self) -> None:
+    async def test_incremental_update_passes_previous(self) -> None:
         manager, llm, screen = _make_manager(trigger_lines=5)
         _feed_lines(screen, 20, prefix="first")
         manager.check_trigger()
-        manager.ensure_summary()
+        await manager.ensure_summary()
         _feed_lines(screen, 20, prefix="second")
         manager.check_trigger()
-        manager.ensure_summary()
+        await manager.ensure_summary()
         assert len(llm.calls) == 2
         previous, new_output, _ = llm.calls[1]
         assert previous == llm.result
@@ -102,70 +102,89 @@ class TestCheckTrigger:
         assert "first 0" not in new_output
         assert "first 17" not in new_output
 
-    def test_no_retrigger_while_in_flight(self) -> None:
+    async def test_no_retrigger_while_in_flight(self) -> None:
         manager, llm, screen = _make_manager(trigger_lines=5)
-        llm.block = threading.Event()
+        llm.block = asyncio.Event()
         _feed_lines(screen, 20)
         manager.check_trigger()
+        await asyncio.sleep(0)  # let the background task start
         manager.check_trigger()  # in flight: must not start a second update
         llm.block.set()
-        manager.ensure_summary()
+        await manager.ensure_summary()
         assert len(llm.calls) == 1
 
-    def test_truncated_when_pending_exceeds_max_input(self) -> None:
+    async def test_truncated_when_pending_exceeds_max_input(self) -> None:
         manager, llm, screen = _make_manager(trigger_lines=5, max_input_lines=10)
         _feed_lines(screen, 30)
         manager.check_trigger()
-        manager.ensure_summary()
+        await manager.ensure_summary()
         _, new_output, truncated = llm.calls[0]
         assert truncated is True
         assert len(new_output.split("\n")) <= 10
 
 
 class TestEnsureSummary:
-    def test_generates_synchronously_when_missing(self) -> None:
+    async def test_generates_inline_when_missing(self) -> None:
         manager, llm, screen = _make_manager(trigger_lines=5)
         _feed_lines(screen, 20)
-        manager.ensure_summary()
+        await manager.ensure_summary()
         assert len(llm.calls) == 1
         assert manager.summary_text is not None
 
-    def test_skips_when_below_trigger(self) -> None:
+    async def test_skips_when_below_trigger(self) -> None:
         manager, llm, screen = _make_manager(trigger_lines=100)
         _feed_lines(screen, 10)
-        manager.ensure_summary()
+        await manager.ensure_summary()
         assert llm.calls == []
 
-    def test_waits_for_in_flight_update(self) -> None:
+    async def test_waits_for_in_flight_update(self) -> None:
         manager, llm, screen = _make_manager(trigger_lines=5)
-        llm.block = threading.Event()
+        llm.block = asyncio.Event()
         _feed_lines(screen, 20)
         manager.check_trigger()
-        threading.Timer(0.05, llm.block.set).start()
-        manager.ensure_summary()  # must block until the background update ends
+        asyncio.get_running_loop().call_later(0.02, llm.block.set)
+        await manager.ensure_summary()  # must wait for the background update
         assert len(llm.calls) == 1
         assert manager.summary_text is not None
 
-    def test_does_not_regenerate_when_summary_exists(self) -> None:
+    async def test_does_not_regenerate_when_summary_exists(self) -> None:
         manager, llm, screen = _make_manager(trigger_lines=5)
         _feed_lines(screen, 20)
-        manager.ensure_summary()
-        manager.ensure_summary()
+        await manager.ensure_summary()
+        await manager.ensure_summary()
         assert len(llm.calls) == 1
+
+    async def test_cancellation_leaves_background_update_running(self) -> None:
+        """Cancelling the caller of ensure_summary() (mode task Ctrl-C)
+        does not cancel the background update task; its result lands."""
+        manager, llm, screen = _make_manager(trigger_lines=5)
+        llm.block = asyncio.Event()
+        _feed_lines(screen, 20)
+        manager.check_trigger()
+        waiter = asyncio.create_task(manager.ensure_summary())
+        await asyncio.sleep(0)
+        waiter.cancel()
+        await asyncio.gather(waiter, return_exceptions=True)
+        assert waiter.cancelled()
+
+        llm.block.set()
+        await manager.ensure_summary()
+        assert len(llm.calls) == 1
+        assert manager.summary_text is not None
 
 
 class TestErrorHandling:
-    def test_failure_keeps_old_summary_and_retries(self) -> None:
+    async def test_failure_keeps_old_summary_and_retries(self) -> None:
         manager, llm, screen = _make_manager(trigger_lines=5)
         _feed_lines(screen, 20)
         manager.check_trigger()
-        manager.ensure_summary()
+        await manager.ensure_summary()
         assert manager.summary_text is not None
 
         llm.fail = True
         _feed_lines(screen, 20)
         manager.check_trigger()
-        manager.ensure_summary()
+        await manager.ensure_summary()
         assert len(llm.calls) == 2
         assert manager.summary_text is not None  # old summary kept
 
@@ -173,13 +192,13 @@ class TestErrorHandling:
         # without needing more output.
         llm.fail = False
         manager.check_trigger()
-        manager.ensure_summary()
+        await manager.ensure_summary()
         assert len(llm.calls) == 3
 
-    def test_failure_without_summary_leaves_none(self) -> None:
+    async def test_failure_without_summary_leaves_none(self) -> None:
         manager, llm, screen = _make_manager(trigger_lines=5)
         llm.fail = True
         _feed_lines(screen, 20)
         manager.check_trigger()
-        manager.ensure_summary()
+        await manager.ensure_summary()
         assert manager.summary_text is None
