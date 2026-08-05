@@ -9,7 +9,7 @@ from jou.input_router import InputRouter
 from jou.io_relay import IORelay
 from jou.llm_client import LLMClient
 from jou.mode_executor import ModeExecutor
-from jou.pty_manager import PTYManager
+from jou.pty_manager import NESTING_ENV_VAR, PTYManager
 from jou.query_ui import QueryModeUI
 from jou.screen_buffer import ScreenBuffer
 from jou.tty_controller import TTYController
@@ -69,6 +69,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def main(argv: list[str] | None = None) -> None:
+    if os.environ.get(NESTING_ENV_VAR):
+        print(
+            "jou: already inside a jou session; nested sessions are not supported. exited.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     load_dotenv()
 
     args = parse_args(argv)
