@@ -446,6 +446,42 @@ class TestAutoMode:
                     except OSError:
                         pass
 
+    def test_multiline_explanation_uses_crlf(self) -> None:
+        """Newlines in the final explanation are written as CRLF (raw mode has no ONLCR)."""
+        auto_results = [
+            _final_result(1, "done", "Summary:\n- item one\n- item two"),
+        ]
+        fake_llm = FakeLLMClient(auto_results=auto_results)
+        screen = ScreenBuffer()
+
+        stdout_r, stdout_w = os.pipe()
+        pty_r, pty_w = os.pipe()
+
+        try:
+            executor = ModeExecutor(
+                llm_client=fake_llm,
+                screen_buffer=screen,
+                write_to_pty=lambda d: None,
+                stdout_fd=stdout_w,
+                get_pty_master_fd=lambda: pty_r,
+                settle_ms=10,
+            )
+            executor.execute("summarize", "auto")
+
+            os.close(stdout_w)
+            stdout_w = -1
+            stdout_output = _drain(stdout_r)
+            assert b"Summary:\r\n- item one\r\n- item two" in stdout_output
+            end_marker = stdout_output[stdout_output.index(b"[auto done:"):]
+            assert b"\r\n" in end_marker
+        finally:
+            for fd in [stdout_r, stdout_w, pty_r, pty_w]:
+                if fd >= 0:
+                    try:
+                        os.close(fd)
+                    except OSError:
+                        pass
+
     def test_tool_output_chaining(self) -> None:
         """Tool results are sent back as function_call_output with previous_response_id."""
         pty_r, pty_w = os.pipe()

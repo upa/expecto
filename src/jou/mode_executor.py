@@ -166,9 +166,12 @@ class ModeExecutor:
         os.write(self._stdout_fd, f"\x1b[90m{msg}\x1b[0m".encode())
 
     def _show_auto_end(self, label: str) -> None:
+        # The outer tty is in raw mode (no ONLCR), so bare "\n" moves down
+        # without returning to column 0; normalize to "\r\n".
+        text = f"[auto {label}]".replace("\r\n", "\n").replace("\n", "\r\n")
         os.write(
             self._stdout_fd,
-            f"\x1b[90m[auto {label}]\x1b[0m".encode(),
+            f"\x1b[90m{text}\x1b[0m".encode(),
         )
 
     def _wait_for_settle(
