@@ -500,7 +500,7 @@ class TestAutoMode:
             assert len(second_call) == 3
             assert second_call[1]["role"] == "assistant"
             assert second_call[2]["role"] == "user"
-            assert "コマンド実行結果" in str(second_call[2]["content"])
+            assert "Command Output" in str(second_call[2]["content"])
         finally:
             for fd in [stdout_r, stdout_w, pty_r, pty_w]:
                 if fd >= 0:

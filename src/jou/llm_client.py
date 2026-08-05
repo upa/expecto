@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Literal
+import json
+import time
+from typing import TYPE_CHECKING, Any, Literal
 
 import openai
 from openai.types.responses import EasyInputMessageParam, ResponseInputParam
@@ -11,22 +13,32 @@ if TYPE_CHECKING:
     from jou.config import JouConfig
 
 SYSTEM_PROMPT = """\
-あなたはユーザーの操作しているターミナル（またはSSH先、あるいはネットワーク機器のCLI）\
-に対してコマンドを提案するアシスタントです。
-- 直近のターミナル画面の内容を参照し、現在どのシステム/シェル/CLIに接続されているかを判断してください。
-- 1つのコマンドだけを提案してください。実行はユーザーが行います。
+You are an assistant that suggests commands for the terminal the user is \
+operating (which may be a local shell, an SSH session, or a vendor CLI on \
+a network device such as a router or switch).
+- Examine the recent terminal screen content to determine what system, \
+shell, or CLI the user is currently connected to.
+- Suggest exactly one command. The user will review and execute it themselves.
+- The command itself must always be in the appropriate syntax for the target system.
+- For all other output (explanation, etc.), respond in the same language \
+the user wrote their query in.
 """
 
 AUTO_SYSTEM_PROMPT = """\
-あなたはユーザーの操作しているターミナル（またはSSH先、あるいはネットワーク機器のCLI）\
-に対してコマンドを実行するアシスタントです。
-- ユーザーが指定したゴールを達成するために、コマンドを1つずつ実行してください。
-- 各ステップで、前のコマンドの出力を確認し、次のアクションを判断してください。
-- 次のコマンドを実行する場合は status を "continue" にし、action にコマンドまたは制御文字を指定してください。
-- ゴールが達成できたら status を "done" にしてください。action は不要です。
-- エラーが発生して回復不能な場合は status を "fail" にしてください。action は不要です。
-- コマンドが長時間実行されている場合、action.type を "control" にして \
-"ctrl-c" 等の制御文字を送信できます。
+You are an assistant that executes commands on the terminal the user is \
+operating (which may be a local shell, an SSH session, or a vendor CLI on \
+a network device such as a router or switch).
+- Execute commands one at a time to achieve the user's goal.
+- At each step, review the output of the previous command and decide the next action.
+- To execute the next command, set status to "continue" and specify the \
+command or control character in action.
+- When the goal is achieved, set status to "done". No action is needed.
+- If an unrecoverable error occurs, set status to "fail". No action is needed.
+- If a command is running for too long, you can send a control character \
+(e.g. "ctrl-c") by setting action.type to "control".
+- The command itself must always be in the appropriate syntax for the target system.
+- For all other output (explanation, etc.), respond in the same language \
+the user wrote their query in.
 """
 
 
@@ -53,18 +65,41 @@ class LLMClient:
             api_key=config.openai_api_key,
             base_url=config.openai_base_url,
         )
+        self._log_file = config.log_file
+
+    def _log(self, entry: dict[str, Any]) -> None:
+        if self._log_file is None:
+            return
+        entry["timestamp"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+        with open(self._log_file, "a") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
     def complete(self, screen_text: str, query: str) -> CompletionResponse:
-        user_content = f"## ターミナル画面\n```\n{screen_text}\n```\n\n## ユーザーのリクエスト\n{query}"
+        user_content = f"## Terminal Screen\n```\n{screen_text}\n```\n\n## User Request\n{query}"
         input_msgs: ResponseInputParam = [
             {"role": "user", "content": user_content},
         ]
+
+        self._log({
+            "type": "query",
+            "mode": "completion",
+            "query": query,
+        })
 
         reasoning: Reasoning | None = (
             Reasoning(effort=self._config.openai_reasoning_effort)
             if self._config.openai_reasoning_effort is not None
             else None
         )
+
+        self._log({
+            "type": "llm_request",
+            "mode": "completion",
+            "model": self._config.model,
+            "instructions": SYSTEM_PROMPT,
+            "input": list(input_msgs),
+        })
+
         response = self._client.responses.parse(
             model=self._config.model,
             instructions=SYSTEM_PROMPT,
@@ -75,8 +110,17 @@ class LLMClient:
 
         parsed = response.output_parsed
         if parsed is None:
-            return CompletionResponse(command="", explanation="LLM returned empty response")
-        return parsed
+            result = CompletionResponse(command="", explanation="LLM returned empty response")
+        else:
+            result = parsed
+
+        self._log({
+            "type": "llm_response",
+            "mode": "completion",
+            "response": result.model_dump(),
+        })
+
+        return result
 
     def auto_step(self, messages: list[EasyInputMessageParam]) -> AutoResponse:
         input_msgs: ResponseInputParam = list(messages)
@@ -85,6 +129,15 @@ class LLMClient:
             if self._config.openai_reasoning_effort is not None
             else None
         )
+
+        self._log({
+            "type": "llm_request",
+            "mode": "auto",
+            "model": self._config.model,
+            "instructions": AUTO_SYSTEM_PROMPT,
+            "input": list(input_msgs),
+        })
+
         response = self._client.responses.parse(
             model=self._config.model,
             instructions=AUTO_SYSTEM_PROMPT,
@@ -95,11 +148,20 @@ class LLMClient:
 
         parsed = response.output_parsed
         if parsed is None:
-            return AutoResponse(
+            result = AutoResponse(
                 status="fail",
                 explanation="LLM returned empty response",
             )
-        return parsed
+        else:
+            result = parsed
+
+        self._log({
+            "type": "llm_response",
+            "mode": "auto",
+            "response": result.model_dump(),
+        })
+
+        return result
 
     def build_auto_messages(
         self,
@@ -107,7 +169,13 @@ class LLMClient:
         screen_text: str,
         history: list[EasyInputMessageParam],
     ) -> list[EasyInputMessageParam]:
-        user_content = f"## ゴール\n{query}\n\n## 現在のターミナル画面\n```\n{screen_text}\n```"
+        if not history:
+            self._log({
+                "type": "query",
+                "mode": "auto",
+                "query": query,
+            })
+        user_content = f"## Goal\n{query}\n\n## Current Terminal Screen\n```\n{screen_text}\n```"
         messages: list[EasyInputMessageParam] = [
             {"role": "user", "content": user_content},
         ]

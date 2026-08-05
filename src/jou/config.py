@@ -30,6 +30,7 @@ class JouConfig:
     max_auto_steps: int
     completion_hotkey: int
     auto_hotkey: int
+    raw_io_log_file: str | None
     log_file: str | None
 
     @classmethod
@@ -49,5 +50,6 @@ class JouConfig:
             max_auto_steps=10,
             completion_hotkey=0x1F,
             auto_hotkey=0x1D,
+            raw_io_log_file=None,
             log_file=None,
         )

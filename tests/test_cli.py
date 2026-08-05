@@ -12,6 +12,10 @@ class TestParseArgs:
         args = parse_args(["--shell", "/bin/zsh"])
         assert args.shell == "/bin/zsh"
 
+    def test_raw_io_log_file_option(self):
+        args = parse_args(["--raw-io-log-file", "/tmp/jou-raw.log"])
+        assert args.raw_io_log_file == "/tmp/jou-raw.log"
+
     def test_log_file_option(self):
         args = parse_args(["--log-file", "/tmp/jou.log"])
         assert args.log_file == "/tmp/jou.log"
@@ -21,7 +25,8 @@ class TestParseArgs:
         assert args.command == ["ssh", "myhost"]
 
     def test_all_options(self):
-        args = parse_args(["--shell", "/bin/zsh", "--log-file", "/tmp/log", "--", "echo", "hi"])
+        args = parse_args(["--shell", "/bin/zsh", "--raw-io-log-file", "/tmp/raw.log", "--log-file", "/tmp/log", "--", "echo", "hi"])
         assert args.shell == "/bin/zsh"
+        assert args.raw_io_log_file == "/tmp/raw.log"
         assert args.log_file == "/tmp/log"
         assert args.command == ["echo", "hi"]

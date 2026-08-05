@@ -119,7 +119,7 @@ class ModeExecutor:
             history.append({
                 "role": "user",
                 "content": (
-                    f"## コマンド実行結果\n```\n{new_screen_text}\n```"
+                    f"## Command Output\n```\n{new_screen_text}\n```"
                 ),
             })
         else:

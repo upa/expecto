@@ -1,3 +1,6 @@
+import json
+import tempfile
+
 from openai.types.responses import EasyInputMessageParam
 
 from jou.config import JouConfig
@@ -24,6 +27,7 @@ def _make_config() -> JouConfig:
         max_auto_steps=10,
         completion_hotkey=0x1F,
         auto_hotkey=0x1D,
+        raw_io_log_file=None,
         log_file=None,
     )
 
@@ -82,13 +86,15 @@ class TestLLMClient:
         assert client._client.api_key == "sk-test"
 
     def test_system_prompt_exists(self) -> None:
-        assert "ターミナル" in SYSTEM_PROMPT
-        assert "コマンド" in SYSTEM_PROMPT
+        assert "terminal" in SYSTEM_PROMPT.lower()
+        assert "command" in SYSTEM_PROMPT.lower()
+        assert "same language" in SYSTEM_PROMPT.lower()
 
     def test_auto_system_prompt_exists(self) -> None:
-        assert "ターミナル" in AUTO_SYSTEM_PROMPT
-        assert "ゴール" in AUTO_SYSTEM_PROMPT
-        assert "control" in AUTO_SYSTEM_PROMPT
+        assert "terminal" in AUTO_SYSTEM_PROMPT.lower()
+        assert "goal" in AUTO_SYSTEM_PROMPT.lower()
+        assert "control" in AUTO_SYSTEM_PROMPT.lower()
+        assert "same language" in AUTO_SYSTEM_PROMPT.lower()
 
     def test_build_auto_messages_initial(self) -> None:
         client = LLMClient(_make_config())
@@ -135,3 +141,38 @@ class TestLLMClient:
         assert messages[0]["role"] == "user"
         assert "setup nginx" in str(messages[0]["content"])
         assert len(messages) == 5
+
+    def test_log_query_on_build_auto_initial(self) -> None:
+        with tempfile.NamedTemporaryFile(mode="r", suffix=".jsonl", delete=False) as f:
+            log_path = f.name
+        config = _make_config()
+        config.log_file = log_path
+        client = LLMClient(config)
+        client.build_auto_messages(query="check disk", screen_text="$ ", history=[])
+        with open(log_path) as f:
+            lines = f.readlines()
+        assert len(lines) == 1
+        entry = json.loads(lines[0])
+        assert entry["type"] == "query"
+        assert entry["mode"] == "auto"
+        assert entry["query"] == "check disk"
+        assert "timestamp" in entry
+
+    def test_no_log_query_on_build_auto_with_history(self) -> None:
+        with tempfile.NamedTemporaryFile(mode="r", suffix=".jsonl", delete=False) as f:
+            log_path = f.name
+        config = _make_config()
+        config.log_file = log_path
+        client = LLMClient(config)
+        history: list[EasyInputMessageParam] = [
+            {"role": "assistant", "content": "action"},
+            {"role": "user", "content": "output"},
+        ]
+        client.build_auto_messages(query="check disk", screen_text="$ ", history=history)
+        with open(log_path) as f:
+            content = f.read()
+        assert content == ""
+
+    def test_no_log_when_log_file_none(self) -> None:
+        client = LLMClient(_make_config())
+        client.build_auto_messages(query="test", screen_text="$ ", history=[])

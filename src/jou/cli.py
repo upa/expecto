@@ -26,9 +26,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Child process command (default: $SHELL)",
     )
     parser.add_argument(
-        "--log-file",
+        "--raw-io-log-file",
         default=None,
         help="Raw I/O log output path (for debugging)",
+    )
+    parser.add_argument(
+        "--log-file",
+        default=None,
+        help="Log file for queries and LLM requests/responses (JSONL format)",
     )
     parser.add_argument(
         "command",
@@ -44,6 +49,8 @@ def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
     config = JouConfig.from_env()
 
+    if args.raw_io_log_file:
+        config.raw_io_log_file = args.raw_io_log_file
     if args.log_file:
         config.log_file = args.log_file
 
@@ -105,9 +112,9 @@ def main(argv: list[str] | None = None) -> None:
         auto_hotkey=config.auto_hotkey,
     )
 
-    log_fh = open(config.log_file, "a") if config.log_file else None
+    raw_io_log_fh = open(config.raw_io_log_file, "a") if config.raw_io_log_file else None
 
-    relay = IORelay(input_router=input_router, screen_buffer=screen_buffer, log_file=log_fh)
+    relay = IORelay(input_router=input_router, screen_buffer=screen_buffer, log_file=raw_io_log_fh)
 
     tty_ctrl.enter_raw()
     try:
@@ -125,8 +132,8 @@ def main(argv: list[str] | None = None) -> None:
         tty_ctrl.cleanup_sigwinch()
         pty_mgr.close()
         tty_ctrl.restore()
-        if log_fh is not None:
-            log_fh.close()
+        if raw_io_log_fh is not None:
+            raw_io_log_fh.close()
 
     sys.exit(exit_code)
 
