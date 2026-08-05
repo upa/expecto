@@ -38,6 +38,9 @@ the terminal screen content after the output settles.
 - Use the send_control tool to send a control character (e.g. "ctrl-c") to \
 the terminal, for example to interrupt a long-running command.
 - Call one tool at a time: review each result before deciding the next action.
+- If you are not sure what environment the CLI is running on (which OS, or \
+which router/switch product, etc.), first run a command that reveals it \
+(e.g. `uname` on a Unix system, `show version` on a network device).
 - If a tool result notes that the output did not settle, the command may \
 still be running. Decide whether to interrupt it with send_control or take \
 another action.

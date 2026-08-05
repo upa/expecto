@@ -153,6 +153,8 @@ class TestLLMClient:
         assert "run_command" in AUTO_SYSTEM_PROMPT
         assert "send_control" in AUTO_SYSTEM_PROMPT
         assert "same language" in AUTO_SYSTEM_PROMPT.lower()
+        assert "uname" in AUTO_SYSTEM_PROMPT
+        assert "show version" in AUTO_SYSTEM_PROMPT
 
     def test_build_auto_messages(self) -> None:
         client = LLMClient(_make_config())
