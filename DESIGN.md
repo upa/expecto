@@ -84,7 +84,9 @@
               4. その時点の画面テキストを tool の実行結果
                  (function_call_output) として LLM に返す
               5. LLM は次の tool を呼ぶ(継続)か、最終応答(done/fail)を返す
-            ゴール達成 or 上限回数 or ユーザーのCtrl-C割込みで終了
+            ゴール達成 or ユーザーのCtrl-C割込みで終了。
+            一定ステップ数(チェックポイント、既定15)ごとにユーザーへ
+            継続確認(y/n)を行い、n なら終了(会話チェーンは y の間維持)
             → passthrough mode に戻る
 ```
 
@@ -263,7 +265,7 @@ function_call 本体はサーバー側に保存されているため、クライ
   - passthrough mode に戻り、ユーザーが自分でEnterを押すか編集するのを待つ。
 - **auto mode**:
   - LLM が function calling で `run_command` / `send_control` を呼び出すループとして実装する(§5.7)。tool call の実行(pty master への書き込み + settle 待ち + 新規出力の回収(§5.5 の mark / get_text_since)と `function_call_output` の構築)は ModeExecutor が担う。
-  - ループ処理は下記 SettleDetector を利用し、既定で最大ステップ数(例: 10、LLM 呼び出し回数でカウント)を設け、無限ループを防止する。
+  - ループ処理は下記 SettleDetector を利用する。`max_auto_steps`(既定 15、LLM 呼び出し回数でカウント)ステップごとに**チェックポイント**としてユーザーに継続確認(`continue? (y/n)`)を行う。y なら `previous_response_id` チェーンを維持したまま続行、n / Esc / Ctrl-C なら終了。hard-abort ではなく確認にすることで、上限が「タスク失敗」ではなく「人間の目を挟む機会」として機能する(対話型ツールとして、ユーザー在席が第一の安全装置)。確認待ちの間も pty 出力の中継は継続する。非対話環境(stdin なし)では確認できないため終了する。
   - LLMは `send_control` tool で制御文字（Ctrl-C等）を送信できる。これにより、長時間実行中のコマンドの中断などをLLM自身が判断できる。
   - 各ステップ実行前に、危険そうなコマンド(`rm -rf`, `dd`, `mkfs` など簡易ブラックリスト)を検知したら、ユーザーに1回だけ確認を挟む安全策を入れる(v0.1でも最低限のガードとして実装する)。
   - ユーザーはいつでも `Ctrl-C` で auto mode を中断できるようにする(中断検知は InputRouter が auto mode 中の入力を優先的にハンドルする形にする)。
@@ -317,7 +319,7 @@ OPTIONS:
   --completion-hotkey KEY    completion mode に入るキー (既定: ctrl-/)
   --auto-hotkey KEY          auto mode に入るキー (既定: ctrl-])
   --model NAME               使用するLLMモデル (既定値あり)
-  --max-auto-steps N         auto mode の最大ステップ数 (既定: 10)
+  --max-auto-steps N         auto mode の継続確認チェックポイント間隔 (既定: 15)
   --settle-ms N              出力安定判定の待機時間 (既定: 500)
   --history-lines N          LLMに渡すスクリーン履歴の行数 (既定: 500)
   --scrollback-lines N       pyteスクロールバック容量 (既定: 5000)
@@ -368,7 +370,7 @@ Working summary 生成用の LLM 接続 (URL・APIキー・モデル・reasoning
 
 - **明示的な確認**: v0.1では危険コマンドの簡易検出+確認プロンプトのみ。本格的なサンドボックスや権限制御は範囲外。
 - **シークレットの扱い**: raw ログ・LLMへの送信内容にパスワードやAPIキーが混入しうる。v0.1では簡易マスキング(例: `password`, `token`, `secret` を含む行の値部分を伏字にする)を検討するが、完全性は保証しない旨をドキュメントに明記する。
-- **auto modeの暴走対策**: 最大ステップ数、全体タイムアウト、ユーザーによる即時中断(Ctrl-C)を必須実装とする。
+- **auto modeの暴走対策**: ステップ数チェックポイントでの継続確認(既定 15 ステップごと、非対話環境では終了)と、ユーザーによる即時中断(Ctrl-C)を必須実装とする。`previous_response_id` は過去入力を毎回再課金するため、コストはステップ数に対し超線形に伸びる — 将来的にトークン/コスト予算上限(SWE-agent 型)の併設を検討する。
 - **ホットキーの衝突**: 子プロセス側(vim, tmux, ルーターCLI等)が同じキーを使っている場合に奪い合いが発生する。設定で変更可能にしておくことが必須。
 
 ---
@@ -410,7 +412,7 @@ Working summary 生成用の LLM 接続 (URL・APIキー・モデル・reasoning
 - auto mode ループ (コマンド実行 → settle検知 → LLM判断 → 繰り返し)
 - LLMからの制御文字送信 (Ctrl-C等)
 - settle 閾値超過時のLLMへの中間報告
-- 最大ステップ数制限、ユーザーによるCtrl-C中断
+- ステップ数チェックポイントでの継続確認、ユーザーによるCtrl-C中断
 - 基本的な危険コマンド確認
 
 ### 含まない (両Phase共通):

@@ -32,7 +32,7 @@ class TestJouConfig:
             assert config.history_lines == 500
             assert config.settle_ms == 500
             assert config.threshold_ms == 30000
-            assert config.max_auto_steps == 10
+            assert config.max_auto_steps == 15
             assert config.completion_hotkey == 0x1F
             assert config.auto_hotkey == 0x1D
             assert config.raw_io_log_file is None

@@ -70,6 +70,6 @@ Core components (each a separate module under `src/jou/`):
 - No shell-specific dependencies (PS1, readline) — must work over ssh/vendor CLI
 - Settle detection is idle-timer only (no prompt markers). When settle threshold is exceeded without settling, current output is sent to LLM for decision (not treated as timeout error)
 - Dangerous command blocklist with user confirmation before execution in auto mode
-- Auto mode has max step count (default 10) and Ctrl-C interrupt
+- Auto mode asks user confirmation (continue? y/n) every `max_auto_steps` steps (default 15, checkpoint interval, keeps the response chain on continue) and supports Ctrl-C interrupt
 - LLM response format enforced via OpenAI Structured Outputs, not system prompt
 - Design document is in Japanese; code and comments should follow whatever language convention is established

@@ -457,8 +457,8 @@ class TestAutoMode:
                     except OSError:
                         pass
 
-    def test_max_steps(self) -> None:
-        """Loop stops at max_auto_steps and shows max steps message."""
+    def test_max_steps_without_stdin_stops(self) -> None:
+        """At the checkpoint with no interactive stdin, the loop stops."""
         pty_r, pty_w = os.pipe()
         max_steps = 3
 
@@ -494,9 +494,176 @@ class TestAutoMode:
             os.close(stdout_w)
             stdout_w = -1
             stdout_output = _drain(stdout_r)
-            assert f"[auto max steps ({max_steps})]".encode() in stdout_output
+            assert f"[auto stopped at step {max_steps}]".encode() in stdout_output
         finally:
             for fd in [stdout_r, stdout_w, pty_r, pty_w]:
+                if fd >= 0:
+                    try:
+                        os.close(fd)
+                    except OSError:
+                        pass
+
+    def _answer_prompts(
+        self,
+        stdout_r: int,
+        stdin_w: int,
+        answers: list[bytes],
+        collected: bytearray,
+    ) -> threading.Thread:
+        """Drain stdout on a thread; each time the checkpoint prompt appears,
+        write the next answer to stdin. (Input typed before the prompt is
+        shown is consumed by the settle loop, so answers must be written
+        only after the prompt is visible.)"""
+
+        def run() -> None:
+            pending = list(answers)
+            answered = 0
+            while True:
+                try:
+                    data = os.read(stdout_r, 4096)
+                except OSError:
+                    return
+                if not data:
+                    return
+                collected.extend(data)
+                if pending and collected.count(b"continue? (y/n)") > answered:
+                    answered += 1
+                    os.write(stdin_w, pending.pop(0))
+
+        thread = threading.Thread(target=run, daemon=True)
+        thread.start()
+        return thread
+
+    def test_checkpoint_answer_n_stops(self) -> None:
+        """At the checkpoint, answering 'n' stops the loop."""
+        pty_r, pty_w = os.pipe()
+        stdin_r, stdin_w = os.pipe()
+        max_steps = 2
+
+        auto_results = [
+            _cmd_result(i, f"cmd{i}") for i in range(1, max_steps + 1)
+        ]
+        fake_llm = FakeLLMClient(auto_results=auto_results, pty_w=pty_w)
+        screen = ScreenBuffer()
+        stdout_r, stdout_w = os.pipe()
+        collected = bytearray()
+        pump = self._answer_prompts(stdout_r, stdin_w, [b"n"], collected)
+
+        try:
+            executor = ModeExecutor(
+                llm_client=fake_llm,
+                screen_buffer=screen,
+                write_to_pty=lambda d: None,
+                stdout_fd=stdout_w,
+                stdin_fd=stdin_r,
+                get_pty_master_fd=lambda: pty_r,
+                settle_ms=10,
+                threshold_ms=5000,
+                max_auto_steps=max_steps,
+            )
+            executor.execute("keep going", "auto")
+
+            os.close(stdout_w)
+            stdout_w = -1
+            pump.join(timeout=5)
+
+            assert len(fake_llm.auto_step_calls) == max_steps
+            assert f"reached step {max_steps}".encode() in collected
+            assert b"continue? (y/n)" in collected
+            assert f"[auto stopped at step {max_steps}]".encode() in collected
+        finally:
+            for fd in [stdout_r, stdout_w, pty_r, pty_w, stdin_r, stdin_w]:
+                if fd >= 0:
+                    try:
+                        os.close(fd)
+                    except OSError:
+                        pass
+
+    def test_checkpoint_answer_y_continues(self) -> None:
+        """Answering 'y' continues the loop past the checkpoint, keeping the
+        response chain, and asks again at the next checkpoint."""
+        pty_r, pty_w = os.pipe()
+        stdin_r, stdin_w = os.pipe()
+        max_steps = 2
+
+        auto_results = [_cmd_result(i, f"cmd{i}") for i in range(1, 5)]
+        fake_llm = FakeLLMClient(auto_results=auto_results, pty_w=pty_w)
+        screen = ScreenBuffer()
+        stdout_r, stdout_w = os.pipe()
+        collected = bytearray()
+        pump = self._answer_prompts(stdout_r, stdin_w, [b"y", b"n"], collected)
+
+        try:
+            executor = ModeExecutor(
+                llm_client=fake_llm,
+                screen_buffer=screen,
+                write_to_pty=lambda d: None,
+                stdout_fd=stdout_w,
+                stdin_fd=stdin_r,
+                get_pty_master_fd=lambda: pty_r,
+                settle_ms=10,
+                threshold_ms=5000,
+                max_auto_steps=max_steps,
+            )
+            executor.execute("keep going", "auto")
+
+            os.close(stdout_w)
+            stdout_w = -1
+            pump.join(timeout=5)
+
+            assert len(fake_llm.auto_step_calls) == 4
+            # The chain is kept across the checkpoint: step 3 receives the
+            # response id of step 2.
+            _, prev_id_step3 = fake_llm.auto_step_calls[2]
+            assert prev_id_step3 == "resp_2"
+
+            assert b"reached step 2" in collected
+            assert b"reached step 4" in collected
+            assert b"[auto stopped at step 4]" in collected
+        finally:
+            for fd in [stdout_r, stdout_w, pty_r, pty_w, stdin_r, stdin_w]:
+                if fd >= 0:
+                    try:
+                        os.close(fd)
+                    except OSError:
+                        pass
+
+    def test_checkpoint_ctrl_c_stops(self) -> None:
+        """Ctrl-C at the checkpoint prompt stops the loop."""
+        pty_r, pty_w = os.pipe()
+        stdin_r, stdin_w = os.pipe()
+        max_steps = 1
+
+        fake_llm = FakeLLMClient(
+            auto_results=[_cmd_result(1, "cmd1")], pty_w=pty_w,
+        )
+        screen = ScreenBuffer()
+        stdout_r, stdout_w = os.pipe()
+        collected = bytearray()
+        pump = self._answer_prompts(stdout_r, stdin_w, [b"\x03"], collected)
+
+        try:
+            executor = ModeExecutor(
+                llm_client=fake_llm,
+                screen_buffer=screen,
+                write_to_pty=lambda d: None,
+                stdout_fd=stdout_w,
+                stdin_fd=stdin_r,
+                get_pty_master_fd=lambda: pty_r,
+                settle_ms=10,
+                threshold_ms=5000,
+                max_auto_steps=max_steps,
+            )
+            executor.execute("keep going", "auto")
+
+            os.close(stdout_w)
+            stdout_w = -1
+            pump.join(timeout=5)
+
+            assert len(fake_llm.auto_step_calls) == 1
+            assert b"[auto stopped at step 1]" in collected
+        finally:
+            for fd in [stdout_r, stdout_w, pty_r, pty_w, stdin_r, stdin_w]:
                 if fd >= 0:
                     try:
                         os.close(fd)
@@ -550,7 +717,7 @@ class TestAutoMode:
                         pass
 
     def test_thinking_indicator(self) -> None:
-        """Auto mode shows step-numbered thinking indicator."""
+        """Auto mode shows the [auto] thinking indicator."""
         auto_results = [_final_result(1, "done", "done")]
         fake_llm = FakeLLMClient(auto_results=auto_results)
         screen = ScreenBuffer()
@@ -573,7 +740,7 @@ class TestAutoMode:
             os.close(stdout_w)
             stdout_w = -1
             stdout_output = _drain(stdout_r)
-            assert b"[auto 1/5 thinking...]" in stdout_output
+            assert b"\x1b[90m[auto: thinking...]\x1b[0m" in stdout_output
         finally:
             for fd in [stdout_r, stdout_w, pty_r, pty_w]:
                 if fd >= 0:

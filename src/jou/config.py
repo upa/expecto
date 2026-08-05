@@ -60,7 +60,7 @@ class JouConfig:
             history_lines=500,
             settle_ms=500,
             threshold_ms=30000,
-            max_auto_steps=10,
+            max_auto_steps=15,
             completion_hotkey=0x1F,
             auto_hotkey=0x1D,
             raw_io_log_file=None,
