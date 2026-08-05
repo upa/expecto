@@ -220,7 +220,8 @@ class TestLLMClient:
         assert "goal" in AUTO_SYSTEM_PROMPT.lower()
         assert "run_command" in AUTO_SYSTEM_PROMPT
         assert "send_control" in AUTO_SYSTEM_PROMPT
-        assert "same language" in AUTO_SYSTEM_PROMPT.lower()
+        assert "in English by default" in AUTO_SYSTEM_PROMPT
+        assert "language of the query" in AUTO_SYSTEM_PROMPT
         assert "uname" in AUTO_SYSTEM_PROMPT
         assert "show version" in AUTO_SYSTEM_PROMPT
 

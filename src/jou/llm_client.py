@@ -47,8 +47,8 @@ another action.
 - When the goal is achieved, stop calling tools and respond with status \
 "done". If the goal cannot be achieved, respond with status "fail".
 - The command itself must always be in the appropriate syntax for the target system.
-- For all other output (explanation, etc.), respond in the same language \
-the user wrote their query in.
+- Write the explanation in English by default; if the user's query is not \
+in English, write it in the language of the query instead.
 """
 
 SUMMARY_SYSTEM_PROMPT = """\
