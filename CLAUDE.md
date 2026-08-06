@@ -10,7 +10,7 @@ Key differentiator: wraps the **tty itself**, not a specific shell — works ove
 
 ## Status
 
-Core loop complete (LLMClient with Responses API function calling — `run_command` / `send_control` tools, Executor tool-call loop, idle-timer settle detection). A former one-shot "completion mode" has been removed; the command-execute-observe loop is expecto's sole behavior. Working Summary implemented (`working_summary.py`, see `design/DESIGN-WorkingSummary.md`). Concurrency is a single-threaded asyncio event loop — one always-on relay pump, executions as cancellable tasks, no threads/locks (see `design/DESIGN-Async.md`). `design/DESIGN.md` is the authoritative specification.
+Core loop complete (LLMClient with Responses API function calling — `run_command` / `send_control` tools, Executor tool-call loop, idle-timer settle detection). The final response is plain text streamed to the terminal as it arrives (`responses.stream()`, shown gray in `[...]`). A former one-shot "completion mode" has been removed; the command-execute-observe loop is expecto's sole behavior. Working Summary implemented (`working_summary.py`, see `design/DESIGN-WorkingSummary.md`). Concurrency is a single-threaded asyncio event loop — one always-on relay pump, executions as cancellable tasks, no threads/locks (see `design/DESIGN-Async.md`). `design/DESIGN.md` is the authoritative specification.
 
 ### TODO
 
@@ -68,5 +68,5 @@ Core components (each a separate module under `src/expecto/`):
 - Settle detection is idle-timer only (no prompt markers). When settle threshold is exceeded without settling, current output is sent to LLM for decision (not treated as timeout error)
 - Dangerous command gate (3 layers): LLM self-classifies each command's risk (`read_only`/`mutating`/`destructive` in the run_command schema); a deterministic regex backstop (builtin + `~/.config/expecto/dangerous_patterns.txt`) escalates matches to destructive (escalate-only); commands at/above `--confirm-level` (default: destructive) require y/n confirmation. Decline feeds back to the LLM as a tool result, not an abort
 - The execution loop asks user confirmation (continue? y/n) every `max_steps` steps (default 15, checkpoint interval, keeps the response chain on continue) and supports Ctrl-C interrupt
-- LLM response format enforced via OpenAI Structured Outputs, not system prompt
+- Tool arguments are enforced via strict JSON Schema (+ Pydantic validation); the loop's final response is plain text (no Structured Outputs) so it can be streamed to the screen. Structured Outputs is still used for the working summary
 - Design document is in Japanese; code and comments should follow whatever language convention is established

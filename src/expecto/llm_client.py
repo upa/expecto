@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
 import openai
+from openai.lib.streaming.responses import ResponseTextDeltaEvent
 from openai.types.responses import (
     FunctionToolParam,
     ResponseFunctionToolCall,
@@ -15,6 +16,8 @@ from openai.types.shared_params import Reasoning
 from pydantic import BaseModel, ValidationError
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from expecto.config import ExpectoConfig, ReasoningEffortLevel
 
 SYSTEM_PROMPT = """\
@@ -40,8 +43,10 @@ which router/switch product, etc.), first run a command that reveals it \
 - If a tool result notes that the output did not settle, the command may \
 still be running. Decide whether to interrupt it with send_control or take \
 another action.
-- When the goal is achieved, stop calling tools and respond with status \
-"done". If the goal cannot be achieved, respond with status "fail".
+- When the goal is achieved, stop calling tools and respond with a brief \
+summary of what was done. If the goal cannot be achieved, stop calling \
+tools and explain why. Do not produce any text output other than this \
+final response.
 - The command itself must always be in the appropriate syntax for the target system.
 - Write the explanation in English by default; if the user's query is not \
 in English, write it in the language of the query instead.
@@ -80,13 +85,6 @@ class RunCommandParams(BaseModel):
 
 class SendControlParams(BaseModel):
     key: Literal["ctrl-c", "ctrl-d", "ctrl-z"]
-
-
-class FinalResponse(BaseModel):
-    """Final response of the execution loop. Continuation is a tool call."""
-
-    status: Literal["done", "fail"]
-    explanation: str
 
 
 TOOLS: list[FunctionToolParam] = [
@@ -162,8 +160,10 @@ class ParsedToolCall:
 
 @dataclass
 class StepResult:
+    """One LLM step: tool calls (continuation) or a final text (loop end)."""
+
     tool_calls: list[ParsedToolCall]
-    final: FinalResponse | None
+    final_text: str | None
     response_id: str
 
 
@@ -227,6 +227,7 @@ class LLMClient:
         input_items: ResponseInputParam,
         previous_response_id: str | None = None,
         working_summary: str | None = None,
+        on_delta: Callable[[str], None] | None = None,
     ) -> StepResult:
         instructions = _compose_instructions(SYSTEM_PROMPT, working_summary)
         reasoning: Reasoning | None = (
@@ -243,31 +244,29 @@ class LLMClient:
             "previous_response_id": previous_response_id,
         })
 
-        response = await self._client.responses.parse(
+        async with self._client.responses.stream(
             model=self._config.model,
             instructions=instructions,
             input=input_items,
-            text_format=FinalResponse,
             tools=TOOLS,
             parallel_tool_calls=False,
             reasoning=reasoning,
             store=True,
             previous_response_id=previous_response_id,
-        )
+        ) as stream:
+            async for event in stream:
+                if isinstance(event, ResponseTextDeltaEvent) and on_delta is not None:
+                    on_delta(event.delta)
+            response = await stream.get_final_response()
 
         tool_calls: list[ParsedToolCall] = []
         for item in response.output:
             if isinstance(item, ResponseFunctionToolCall):
                 tool_calls.append(self._parse_tool_call(item))
 
-        final: FinalResponse | None = None
+        final_text: str | None = None
         if not tool_calls:
-            final = response.output_parsed
-            if final is None:
-                final = FinalResponse(
-                    status="fail",
-                    explanation="LLM returned empty response",
-                )
+            final_text = response.output_text
 
         self._log({
             "type": "llm_response",
@@ -276,13 +275,13 @@ class LLMClient:
                 | ({"params": c.params.model_dump()} if c.params is not None else {})
                 for c in tool_calls
             ],
-            "final": final.model_dump() if final is not None else None,
+            "final_text": final_text,
             "response_id": response.id,
         })
 
         return StepResult(
             tool_calls=tool_calls,
-            final=final,
+            final_text=final_text,
             response_id=response.id,
         )
 

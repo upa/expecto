@@ -46,6 +46,7 @@ class LLMStepper(Protocol):
         input_items: ResponseInputParam,
         previous_response_id: str | None = None,
         working_summary: str | None = None,
+        on_delta: Callable[[str], None] | None = None,
     ) -> StepResult: ...
 
     def build_initial_messages(
@@ -53,6 +54,34 @@ class LLMStepper(Protocol):
         query: str,
         screen_text: str,
     ) -> ResponseInputParam: ...
+
+
+class _StreamingFinal:
+    """Streams the final response text to the outer tty as it arrives.
+
+    Created per step. On the first delta it erases the [thinking...]
+    overlay (the cursor was saved right before the overlay was drawn)
+    and opens the gray "[" prefix; close() ends the message with "]"
+    and an SGR reset."""
+
+    def __init__(self, stdout_fd: int) -> None:
+        self._stdout_fd = stdout_fd
+        self.started = False
+
+    def on_delta(self, delta: str) -> None:
+        if not delta:
+            return
+        if not self.started:
+            self.started = True
+            os.write(self._stdout_fd, b"\x1b8\x1b[J\x1b[90m[")
+        # The outer tty is in raw mode (no ONLCR); normalize to "\r\n".
+        text = delta.replace("\r\n", "\n").replace("\n", "\r\n")
+        os.write(self._stdout_fd, text.encode())
+
+    def close(self) -> None:
+        if self.started:
+            self.started = False
+            os.write(self._stdout_fd, b"]\x1b[0m")
 
 
 class Executor:
@@ -86,16 +115,21 @@ class Executor:
 
     async def _thinking(
         self, awaitable: Awaitable[T], label: bytes = b"[thinking...]",
+        stream: _StreamingFinal | None = None,
     ) -> T:
         """Await with a gray thinking overlay shown and pty reading
         paused (so child output cannot corrupt the overlay); both are
-        restored on every exit path, including cancellation."""
+        restored on every exit path, including cancellation. When a
+        streaming final display has started, it already erased the
+        overlay and the streamed text must not be wiped, so the erase
+        is skipped."""
         self._relay.pause_pty()
         os.write(self._stdout_fd, b"\x1b7\x1b[90m" + label + b"\x1b[0m")
         try:
             return await awaitable
         finally:
-            os.write(self._stdout_fd, b"\x1b8\x1b[J")
+            if stream is None or not stream.started:
+                os.write(self._stdout_fd, b"\x1b8\x1b[J")
             self._relay.resume_pty()
 
     async def _ensure_working_summary(self) -> str | None:
@@ -109,6 +143,7 @@ class Executor:
         """Run one execution (the LLM command-execute-observe loop).
         Runs as the relay's execution task; user Ctrl-C arrives as task
         cancellation."""
+        stream: _StreamingFinal | None = None
         try:
             # The finalized query line took over the prompt line on the
             # outer tty; nudge the shell with a newline so a fresh prompt
@@ -127,24 +162,29 @@ class Executor:
             checkpoint = self._max_steps
             while True:
                 step += 1
+                stream = _StreamingFinal(self._stdout_fd)
                 result = await self._thinking(
                     self._llm.step(
                         input_items,
                         previous_response_id=prev_response_id,
                         working_summary=working_summary,
+                        on_delta=stream.on_delta,
                     ),
+                    stream=stream,
                 )
                 prev_response_id = result.response_id
 
                 if not result.tool_calls:
-                    final = result.final
-                    if final is not None and final.status == "done":
-                        self._show_end(f"done: {final.explanation}")
-                    elif final is not None:
-                        self._show_end(f"failed: {final.explanation}")
+                    if stream.started:
+                        stream.close()
+                    elif result.final_text:
+                        self._show_final(result.final_text)
                     else:
-                        self._show_end("failed: empty response")
+                        self._show_end("(empty response)")
                     return
+                # Text alongside tool calls (the model narrating before a
+                # call) has already been streamed; end the open message.
+                stream.close()
 
                 outputs: ResponseInputParam = []
                 for call in result.tool_calls:
@@ -162,6 +202,11 @@ class Executor:
                         return
                     checkpoint += self._max_steps
         except asyncio.CancelledError:
+            if stream is not None and stream.started:
+                # Keep the partially streamed text on screen (rewinding is
+                # unreliable once it may have scrolled); just end the gray
+                # and break the line before the interrupted note.
+                os.write(self._stdout_fd, b"\x1b[0m\r\n")
             self._show_end("interrupted")
             raise
         finally:
@@ -250,9 +295,16 @@ class Executor:
         return False
 
     def _show_end(self, label: str) -> None:
+        self._write_gray(f"[expecto {label}]")
+
+    def _show_final(self, text: str) -> None:
+        """Show a final response that did not arrive via streaming."""
+        self._write_gray(f"[{text}]")
+
+    def _write_gray(self, text: str) -> None:
         # The outer tty is in raw mode (no ONLCR), so bare "\n" moves down
         # without returning to column 0; normalize to "\r\n".
-        text = f"[expecto {label}]".replace("\r\n", "\n").replace("\n", "\r\n")
+        text = text.replace("\r\n", "\n").replace("\n", "\r\n")
         os.write(
             self._stdout_fd,
             f"\x1b[90m{text}\x1b[0m".encode(),

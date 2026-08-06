@@ -72,7 +72,8 @@
        旨の注記を結果に付ける
     4. その時点の画面テキストを tool の実行結果
        (function_call_output) として LLM に返す
-    5. LLM は次の tool を呼ぶ(継続)か、最終応答(done/fail)を返す
+    5. LLM は次の tool を呼ぶ(継続)か、最終応答(プレーンテキスト)を返す
+       (最終応答は streaming で届いた文字から画面に表示する)
   ゴール達成 or ユーザーのCtrl-C割込みで終了。
   一定ステップ数(チェックポイント、既定15)ごとにユーザーへ
   継続確認(y/n)を行い、n なら終了(会話チェーンは y の間維持)
@@ -172,18 +173,12 @@
 
 ### 5.7 LLMClient
 
-- OpenAI **Responses API** (`AsyncOpenAI` の `client.responses.parse()` を await) を利用する。モデルは設定可能(既定は現行世代の高速モデル)。
-- 入力: `instructions=` でシステムプロンプト、`input=` でユーザーメッセージ、`text_format=` で Pydantic モデルを指定し Structured Outputs を強制する。
+- OpenAI **Responses API** を利用する。実行ループの各ステップは `AsyncOpenAI` の `client.responses.stream()`(streaming)、working summary の生成は `client.responses.parse()`(Structured Outputs)。モデルは設定可能(既定は現行世代の高速モデル)。
+- 入力: `instructions=` でシステムプロンプト、`input=` でユーザーメッセージ。
 - システムプロンプトは英語で記述し、「コマンド以外の出力はユーザーのクエリの言語に合わせる」旨を指示する。
-- 最終応答スキーマ (`FinalResponse`) — **最終応答専用**:
-  ```json
-  {
-    "status": "done",
-    "explanation": "Disk usage confirmed"
-  }
-  ```
-  - `status: "done"` → ゴール達成。`"fail"` → 達成不能。いずれも実行ループを終了する。
-  - 「継続」は tool call そのもので表現されるため、スキーマには存在しない(下記)。
+- 実行ループの**最終応答はプレーンテキスト**(スキーマ強制なし)。ゴール達成の要約、または達成不能な場合はその理由をテキストで返すようシステムプロンプトで指示する。done/fail の status フィールドは持たない(区別に実質的な意味がなく、プレーンテキスト化により streaming 表示が単純になるため)。
+  - 「継続」は tool call そのもので表現される。**tool call を含まない応答をループ終了とみなす。**
+  - 最終応答のテキストは `response.output_text.delta` イベントで届いた文字から順次、グレーの `[` + 本文 + `]` として outer tty に表示する(§5.8)。
 
 #### Function calling
 
@@ -196,7 +191,7 @@
 
 - tool 定義は `strict: true` の JSON Schema で渡し、引数は Pydantic モデル (`RunCommandParams` / `SendControlParams`) で検証する。検証に失敗した場合(strict のため通常発生しない)は、該当 `call_id` にエラーテキストを output として返す。
 - `parallel_tool_calls=False` を指定し、1応答1 tool call を API レベルで保証する(防御的に複数返った場合も順次実行する)。
-- `text_format=FinalResponse` と `tools=` を併用する。LLM は tool call を返す(継続)か、最終応答を返す(done/fail)かを選ぶ。**tool call を含まない応答をループ終了とみなす。**
+- LLM は tool call を返す(継続)か、最終応答(プレーンテキスト)を返すかを選ぶ。**tool call を含まない応答をループ終了とみなす。** Structured Outputs を使わないため、モデルが tool call の前に前置きテキストを出すことが構造上は可能になる(プロンプトで抑止し、出た場合はそのまま streaming 表示して継続する)。
 - tool の実行結果 (`function_call_output`) の形式(画面全体ではなく、そのコマンドが生んだ新規出力のみを渡す。抽出方法は §5.5 参照):
 
       ## Terminal Output
@@ -245,6 +240,7 @@ function_call 本体はサーバー側に保存されているため、クライ
 - `run_command` のコマンドエコーは、expecto のステータス表示と同じグレーで表示する。コマンド注入直前に outer tty へ SGR(グレー)を書き、IORelay に予約 (`arm_sgr_reset_at_newline()`) しておくと、ポンプがエコーの最初の改行(Enter のエコー)の直後にリセットを挿入する。改行が来ないまま settle・中断・EOF となった場合も `flush_sgr_reset()`(冪等)で必ずリセットする。SGR は outer tty にのみ書き、ScreenBuffer には入らないため LLM へ渡すテキストには影響しない(シェル自身がエコーに色を付ける場合はそちらが優先されうる、ベストエフォート)。
 - ループ処理は下記 settle 検知 (§5.9) を利用する。`max_steps`(既定 15、LLM 呼び出し回数でカウント)ステップごとに**チェックポイント**としてユーザーに継続確認(`continue? (y/n)`)を行う。y なら `previous_response_id` チェーンを維持したまま続行、n / Esc / Ctrl-C なら終了。hard-abort ではなく確認にすることで、上限が「タスク失敗」ではなく「人間の目を挟む機会」として機能する(対話型ツールとして、ユーザー在席が第一の安全装置)。確認待ちの間も pty 出力の中継は継続する(常時ポンプが担う)。stdin が失われた場合(EOF)はセッション終了として実行タスクがキャンセルされる。
 - LLMは `send_control` tool で制御文字（Ctrl-C等）を送信できる。これにより、長時間実行中のコマンドの中断などをLLM自身が判断できる。
+- **最終応答の streaming 表示**: 最終応答テキストは `output_text.delta` が届き始めた時点で `[thinking...]` オーバーレイを消去し、グレーの `[` に続けて届いた文字から順次表示、応答完了で `]` + SGR リセットで閉じる。オーバーレイの消去はストリーミング開始時に一度だけ行い、以降は巻き戻さない(複数行の応答で画面がスクロールすると DECSC の保存位置が信頼できないため)。ストリーミング途中で Ctrl-C 中断された場合は、表示済みの部分テキストを画面に残したまま改行して `[expecto interrupted]` を表示する。delta が一度も届かなかった場合(空応答等)は従来どおり完了後に一括表示する。streaming 中も pty の読み取りは pause されたままであり、子プロセス出力との混線は起きない。
 - ユーザーはいつでも `Ctrl-C` で実行を中断できるようにする(中断検知は InputRouter が実行中の入力を優先的にハンドルする形にする)。
 - LLM 呼び出し(各ステップの step、およびクエリ直前の WorkingSummary 生成)は `AsyncOpenAI` を await する。実行全体が 1 つの asyncio タスクであり、**LLM 応答待ち中を含むあらゆる await 点で Ctrl-C により即座に中断**できる(タスクキャンセル)。キャンセル時は in-flight の HTTP リクエスト自体も中断され、後始末(オーバーレイ消去・SGR リセット・末尾改行)は finally で保証される (DESIGN-Async.md §5)。
 
