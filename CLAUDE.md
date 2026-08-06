@@ -14,7 +14,7 @@ Two hotkeys, two modes — the hotkey pressed determines the execution mode:
 
 ## Status
 
-Phase 1 (completion mode) complete. Phase 2 (auto mode) core loop complete (LLMClient with Responses API function calling — `run_command` / `send_control` tools, ModeExecutor tool-call loop, idle-timer settle detection). Working Summary implemented (`working_summary.py`, see `DESIGN-WorkingSummary.md`). Concurrency is a single-threaded asyncio event loop — one always-on relay pump, mode executions as cancellable tasks, no threads/locks (see `DESIGN-Async.md`). `DESIGN.md` is the authoritative specification.
+Phase 1 (completion mode) complete. Phase 2 (auto mode) core loop complete (LLMClient with Responses API function calling — `run_command` / `send_control` tools, ModeExecutor tool-call loop, idle-timer settle detection). Working Summary implemented (`working_summary.py`, see `design/DESIGN-WorkingSummary.md`). Concurrency is a single-threaded asyncio event loop — one always-on relay pump, mode executions as cancellable tasks, no threads/locks (see `design/DESIGN-Async.md`). `design/DESIGN.md` is the authoritative specification.
 
 ### TODO
 
