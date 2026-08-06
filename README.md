@@ -1,4 +1,5 @@
 
+
 # expecto 👻 — Summon an AI agent into your terminal
 
 An AI agent summoned by `expecto` silently follows everything on your
@@ -16,23 +17,24 @@ git clone https://github.com/upa/expecto
 cd expecto && uv tool install .
 ```
 
-* Set API key:
-
-```
-export OPENAI_API_KEY="[API KEY HERE]"
-```
-
-`expecto` loads `~/.config/expecto/.env` by default.
-
-
-* Run
+* Set API key and run
 
 ```console
+export OPENAI_API_KEY="[API KEY HERE]"
+
+# Execut `expecto` command
 expecto
 ```
 
 Press `Ctrl-/` (the default hotkey) to query your AI agent.
 
+
+To change Open AI API endpoint, put `~/.config/expecto/config.toml`
+
+```toml
+model = "gpt-5.6"
+base_url = "Your API endpoint URL"
+```
 
 
 ## Architecture
