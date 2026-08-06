@@ -3,6 +3,8 @@ from __future__ import annotations
 import enum
 from collections.abc import Callable
 
+from expecto.response_filter import FilterResult, ResponseFilter
+
 
 def _utf8_expected_len(first_byte: int) -> int:
     if first_byte < 0xE0:
@@ -38,6 +40,7 @@ class InputRouter:
         self._query_buf: list[str] = []
         self._utf8_pending: bytearray = bytearray()
         self._on_executing_input: Callable[[int], None] | None = None
+        self._response_filter: ResponseFilter = ResponseFilter()
 
     @property
     def state(self) -> State:
@@ -57,12 +60,40 @@ class InputRouter:
         self._state = State.PASSTHROUGH
         self._query_buf.clear()
         self._utf8_pending.clear()
+        # The remainder of a split terminal reply flows to the pty
+        # directly from here on; forward what was already buffered.
+        pending = self._response_filter.take_pending()
+        if pending:
+            self._write_to_pty(pending)
 
     def handle(self, data: bytes) -> None:
         for byte in data:
             self._handle_byte(byte)
+        if self._state in (State.QUERY, State.EXECUTING):
+            # A lone ESC at the chunk end is the Esc key, not the start
+            # of a terminal reply.
+            for byte in self._response_filter.flush_chunk_end():
+                self._dispatch_byte(byte)
 
     def _handle_byte(self, byte: int) -> None:
+        if self._state in (State.QUERY, State.EXECUTING):
+            # Terminal replies to queries issued by the child (fish 4.x
+            # requests CPR / DA / OSC 11 at every prompt and defers input
+            # handling until they arrive) must reach the pty even while
+            # stdin is otherwise withheld from it.
+            result, seq = self._response_filter.feed(byte)
+            if result == FilterResult.RESPONSE:
+                self._write_to_pty(seq)
+                return
+            if result == FilterResult.REJECT:
+                for buffered in seq:
+                    self._dispatch_byte(buffered)
+                return
+            if result == FilterResult.PENDING:
+                return
+        self._dispatch_byte(byte)
+
+    def _dispatch_byte(self, byte: int) -> None:
         if self._state == State.PASSTHROUGH:
             self._handle_passthrough(byte)
         elif self._state == State.EXECUTING:

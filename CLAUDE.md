@@ -35,7 +35,8 @@ Core components (each a separate module under `src/expecto/`):
 - `tty_controller` — raw mode, termios save/restore, window-size helpers (SIGWINCH itself is registered in `cli` via `loop.add_signal_handler`)
 - `pty_manager` — pty allocation, child process fork/exec
 - `io_relay` — always-on asyncio relay pump (loop.add_reader), bidirectional byte relay, execution-task management, settle/key-wait event hub
-- `input_router` — per-byte state machine, hotkey detection, UTF-8 buffering
+- `input_router` — per-byte state machine, hotkey detection, UTF-8 buffering, terminal-response forwarding
+- `response_filter` — recognizes terminal→application response sequences (CPR/DA/OSC/DCS replies) in stdin so they reach the child while stdin is withheld in query/executing states (fish 4.x blocks on them at every prompt)
 - `screen_buffer` — pyte-based screen capture + scrollback ring buffer for LLM context
 - `query_ui` — gray inline miniprompt (`? `) drawn at the cursor position
 - `llm_client` — OpenAI Responses API via AsyncOpenAI, Structured Outputs

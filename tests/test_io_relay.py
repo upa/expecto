@@ -249,6 +249,40 @@ class TestExecutionTask:
         await _settle_pump()
         assert answer == [0x79]
 
+    async def test_terminal_response_does_not_answer_prompt(self, make_session: MakeSession) -> None:
+        """A terminal reply (containing ESC, which is in the accept set)
+        arriving during wait_key is forwarded to the pty instead of
+        answering the y/n prompt."""
+        answer: list[int] = []
+
+        async def fake_execution() -> None:
+            key = await session.relay.wait_key(
+                frozenset({0x79, 0x6E, 0x1B, 0x03}),
+            )
+            answer.append(key)
+
+        def on_submit(query: str) -> None:
+            session.relay.start_execution(fake_execution())
+
+        forwarded: list[bytes] = []
+        router = InputRouter(
+            write_to_pty=forwarded.append,
+            on_query_submit=on_submit,
+            on_query_cancel=lambda: None,
+        )
+        session = await make_session(input_router=router)
+
+        session.user_types(HOTKEY + ENTER)
+        await _settle_pump()
+        session.user_types(b"\x1b]11;rgb:1414/1414/1414\x1b\\")
+        await _settle_pump()
+        assert answer == []  # the reply's ESC did not answer the prompt
+        assert b"\x1b]11;rgb:1414/1414/1414\x1b\\" in forwarded
+
+        session.user_types(b"y")
+        await _settle_pump()
+        assert answer == [0x79]
+
     async def test_ctrl_c_answers_prompt_instead_of_cancelling(self, make_session: MakeSession) -> None:
         outcome: list[str] = []
 

@@ -217,6 +217,113 @@ class TestRoundTrip:
         assert router.state == State.PASSTHROUGH
 
 
+class TestTerminalResponseForwarding:
+    """Terminal replies to child-issued queries (fish 4.x requests CPR /
+    DA / OSC 11 at every prompt) must reach the pty even while stdin is
+    withheld in QUERY / EXECUTING."""
+
+    def _executing_router(
+        self,
+        forwarded: list[bytes],
+        received: list[int],
+    ) -> InputRouter:
+        router = InputRouter(
+            write_to_pty=forwarded.append,
+            on_query_submit=lambda q: None,
+            on_query_cancel=lambda: None,
+        )
+        router.set_executing_input_handler(received.append)
+        router.handle(bytes([0x1F]))
+        router.handle(bytes([0x0D]))
+        assert router.state == State.EXECUTING
+        return router
+
+    def test_response_forwarded_while_executing(self) -> None:
+        forwarded: list[bytes] = []
+        received: list[int] = []
+        router = self._executing_router(forwarded, received)
+        router.handle(b"\x1b[24;80R")
+        assert forwarded == [b"\x1b[24;80R"]
+        assert received == []
+
+    def test_osc_reply_forwarded_while_executing(self) -> None:
+        forwarded: list[bytes] = []
+        received: list[int] = []
+        router = self._executing_router(forwarded, received)
+        router.handle(b"\x1b]11;rgb:1414/1414/1414\x1b\\")
+        assert forwarded == [b"\x1b]11;rgb:1414/1414/1414\x1b\\"]
+        assert received == []  # the ESC inside never reaches the handler
+
+    def test_ordinary_keys_still_reach_handler(self) -> None:
+        forwarded: list[bytes] = []
+        received: list[int] = []
+        router = self._executing_router(forwarded, received)
+        router.handle(b"\x1b[?0u" + b"y")
+        assert forwarded == [b"\x1b[?0u"]
+        assert received == [0x79]
+
+    def test_arrow_key_replayed_to_handler(self) -> None:
+        forwarded: list[bytes] = []
+        received: list[int] = []
+        router = self._executing_router(forwarded, received)
+        router.handle(b"\x1b[A")
+        assert forwarded == []
+        assert received == [0x1B, ord("["), ord("A")]
+
+    def test_ctrl_c_inside_partial_sequence_replayed(self) -> None:
+        forwarded: list[bytes] = []
+        received: list[int] = []
+        router = self._executing_router(forwarded, received)
+        router.handle(b"\x1b[1;\x03")
+        assert 0x03 in received
+
+    def test_response_forwarded_during_query(self) -> None:
+        forwarded: list[bytes] = []
+        router = InputRouter(
+            write_to_pty=forwarded.append,
+            on_query_submit=lambda q: None,
+            on_query_cancel=lambda: None,
+        )
+        router.handle(bytes([0x1F]))
+        router.handle(b"\x1b[?62;22c")
+        assert forwarded == [b"\x1b[?62;22c"]
+        assert router.state == State.QUERY
+        assert router.query_text == ""  # not mixed into the query
+        router.handle(b"abc")
+        assert router.query_text == "abc"
+
+    def test_lone_esc_still_cancels_query(self) -> None:
+        cancelled: list[bool] = []
+        router = InputRouter(
+            write_to_pty=lambda d: None,
+            on_query_submit=lambda q: None,
+            on_query_cancel=lambda: cancelled.append(True),
+        )
+        router.handle(bytes([0x1F]))
+        router.handle(b"partial")
+        router.handle(bytes([0x1B]))  # its own read chunk, like a real key
+        assert cancelled == [True]
+        assert router.state == State.PASSTHROUGH
+
+    def test_split_response_across_chunks_forwarded(self) -> None:
+        forwarded: list[bytes] = []
+        received: list[int] = []
+        router = self._executing_router(forwarded, received)
+        router.handle(b"\x1b]11;rgb:14")
+        assert forwarded == []
+        router.handle(b"14/1414\x1b\\")
+        assert forwarded == [b"\x1b]11;rgb:1414/1414\x1b\\"]
+        assert received == []
+
+    def test_pending_flushed_on_set_passthrough(self) -> None:
+        forwarded: list[bytes] = []
+        received: list[int] = []
+        router = self._executing_router(forwarded, received)
+        router.handle(b"\x1b]11;rg")  # split reply, still pending
+        router.set_passthrough()
+        assert forwarded == [b"\x1b]11;rg"]
+
+
 class TestExecuting:
     def test_bytes_forwarded_to_executing_handler(self) -> None:
         received: list[int] = []
