@@ -337,14 +337,15 @@ class TestLLMClient:
         client = LLMClient(_make_config())
         assert client._client.api_key == "sk-test"
 
-    def test_summary_client_uses_summary_settings(self) -> None:
+    def test_summary_model_falls_back_to_main_model(self) -> None:
+        client = LLMClient(_make_config())
+        assert client._summary_model == "gpt-4o"
+
+    def test_summary_model_override(self) -> None:
         config = _make_config()
-        config.summary_openai_api_key = "sk-summary"
-        config.summary_openai_base_url = "https://summary.api/v1"
+        config.summary_model = "small-model"
         client = LLMClient(config)
-        assert client._summary_client.api_key == "sk-summary"
-        assert str(client._summary_client.base_url).startswith("https://summary.api/v1")
-        assert client._client.api_key == "sk-test"
+        assert client._summary_model == "small-model"
 
     def test_summary_system_prompt_exists(self) -> None:
         assert "summary" in SUMMARY_SYSTEM_PROMPT.lower()

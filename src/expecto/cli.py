@@ -6,7 +6,7 @@ import sys
 
 from dotenv import find_dotenv, load_dotenv
 
-from expecto.config import DEFAULT_ENV_FILE, ExpectoConfig
+from expecto.config import ExpectoConfig, default_env_file
 from expecto.dangerous import DangerousCommandMatcher
 from expecto.executor import Executor
 from expecto.input_router import InputRouter
@@ -28,6 +28,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--shell",
         default=None,
         help="Child process command (default: $SHELL)",
+    )
+    parser.add_argument(
+        "--config",
+        default=None,
+        help="Config file path (default: ~/.config/expecto/config.toml)",
     )
     parser.add_argument(
         "--raw-io-log-file",
@@ -92,7 +97,7 @@ def load_env() -> None:
     if found:
         load_dotenv(found)
         return
-    load_dotenv(os.path.expanduser(DEFAULT_ENV_FILE))
+    load_dotenv(default_env_file())
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -103,10 +108,24 @@ def main(argv: list[str] | None = None) -> None:
         )
         sys.exit(1)
 
+    args = parse_args(argv)
     load_env()
 
-    args = parse_args(argv)
-    config = ExpectoConfig.from_env()
+    try:
+        config, config_warnings = ExpectoConfig.load(args.config)
+    except FileNotFoundError:
+        print(f"expecto: error: config file not found: {args.config}", file=sys.stderr)
+        sys.exit(1)
+    for warning in config_warnings:
+        print(f"expecto: warning: {warning}", file=sys.stderr)
+
+    if not config.openai_api_key:
+        print(
+            "expecto: error: OPENAI_API_KEY is not set. "
+            f"Set it in the environment or in {default_env_file()}.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     if args.raw_io_log_file:
         config.raw_io_log_file = args.raw_io_log_file

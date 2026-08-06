@@ -117,8 +117,8 @@ async def summarize(
 - `responses.parse()` によるステートレス単発呼び出し (`store=False`、
   `previous_response_id` は使わない)。
 - 接続先・モデル・reasoning effort は summary 専用の設定を使用する
-  (`SUMMARY_OPENAI_*` 環境変数、未設定時は `OPENAI_*` にフォールバック。§7.1)。
-  `LLMClient` はメイン用とは別に summary 用の `openai.OpenAI` クライアントを保持する。
+  (config.toml の `summary_model`、未指定なら `model` と同じ。§7.1)。
+  接続はメインの LLM と共有する。
 - 入力: 前回 summary (あれば) + 前回生成以降の新規出力 (差分更新、§5.2)。
 - JSONL ログには `summary_request` / `summary_response` エントリを追加。
 
@@ -262,11 +262,9 @@ new_output = screen_buffer.get_scrolled_tail(min(pending, max_input_lines))
 
 ターミナル出力は 1 行あたりおおむね 10〜20 トークン。この見積もりに基づき既定値を定める。
 
-設定手段は 2 系統に分ける:
-
-- **動作パラメータ (行数等)**: DESIGN.md §7 の方針に従い CLI オプションで指定。
-  将来的には `~/.config/expecto/config.toml` に既定値を記述して CLI オプションが上書きする。
-- **LLM 接続情報 (URL・APIキー・モデル等)**: 既存の `OPENAI_*` と同様に環境変数で指定 (§7.1)。
+設定は `~/.config/expecto/config.toml` に記述し、CLI オプションが上書きする
+(DESIGN.md §7 / DESIGN-Config.md)。API キーのみ環境変数 `OPENAI_API_KEY`
+(メインと共通)。
 
 | 項目                                               | 既定値             | CLI オプション                | 根拠                                                                                                                                             |
 |----------------------------------------------------|--------------------|-------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------|
@@ -275,23 +273,14 @@ new_output = screen_buffer.get_scrolled_tail(min(pending, max_input_lines))
 | `summary_trigger_lines`                            | 500                | `--summary-trigger-lines N`   | 背景 LLM 呼び出しの頻度を抑える。500 行 ≒ 5〜10k トークン/回。カウントは「スクロールバックへ押し出された行数」ベース (§5.2)                      |
 | `summary_max_input_lines`                          | 2000               | `--summary-max-input-lines N` | バーストで pending が溜まりすぎた場合の入力上限                                                                                                  |
 
-### 7.1 Summary 用 LLM 接続設定 (環境変数)
+### 7.1 Summary 用 LLM 設定 (config.toml)
 
-working summary の生成は背景で頻繁に走るため、メインとは別の LLM
-(軽量モデルや別エンドポイント) を指定できるようにする。
-以下の環境変数で指定し、**`SUMMARY_` 付きの変数が未設定の場合は
-対応する `OPENAI_*` の値にフォールバックする**:
-
-| 環境変数                          | フォールバック先           | 対応する `ExpectoConfig` フィールド    |
-|-----------------------------------|----------------------------|------------------------------------|
-| `SUMMARY_OPENAI_BASE_URL`         | `OPENAI_BASE_URL`          | `summary_openai_base_url`          |
-| `SUMMARY_OPENAI_API_KEY`          | `OPENAI_API_KEY`           | `summary_openai_api_key`           |
-| `SUMMARY_OPENAI_MODEL`            | `OPENAI_MODEL`             | `summary_model`                    |
-| `SUMMARY_OPENAI_REASONING_EFFORT` | `OPENAI_REASONING_EFFORT`  | `summary_openai_reasoning_effort`  |
-
-すべて未設定ならメインの LLM と同一の接続・モデル・effort で要約が生成される
-(挙動の予測しやすさ優先の既定)。`LLMClient` は summary 用の `openai.OpenAI`
-クライアントをメイン用とは別に生成して保持する (§4.2)。
+working summary の生成は背景で頻繁に走るため、config.toml の
+`summary_model` でメインより軽いモデルに差し替えられる (未指定なら `model`
+と同じ)。接続 (API キー・base_url・reasoning effort) はメインの LLM と
+共有し、summary 専用の接続設定は持たない (DESIGN-Config.md §3)。
+`LLMClient` はメインと同じ `openai.AsyncOpenAI` クライアントを summary
+生成にも使い、モデル名だけ `summary_model` を渡す。
 
 **`history_lines` の役割分離**: 従来 `history_lines` は「LLM に送る行数」と
 「pyte スクロールバック容量」を兼ねていたが、後者を `scrollback_lines` として分離する。
@@ -320,7 +309,7 @@ v0.1 ではこの近似を許容する (直近の生画面が短期記憶とし�
 | `working_summary.py` (新規) | `WorkingSummaryManager` (§5)                                                                                                                                                                                                                                                  |
 | `io_relay.py`               | コンストラクタに `working_summary: WorkingSummaryManager \| None = None` を追加。pty 出力を `feed()` した直後に `check_trigger()` を呼ぶ                                                                                                                                      |
 | `executor.py`               | `execute()` 冒頭で `ensure_summary()` を呼び (`[thinking...]` 表示中)、`summary_text` を `step()` に渡す                                                                                                                                                                      |
-| `config.py`                 | §7 の動作パラメータを `ExpectoConfig` に追加 (CLI から設定、環境変数からは読まない)。§7.1 の summary 用 LLM 接続フィールドを追加し、`from_env()` で `SUMMARY_OPENAI_*` → `OPENAI_*` のフォールバック解決を行う                                                                    |
+| `config.py`                 | §7 の動作パラメータと `summary_model` (§7.1) を `ExpectoConfig` に追加 (config.toml から読む。`model` へのフォールバックは `llm_client` 側で解決)                                                                                                                                  |
 | `cli.py`                    | §7 の CLI オプションを argparse に追加し config へ反映。`WorkingSummaryManager` の生成と結線                                                                                                                                                                                  |
 
 ---
@@ -335,7 +324,7 @@ v0.1 ではこの近似を許容する (直近の生画面が短期記憶とし�
   5. 生成失敗時に旧 summary を維持し、次回トリガーで再試行される
 - `test_screen_buffer.py`: `scrolled_lines_total` / `get_scrolled_tail(n)` / `get_text(last_n)` を追加。`mark()`/`get_text_since()` (tool 結果抽出用) と並行使用しても互いに影響しないことの検証
 - `test_llm_client.py`: `summarize()`、`working_summary` 付き instructions の検証
-- `test_config.py`: `SUMMARY_OPENAI_*` → `OPENAI_*` フォールバックの検証 (設定時 / 未設定時)
+- `test_config.py`: config.toml の summary 系キーの読み込みの検証
 - `test_executor.py`: `ensure_summary()` が呼ばれ summary が LLM に渡ることの検証
 
 ---
