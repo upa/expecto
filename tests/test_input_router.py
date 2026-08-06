@@ -6,36 +6,27 @@ class TestPassthrough:
         forwarded: list[bytes] = []
         router = InputRouter(
             write_to_pty=forwarded.append,
-            on_query_submit=lambda q, m: None,
+            on_query_submit=lambda q: None,
             on_query_cancel=lambda: None,
         )
         router.handle(b"hello")
         assert b"".join(forwarded) == b"hello"
         assert router.state == State.PASSTHROUGH
 
-    def test_completion_hotkey_enters_query_mode(self) -> None:
+    def test_hotkey_enters_query_mode(self) -> None:
         router = InputRouter(
             write_to_pty=lambda d: None,
-            on_query_submit=lambda q, m: None,
+            on_query_submit=lambda q: None,
             on_query_cancel=lambda: None,
         )
         router.handle(bytes([0x1F]))
-        assert router.state == State.QUERY_COMPLETION
-
-    def test_auto_hotkey_enters_query_mode(self) -> None:
-        router = InputRouter(
-            write_to_pty=lambda d: None,
-            on_query_submit=lambda q, m: None,
-            on_query_cancel=lambda: None,
-        )
-        router.handle(bytes([0x1D]))
-        assert router.state == State.QUERY_AUTO
+        assert router.state == State.QUERY
 
     def test_hotkey_not_forwarded(self) -> None:
         forwarded: list[bytes] = []
         router = InputRouter(
             write_to_pty=forwarded.append,
-            on_query_submit=lambda q, m: None,
+            on_query_submit=lambda q: None,
             on_query_cancel=lambda: None,
         )
         router.handle(b"ab" + bytes([0x1F]) + b"cd")
@@ -43,26 +34,22 @@ class TestPassthrough:
         assert b"".join(forwarded) == b"ab"
         assert router.query_text == "cd"
 
-    def test_custom_hotkeys(self) -> None:
+    def test_custom_hotkey(self) -> None:
         router = InputRouter(
             write_to_pty=lambda d: None,
-            on_query_submit=lambda q, m: None,
+            on_query_submit=lambda q: None,
             on_query_cancel=lambda: None,
-            completion_hotkey=0x01,
-            auto_hotkey=0x02,
+            hotkey=0x01,
         )
         router.handle(bytes([0x01]))
-        assert router.state == State.QUERY_COMPLETION
-        router._state = State.PASSTHROUGH
-        router.handle(bytes([0x02]))
-        assert router.state == State.QUERY_AUTO
+        assert router.state == State.QUERY
 
 
 class TestQueryMode:
     def test_typing_accumulates_query(self) -> None:
         router = InputRouter(
             write_to_pty=lambda d: None,
-            on_query_submit=lambda q, m: None,
+            on_query_submit=lambda q: None,
             on_query_cancel=lambda: None,
         )
         router.handle(bytes([0x1F]))
@@ -72,7 +59,7 @@ class TestQueryMode:
     def test_backspace_deletes_char(self) -> None:
         router = InputRouter(
             write_to_pty=lambda d: None,
-            on_query_submit=lambda q, m: None,
+            on_query_submit=lambda q: None,
             on_query_cancel=lambda: None,
         )
         router.handle(bytes([0x1F]))
@@ -83,47 +70,34 @@ class TestQueryMode:
     def test_backspace_on_empty_buffer(self) -> None:
         router = InputRouter(
             write_to_pty=lambda d: None,
-            on_query_submit=lambda q, m: None,
+            on_query_submit=lambda q: None,
             on_query_cancel=lambda: None,
         )
         router.handle(bytes([0x1F]))
         router.handle(bytes([0x7F]))
         assert router.query_text == ""
-        assert router.state == State.QUERY_COMPLETION
+        assert router.state == State.QUERY
 
-    def test_enter_submits_completion(self) -> None:
-        submitted: list[tuple[str, str]] = []
+    def test_enter_submits(self) -> None:
+        submitted: list[str] = []
         router = InputRouter(
             write_to_pty=lambda d: None,
-            on_query_submit=lambda q, m: submitted.append((q, m)),
+            on_query_submit=submitted.append,
             on_query_cancel=lambda: None,
         )
         router.handle(bytes([0x1F]))
         router.handle(b"df -h")
         router.handle(bytes([0x0D]))
-        assert submitted == [("df -h", "completion")]
-        # Input routes to the executing handler until the mode task
+        assert submitted == ["df -h"]
+        # Input routes to the executing handler until the execution task
         # finishes and set_passthrough() is called.
-        assert router.state == State.EXECUTING
-
-    def test_enter_submits_auto(self) -> None:
-        submitted: list[tuple[str, str]] = []
-        router = InputRouter(
-            write_to_pty=lambda d: None,
-            on_query_submit=lambda q, m: submitted.append((q, m)),
-            on_query_cancel=lambda: None,
-        )
-        router.handle(bytes([0x1D]))
-        router.handle(b"deploy")
-        router.handle(bytes([0x0D]))
-        assert submitted == [("deploy", "auto")]
         assert router.state == State.EXECUTING
 
     def test_esc_cancels(self) -> None:
         cancelled: list[bool] = []
         router = InputRouter(
             write_to_pty=lambda d: None,
-            on_query_submit=lambda q, m: None,
+            on_query_submit=lambda q: None,
             on_query_cancel=lambda: cancelled.append(True),
         )
         router.handle(bytes([0x1F]))
@@ -137,10 +111,10 @@ class TestQueryMode:
         cancelled: list[bool] = []
         router = InputRouter(
             write_to_pty=lambda d: None,
-            on_query_submit=lambda q, m: None,
+            on_query_submit=lambda q: None,
             on_query_cancel=lambda: cancelled.append(True),
         )
-        router.handle(bytes([0x1D]))
+        router.handle(bytes([0x1F]))
         router.handle(b"partial")
         router.handle(bytes([0x03]))
         assert cancelled == [True]
@@ -149,7 +123,7 @@ class TestQueryMode:
     def test_control_chars_ignored_in_query(self) -> None:
         router = InputRouter(
             write_to_pty=lambda d: None,
-            on_query_submit=lambda q, m: None,
+            on_query_submit=lambda q: None,
             on_query_cancel=lambda: None,
         )
         router.handle(bytes([0x1F]))
@@ -162,7 +136,7 @@ class TestQueryMode:
         forwarded: list[bytes] = []
         router = InputRouter(
             write_to_pty=forwarded.append,
-            on_query_submit=lambda q, m: None,
+            on_query_submit=lambda q: None,
             on_query_cancel=lambda: None,
         )
         router.handle(bytes([0x1F]))
@@ -175,7 +149,7 @@ class TestQueryMode:
     def test_utf8_multibyte_japanese(self) -> None:
         router = InputRouter(
             write_to_pty=lambda d: None,
-            on_query_submit=lambda q, m: None,
+            on_query_submit=lambda q: None,
             on_query_cancel=lambda: None,
         )
         router.handle(bytes([0x1F]))
@@ -185,7 +159,7 @@ class TestQueryMode:
     def test_utf8_split_across_reads(self) -> None:
         router = InputRouter(
             write_to_pty=lambda d: None,
-            on_query_submit=lambda q, m: None,
+            on_query_submit=lambda q: None,
             on_query_cancel=lambda: None,
         )
         router.handle(bytes([0x1F]))
@@ -196,22 +170,22 @@ class TestQueryMode:
         assert router.query_text == "あ"
 
     def test_utf8_mixed_with_ascii(self) -> None:
-        submitted: list[tuple[str, str]] = []
+        submitted: list[str] = []
         router = InputRouter(
             write_to_pty=lambda d: None,
-            on_query_submit=lambda q, m: submitted.append((q, m)),
+            on_query_submit=submitted.append,
             on_query_cancel=lambda: None,
         )
         router.handle(bytes([0x1F]))
         router.handle(b"ls ")
         router.handle("日本語".encode("utf-8"))
         router.handle(bytes([0x0D]))
-        assert submitted == [("ls 日本語", "completion")]
+        assert submitted == ["ls 日本語"]
 
     def test_utf8_backspace_deletes_whole_char(self) -> None:
         router = InputRouter(
             write_to_pty=lambda d: None,
-            on_query_submit=lambda q, m: None,
+            on_query_submit=lambda q: None,
             on_query_cancel=lambda: None,
         )
         router.handle(bytes([0x1F]))
@@ -223,10 +197,10 @@ class TestQueryMode:
 class TestRoundTrip:
     def test_passthrough_query_execute_passthrough(self) -> None:
         forwarded: list[bytes] = []
-        submitted: list[tuple[str, str]] = []
+        submitted: list[str] = []
         router = InputRouter(
             write_to_pty=forwarded.append,
-            on_query_submit=lambda q, m: submitted.append((q, m)),
+            on_query_submit=submitted.append,
             on_query_cancel=lambda: None,
         )
         router.handle(b"before")
@@ -235,11 +209,11 @@ class TestRoundTrip:
         router.handle(bytes([0x0D]))
         # While executing: keys go to the executing handler, not the pty.
         router.handle(b"during")
-        router.set_passthrough()  # the mode task finished
+        router.set_passthrough()  # the execution task finished
         router.handle(b"after")
 
         assert b"".join(forwarded) == b"beforeafter"
-        assert submitted == [("query", "completion")]
+        assert submitted == ["query"]
         assert router.state == State.PASSTHROUGH
 
 
@@ -248,7 +222,7 @@ class TestExecuting:
         received: list[int] = []
         router = InputRouter(
             write_to_pty=lambda d: None,
-            on_query_submit=lambda q, m: None,
+            on_query_submit=lambda q: None,
             on_query_cancel=lambda: None,
         )
         router.set_executing_input_handler(received.append)
@@ -261,7 +235,7 @@ class TestExecuting:
     def test_bytes_discarded_without_handler(self) -> None:
         router = InputRouter(
             write_to_pty=lambda d: None,
-            on_query_submit=lambda q, m: None,
+            on_query_submit=lambda q: None,
             on_query_cancel=lambda: None,
         )
         router.handle(bytes([0x1F]))

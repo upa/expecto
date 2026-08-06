@@ -18,18 +18,6 @@ if TYPE_CHECKING:
     from expecto.config import ExpectoConfig, ReasoningEffortLevel
 
 SYSTEM_PROMPT = """\
-You are an assistant that suggests commands for the terminal the user is \
-operating (which may be a local shell, an SSH session, or a vendor CLI on \
-a network device such as a router or switch).
-- Examine the recent terminal screen content to determine what system, \
-shell, or CLI the user is currently connected to.
-- Suggest exactly one command. The user will review and execute it themselves.
-- The command itself must always be in the appropriate syntax for the target system.
-- For all other output (explanation, etc.), respond in the same language \
-the user wrote their query in.
-"""
-
-AUTO_SYSTEM_PROMPT = """\
 You are an assistant that operates the terminal the user is using (which \
 may be a local shell, an SSH session, or a vendor CLI on a network device \
 such as a router or switch) to achieve the user's goal.
@@ -75,11 +63,6 @@ that will scroll out of view.
 """
 
 
-class CompletionResponse(BaseModel):
-    command: str
-    explanation: str
-
-
 class SummaryResult(BaseModel):
     environment: str
     activities: str
@@ -99,14 +82,14 @@ class SendControlParams(BaseModel):
     key: Literal["ctrl-c", "ctrl-d", "ctrl-z"]
 
 
-class AutoResponse(BaseModel):
-    """Final response of the auto mode loop. Continuation is a tool call."""
+class FinalResponse(BaseModel):
+    """Final response of the execution loop. Continuation is a tool call."""
 
     status: Literal["done", "fail"]
     explanation: str
 
 
-AUTO_TOOLS: list[FunctionToolParam] = [
+TOOLS: list[FunctionToolParam] = [
     {
         "type": "function",
         "name": "run_command",
@@ -178,9 +161,9 @@ class ParsedToolCall:
 
 
 @dataclass
-class AutoStepResult:
+class StepResult:
     tool_calls: list[ParsedToolCall]
-    final: AutoResponse | None
+    final: FinalResponse | None
     response_id: str
 
 
@@ -239,67 +222,13 @@ class LLMClient:
         with open(self._log_file, "a") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
-    async def complete(
-        self,
-        screen_text: str,
-        query: str,
-        working_summary: str | None = None,
-    ) -> CompletionResponse:
-        user_content = f"## Terminal Screen\n```\n{screen_text}\n```\n\n## User Request\n{query}"
-        input_msgs: ResponseInputParam = [
-            {"role": "user", "content": user_content},
-        ]
-        instructions = _compose_instructions(SYSTEM_PROMPT, working_summary)
-
-        self._log({
-            "type": "query",
-            "mode": "completion",
-            "query": query,
-        })
-
-        reasoning: Reasoning | None = (
-            Reasoning(effort=self._config.openai_reasoning_effort)
-            if self._config.openai_reasoning_effort is not None
-            else None
-        )
-
-        self._log({
-            "type": "llm_request",
-            "mode": "completion",
-            "model": self._config.model,
-            "instructions": instructions,
-            "input": list(input_msgs),
-        })
-
-        response = await self._client.responses.parse(
-            model=self._config.model,
-            instructions=instructions,
-            input=input_msgs,
-            text_format=CompletionResponse,
-            reasoning=reasoning,
-        )
-
-        parsed = response.output_parsed
-        if parsed is None:
-            result = CompletionResponse(command="", explanation="LLM returned empty response")
-        else:
-            result = parsed
-
-        self._log({
-            "type": "llm_response",
-            "mode": "completion",
-            "response": result.model_dump(),
-        })
-
-        return result
-
-    async def auto_step(
+    async def step(
         self,
         input_items: ResponseInputParam,
         previous_response_id: str | None = None,
         working_summary: str | None = None,
-    ) -> AutoStepResult:
-        instructions = _compose_instructions(AUTO_SYSTEM_PROMPT, working_summary)
+    ) -> StepResult:
+        instructions = _compose_instructions(SYSTEM_PROMPT, working_summary)
         reasoning: Reasoning | None = (
             Reasoning(effort=self._config.openai_reasoning_effort)
             if self._config.openai_reasoning_effort is not None
@@ -308,7 +237,6 @@ class LLMClient:
 
         self._log({
             "type": "llm_request",
-            "mode": "auto",
             "model": self._config.model,
             "instructions": instructions,
             "input": list(input_items),
@@ -319,8 +247,8 @@ class LLMClient:
             model=self._config.model,
             instructions=instructions,
             input=input_items,
-            text_format=AutoResponse,
-            tools=AUTO_TOOLS,
+            text_format=FinalResponse,
+            tools=TOOLS,
             parallel_tool_calls=False,
             reasoning=reasoning,
             store=True,
@@ -332,18 +260,17 @@ class LLMClient:
             if isinstance(item, ResponseFunctionToolCall):
                 tool_calls.append(self._parse_tool_call(item))
 
-        final: AutoResponse | None = None
+        final: FinalResponse | None = None
         if not tool_calls:
             final = response.output_parsed
             if final is None:
-                final = AutoResponse(
+                final = FinalResponse(
                     status="fail",
                     explanation="LLM returned empty response",
                 )
 
         self._log({
             "type": "llm_response",
-            "mode": "auto",
             "tool_calls": [
                 {"call_id": c.call_id, "name": c.name, "error": c.error}
                 | ({"params": c.params.model_dump()} if c.params is not None else {})
@@ -353,7 +280,7 @@ class LLMClient:
             "response_id": response.id,
         })
 
-        return AutoStepResult(
+        return StepResult(
             tool_calls=tool_calls,
             final=final,
             response_id=response.id,
@@ -431,14 +358,13 @@ class LLMClient:
 
         return parsed
 
-    def build_auto_messages(
+    def build_initial_messages(
         self,
         query: str,
         screen_text: str,
     ) -> ResponseInputParam:
         self._log({
             "type": "query",
-            "mode": "auto",
             "query": query,
         })
         user_content = f"## Goal\n{query}\n\n## Current Terminal Screen\n```\n{screen_text}\n```"

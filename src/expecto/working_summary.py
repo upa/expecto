@@ -23,7 +23,7 @@ class WorkingSummaryManager:
 
     Runs entirely on the event loop: check_trigger() is called from the
     relay's pty callback and starts a background asyncio.Task;
-    ensure_summary() is awaited by ModeExecutor before an LLM query.
+    ensure_summary() is awaited by Executor before an LLM query.
     pty reading is paused while ensure_summary() runs (the thinking
     overlay is up), so check_trigger() cannot start a concurrent update."""
 

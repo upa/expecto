@@ -16,14 +16,14 @@ if TYPE_CHECKING:
 
 
 class IORelay:
-    """The single always-on relay pump plus the event hub for mode execution.
+    """The single always-on relay pump plus the event hub for executions.
 
     Runs on the asyncio event loop: stdin and the pty master are watched
     with loop.add_reader, and their callbacks do only synchronous,
-    non-blocking work. Mode executions (completion / auto) run as a task
-    started via start_mode(); user Ctrl-C while a mode is executing
-    cancels that task. Everything shares the one event-loop thread, so
-    no locks are needed anywhere."""
+    non-blocking work. Executions run as a task started via
+    start_execution(); user Ctrl-C while an execution is running cancels
+    that task. Everything shares the one event-loop thread, so no locks
+    are needed anywhere."""
 
     def __init__(
         self,
@@ -46,7 +46,7 @@ class IORelay:
         self._stdin_reader_added: bool = False
         self._pty_paused: bool = False
         self._sgr_reset_armed: bool = False
-        self._mode_task: asyncio.Task[None] | None = None
+        self._exec_task: asyncio.Task[None] | None = None
         self._key_request: tuple[frozenset[int], asyncio.Future[int]] | None = None
 
         if input_router is not None:
@@ -71,15 +71,15 @@ class IORelay:
             await self._closed.wait()
         finally:
             self._remove_readers()
-            if self._mode_task is not None:
-                self._mode_task.cancel()
-                # Let the mode task's cleanup (finally blocks) run.
-                await asyncio.gather(self._mode_task, return_exceptions=True)
+            if self._exec_task is not None:
+                self._exec_task.cancel()
+                # Let the execution task's cleanup (finally blocks) run.
+                await asyncio.gather(self._exec_task, return_exceptions=True)
 
     def stop(self) -> None:
         self._close()
 
-    # --- pty output control (used by ModeExecutor) ---
+    # --- pty output control (used by Executor) ---
 
     def pause_pty(self) -> None:
         """Stop reading pty output, e.g. while an overlay like
@@ -120,12 +120,12 @@ class IORelay:
             if self._stdout_fd >= 0:
                 os.write(self._stdout_fd, b"\x1b[0m")
 
-    # --- input while a mode is executing (used by ModeExecutor) ---
+    # --- input while an execution is running (used by Executor) ---
 
     async def wait_key(self, accept: frozenset[int]) -> int:
         """Wait for one of the accepted key bytes (y/n prompts). Other
         bytes are discarded. Include 0x03 in accept when Ctrl-C should
-        answer the prompt instead of cancelling the mode task."""
+        answer the prompt instead of cancelling the execution task."""
         fut: asyncio.Future[int] = asyncio.get_running_loop().create_future()
         self._key_request = (accept, fut)
         try:
@@ -139,21 +139,21 @@ class IORelay:
             if byte in accept and not fut.done():
                 fut.set_result(byte)
             return
-        if byte == 0x03 and self._mode_task is not None:
-            self._mode_task.cancel()
-        # Other keys typed while a mode is executing are discarded.
+        if byte == 0x03 and self._exec_task is not None:
+            self._exec_task.cancel()
+        # Other keys typed while an execution is running are discarded.
 
-    # --- mode task management ---
+    # --- execution task management ---
 
-    def start_mode(self, coro: Coroutine[object, object, None]) -> asyncio.Task[None]:
-        """Run a mode execution as the current mode task."""
+    def start_execution(self, coro: Coroutine[object, object, None]) -> asyncio.Task[None]:
+        """Run an execution as the current execution task."""
         task = asyncio.get_running_loop().create_task(coro)
-        self._mode_task = task
-        task.add_done_callback(self._on_mode_done)
+        self._exec_task = task
+        task.add_done_callback(self._on_execution_done)
         return task
 
-    def _on_mode_done(self, task: asyncio.Task[None]) -> None:
-        self._mode_task = None
+    def _on_execution_done(self, task: asyncio.Task[None]) -> None:
+        self._exec_task = None
         self.flush_sgr_reset()
         if self._key_request is not None:
             _, fut = self._key_request
@@ -166,7 +166,7 @@ class IORelay:
             return
         exc = task.exception()
         if exc is not None and self._stdout_fd >= 0:
-            msg = f"\r\n\x1b[90m[expecto: mode error: {exc!r}]\x1b[0m\r\n"
+            msg = f"\r\n\x1b[90m[expecto: error: {exc!r}]\x1b[0m\r\n"
             os.write(self._stdout_fd, msg.encode())
 
     # --- fd callbacks ---

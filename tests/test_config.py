@@ -32,9 +32,8 @@ class TestExpectoConfig:
             assert config.history_lines == 500
             assert config.settle_ms == 500
             assert config.threshold_ms == 30000
-            assert config.max_auto_steps == 15
-            assert config.completion_hotkey == 0x1F
-            assert config.auto_hotkey == 0x1D
+            assert config.max_steps == 15
+            assert config.hotkey == 0x1F
             assert config.raw_io_log_file is None
             assert config.log_file is None
             assert config.scrollback_lines == 5000

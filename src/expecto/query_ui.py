@@ -29,9 +29,9 @@ class QueryModeUI:
         self._start_col: int = 0
         self._text: str = ""
 
-    def show(self, mode: str) -> None:
+    def show(self) -> None:
         self._visible = True
-        self._prompt = "? " if mode == "completion" else "! "
+        self._prompt = "? "
         self._start_col = self._get_cursor_col() if self._get_cursor_col else 0
         self._text = ""
         self._write(f"\x1b[90m{self._prompt}\x1b[0m".encode())
@@ -58,17 +58,10 @@ class QueryModeUI:
         self._move_to_prompt_start()
         self._write(b"\x1b[J")
 
-    def deactivate(self) -> None:
-        if not self._visible:
-            return
-        self._visible = False
-        self._move_to_prompt_start()
-        self._write(b"\x1b[J")
-
     def finalize(self) -> None:
         """Keep query text visible and mark invisible. No newline is
-        written: auto mode nudges the shell with Enter right after, and
-        its echo supplies the line break."""
+        written: the executor nudges the shell with Enter right after,
+        and its echo supplies the line break."""
         if not self._visible:
             return
         self._visible = False

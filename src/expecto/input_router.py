@@ -14,8 +14,7 @@ def _utf8_expected_len(first_byte: int) -> int:
 
 class State(enum.Enum):
     PASSTHROUGH = "passthrough"
-    QUERY_COMPLETION = "query_completion"
-    QUERY_AUTO = "query_auto"
+    QUERY = "query"
     EXECUTING = "executing"
 
 
@@ -23,20 +22,18 @@ class InputRouter:
     def __init__(
         self,
         write_to_pty: Callable[[bytes], None],
-        on_query_submit: Callable[[str, str], None],
+        on_query_submit: Callable[[str], None],
         on_query_cancel: Callable[[], None],
-        on_query_start: Callable[[str], None] | None = None,
+        on_query_start: Callable[[], None] | None = None,
         on_query_update: Callable[[str], None] | None = None,
-        completion_hotkey: int = 0x1F,
-        auto_hotkey: int = 0x1D,
+        hotkey: int = 0x1F,
     ) -> None:
         self._write_to_pty = write_to_pty
         self._on_query_submit = on_query_submit
         self._on_query_cancel = on_query_cancel
         self._on_query_start = on_query_start
         self._on_query_update = on_query_update
-        self._completion_hotkey = completion_hotkey
-        self._auto_hotkey = auto_hotkey
+        self._hotkey = hotkey
         self._state: State = State.PASSTHROUGH
         self._query_buf: list[str] = []
         self._utf8_pending: bytearray = bytearray()
@@ -51,12 +48,12 @@ class InputRouter:
         return "".join(self._query_buf)
 
     def set_executing_input_handler(self, handler: Callable[[int], None]) -> None:
-        """Set the receiver for bytes typed while a mode is executing
+        """Set the receiver for bytes typed while an execution is running
         (wired by IORelay: key requests, Ctrl-C cancellation)."""
         self._on_executing_input = handler
 
     def set_passthrough(self) -> None:
-        """Return to passthrough (called when a mode execution finishes)."""
+        """Return to passthrough (called when an execution finishes)."""
         self._state = State.PASSTHROUGH
         self._query_buf.clear()
         self._utf8_pending.clear()
@@ -75,16 +72,11 @@ class InputRouter:
             self._handle_query(byte)
 
     def _handle_passthrough(self, byte: int) -> None:
-        if byte == self._completion_hotkey:
-            self._state = State.QUERY_COMPLETION
+        if byte == self._hotkey:
+            self._state = State.QUERY
             self._query_buf.clear()
             if self._on_query_start is not None:
-                self._on_query_start("completion")
-        elif byte == self._auto_hotkey:
-            self._state = State.QUERY_AUTO
-            self._query_buf.clear()
-            if self._on_query_start is not None:
-                self._on_query_start("auto")
+                self._on_query_start()
         else:
             self._write_to_pty(bytes([byte]))
 
@@ -108,13 +100,12 @@ class InputRouter:
             return
 
         if byte == 0x0D:  # Enter
-            mode = "completion" if self._state == State.QUERY_COMPLETION else "auto"
             query = self.query_text
-            # The submit callback starts the mode task; input stays routed
-            # to the executing handler until the task's done callback
-            # calls set_passthrough().
+            # The submit callback starts the execution task; input stays
+            # routed to the executing handler until the task's done
+            # callback calls set_passthrough().
             self._state = State.EXECUTING
-            self._on_query_submit(query, mode)
+            self._on_query_submit(query)
         elif byte in (0x1B, 0x03):  # Esc, Ctrl-C
             self._state = State.PASSTHROUGH
             self._query_buf.clear()

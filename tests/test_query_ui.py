@@ -36,21 +36,15 @@ class TestQueryModeUI:
             data += os.read(self.master_fd, 4096)
         return data.decode("utf-8", errors="replace")
 
-    def test_show_completion_prompt(self) -> None:
+    def test_show_prompt(self) -> None:
         ui = QueryModeUI(self.slave_fd)
-        ui.show("completion")
+        ui.show()
         output = self._read_output()
         assert "? " in output
 
-    def test_show_auto_prompt(self) -> None:
-        ui = QueryModeUI(self.slave_fd)
-        ui.show("auto")
-        output = self._read_output()
-        assert "! " in output
-
     def test_update_appends_incrementally(self) -> None:
         ui = QueryModeUI(self.slave_fd)
-        ui.show("completion")
+        ui.show()
         self._read_output()
 
         ui.update("l")
@@ -63,7 +57,7 @@ class TestQueryModeUI:
 
     def test_update_backspace_redraws(self) -> None:
         ui = QueryModeUI(self.slave_fd)
-        ui.show("completion")
+        ui.show()
         self._read_output()
         ui.update("abc")
         self._read_output()
@@ -75,7 +69,7 @@ class TestQueryModeUI:
 
     def test_hide_clears_with_relative_movement(self) -> None:
         ui = QueryModeUI(self.slave_fd)
-        ui.show("completion")
+        ui.show()
         self._read_output()
         ui.update("test")
         self._read_output()
@@ -97,16 +91,16 @@ class TestQueryModeUI:
         output = self._read_output()
         assert output == ""
 
-    def test_deactivate_clears_and_prevents_update(self) -> None:
+    def test_finalize_keeps_text_and_prevents_update(self) -> None:
         ui = QueryModeUI(self.slave_fd)
-        ui.show("completion")
+        ui.show()
         self._read_output()
         ui.update("hello")
         self._read_output()
 
-        ui.deactivate()
-        deactivate_output = self._read_output()
-        assert "\x1b[J" in deactivate_output
+        ui.finalize()
+        finalize_output = self._read_output()
+        assert finalize_output == ""  # the query line stays on screen
 
         ui.update("should not appear")
         output = self._read_output()
@@ -114,7 +108,7 @@ class TestQueryModeUI:
 
     def test_long_text_not_truncated(self) -> None:
         ui = QueryModeUI(self.slave_fd, get_cursor_col=lambda: 0)
-        ui.show("completion")
+        ui.show()
         self._read_output()
 
         long_text = "a" * 200
@@ -124,12 +118,12 @@ class TestQueryModeUI:
 
     def test_cursor_col_stored_on_show(self) -> None:
         ui = QueryModeUI(self.slave_fd, get_cursor_col=lambda: 25)
-        ui.show("completion")
+        ui.show()
         assert ui._start_col == 25
 
     def test_hide_with_start_col(self) -> None:
         ui = QueryModeUI(self.slave_fd, get_cursor_col=lambda: 10)
-        ui.show("completion")
+        ui.show()
         self._read_output()
         ui.update("test")
         self._read_output()
@@ -142,7 +136,7 @@ class TestQueryModeUI:
     def test_move_to_start_multiline(self) -> None:
         """When text wraps, hide moves cursor up correctly."""
         ui = QueryModeUI(self.slave_fd, get_cursor_col=lambda: 0)
-        ui.show("completion")
+        ui.show()
         self._read_output()
 
         cols = ui._get_cols()
@@ -160,18 +154,18 @@ class TestInputRouterWithQueryUI:
     def test_callbacks_called(self) -> None:
         from expecto.input_router import InputRouter
 
-        started: list[str] = []
+        started: list[bool] = []
         updated: list[str] = []
 
         router = InputRouter(
             write_to_pty=lambda d: None,
-            on_query_submit=lambda q, m: None,
+            on_query_submit=lambda q: None,
             on_query_cancel=lambda: None,
-            on_query_start=started.append,
+            on_query_start=lambda: started.append(True),
             on_query_update=updated.append,
         )
         router.handle(bytes([0x1F]))
-        assert started == ["completion"]
+        assert started == [True]
 
         router.handle(b"ab")
         assert updated == ["a", "ab"]

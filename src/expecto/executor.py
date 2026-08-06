@@ -16,11 +16,10 @@ if TYPE_CHECKING:
     from expecto.working_summary import WorkingSummaryManager
 
 from expecto.llm_client import (
-    AutoStepResult,
-    CompletionResponse,
     ParsedToolCall,
     RiskLevel,
     RunCommandParams,
+    StepResult,
 )
 from expecto.settle import SettleResult
 
@@ -41,39 +40,32 @@ CONTROL_CHAR_MAP: dict[str, bytes] = {
 }
 
 
-class LLMCompleter(Protocol):
-    async def complete(
-        self,
-        screen_text: str,
-        query: str,
-        working_summary: str | None = None,
-    ) -> CompletionResponse: ...
-
-    async def auto_step(
+class LLMStepper(Protocol):
+    async def step(
         self,
         input_items: ResponseInputParam,
         previous_response_id: str | None = None,
         working_summary: str | None = None,
-    ) -> AutoStepResult: ...
+    ) -> StepResult: ...
 
-    def build_auto_messages(
+    def build_initial_messages(
         self,
         query: str,
         screen_text: str,
     ) -> ResponseInputParam: ...
 
 
-class ModeExecutor:
+class Executor:
     def __init__(
         self,
-        llm_client: LLMCompleter,
+        llm_client: LLMStepper,
         screen_buffer: ScreenBuffer,
         write_to_pty: Callable[[bytes], None],
         stdout_fd: int,
         relay: IORelay,
         settle_ms: int = 500,
         threshold_ms: int = 30000,
-        max_auto_steps: int = 15,
+        max_steps: int = 15,
         history_lines: int = 500,
         working_summary: WorkingSummaryManager | None = None,
         confirm_level: ConfirmLevel = "destructive",
@@ -86,19 +78,11 @@ class ModeExecutor:
         self._relay = relay
         self._settle_ms = settle_ms
         self._threshold_ms = threshold_ms
-        self._max_auto_steps = max_auto_steps
+        self._max_steps = max_steps
         self._history_lines = history_lines
         self._working_summary = working_summary
         self._confirm_level = confirm_level
         self._dangerous_matcher = dangerous_matcher
-
-    async def execute(self, query: str, mode: str) -> None:
-        """Run one mode execution. Runs as the relay's mode task;
-        user Ctrl-C arrives as task cancellation."""
-        if mode == "completion":
-            await self._execute_completion(query)
-        elif mode == "auto":
-            await self._execute_auto(query)
 
     async def _thinking(
         self, awaitable: Awaitable[T], label: bytes = b"[thinking...]",
@@ -121,16 +105,10 @@ class ModeExecutor:
         await self._working_summary.ensure_summary()
         return self._working_summary.summary_text
 
-    async def _execute_completion(self, query: str) -> None:
-        response = await self._thinking(self._completion_request(query))
-        self._write_to_pty(response.command.encode())
-
-    async def _completion_request(self, query: str) -> CompletionResponse:
-        working_summary = await self._ensure_working_summary()
-        screen_text = self._screen.get_text(last_n=self._history_lines)
-        return await self._llm.complete(screen_text, query, working_summary=working_summary)
-
-    async def _execute_auto(self, query: str) -> None:
+    async def execute(self, query: str) -> None:
+        """Run one execution (the LLM command-execute-observe loop).
+        Runs as the relay's execution task; user Ctrl-C arrives as task
+        cancellation."""
         try:
             # The finalized query line took over the prompt line on the
             # outer tty; nudge the shell with a newline so a fresh prompt
@@ -140,33 +118,32 @@ class ModeExecutor:
 
             working_summary = await self._thinking(self._ensure_working_summary())
             screen_text = self._screen.get_text(last_n=self._history_lines)
-            input_items: ResponseInputParam = self._llm.build_auto_messages(
+            input_items: ResponseInputParam = self._llm.build_initial_messages(
                 query, screen_text,
             )
             prev_response_id: str | None = None
 
             step = 0
-            checkpoint = self._max_auto_steps
+            checkpoint = self._max_steps
             while True:
                 step += 1
                 result = await self._thinking(
-                    self._llm.auto_step(
+                    self._llm.step(
                         input_items,
                         previous_response_id=prev_response_id,
                         working_summary=working_summary,
                     ),
-                    label=b"[auto: thinking...]",
                 )
                 prev_response_id = result.response_id
 
                 if not result.tool_calls:
                     final = result.final
                     if final is not None and final.status == "done":
-                        self._show_auto_end(f"done: {final.explanation}")
+                        self._show_end(f"done: {final.explanation}")
                     elif final is not None:
-                        self._show_auto_end(f"failed: {final.explanation}")
+                        self._show_end(f"failed: {final.explanation}")
                     else:
-                        self._show_auto_end("failed: empty response")
+                        self._show_end("failed: empty response")
                     return
 
                 outputs: ResponseInputParam = []
@@ -181,11 +158,11 @@ class ModeExecutor:
 
                 if step == checkpoint:
                     if not await self._confirm_continue(step):
-                        self._show_auto_end(f"stopped at step {step}")
+                        self._show_end(f"stopped at step {step}")
                         return
-                    checkpoint += self._max_auto_steps
+                    checkpoint += self._max_steps
         except asyncio.CancelledError:
-            self._show_auto_end("interrupted")
+            self._show_end("interrupted")
             raise
         finally:
             self._relay.flush_sgr_reset()
@@ -245,20 +222,20 @@ class ModeExecutor:
     async def _confirm_continue(self, step: int) -> bool:
         """Ask the user whether to continue past the step checkpoint."""
         return await self._prompt_yes_no(
-            f"[auto] reached step {step} — continue?",
+            f"[expecto] reached step {step} — continue?",
         )
 
     async def _confirm_command(self, command: str, risk: str, detail: str) -> bool:
         """Ask the user whether to run a command that hit the confirm level."""
         return await self._prompt_yes_no(
-            f"[auto] {risk} command ({detail}): {command} — run?",
+            f"[expecto] {risk} command ({detail}): {command} — run?",
         )
 
     async def _prompt_yes_no(self, message: str) -> bool:
         """Show a y/n prompt and wait for the answer. The relay pump keeps
         relaying pty output meanwhile, so the screen stays live. Ctrl-C and
-        Esc answer "no" here (they do not cancel the mode task); a session
-        that goes away entirely arrives as cancellation instead."""
+        Esc answer "no" here (they do not cancel the execution task); a
+        session that goes away entirely arrives as cancellation instead."""
         os.write(
             self._stdout_fd,
             f"\r\n\x1b[90m{message} (y/n) \x1b[0m".encode(),
@@ -272,10 +249,10 @@ class ModeExecutor:
         os.write(self._stdout_fd, b"n\r\n")
         return False
 
-    def _show_auto_end(self, label: str) -> None:
+    def _show_end(self, label: str) -> None:
         # The outer tty is in raw mode (no ONLCR), so bare "\n" moves down
         # without returning to column 0; normalize to "\r\n".
-        text = f"[auto {label}]".replace("\r\n", "\n").replace("\n", "\r\n")
+        text = f"[expecto {label}]".replace("\r\n", "\n").replace("\n", "\r\n")
         os.write(
             self._stdout_fd,
             f"\x1b[90m{text}\x1b[0m".encode(),

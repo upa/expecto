@@ -6,16 +6,14 @@ from openai.types.responses import ResponseFunctionToolCall
 
 from expecto.config import ExpectoConfig
 from expecto.llm_client import (
-    AUTO_SYSTEM_PROMPT,
-    AUTO_TOOLS,
-    AutoResponse,
-    CompletionResponse,
+    FinalResponse,
     LLMClient,
     RunCommandParams,
     SendControlParams,
     SUMMARY_SYSTEM_PROMPT,
     SummaryResult,
     SYSTEM_PROMPT,
+    TOOLS,
     _build_summary_input,
     _compose_instructions,
 )
@@ -31,19 +29,11 @@ def _make_config() -> ExpectoConfig:
         history_lines=200,
         settle_ms=500,
         threshold_ms=30000,
-        max_auto_steps=10,
-        completion_hotkey=0x1F,
-        auto_hotkey=0x1D,
+        max_steps=10,
+        hotkey=0x1F,
         raw_io_log_file=None,
         log_file=None,
     )
-
-
-class TestCompletionResponse:
-    def test_model_fields(self) -> None:
-        resp = CompletionResponse(command="ls -la", explanation="list files")
-        assert resp.command == "ls -la"
-        assert resp.explanation == "list files"
 
 
 class TestToolParams:
@@ -66,36 +56,36 @@ class TestToolParams:
         assert params.key == "ctrl-c"
 
 
-class TestAutoResponse:
+class TestFinalResponse:
     def test_done_response(self) -> None:
-        resp = AutoResponse(
+        resp = FinalResponse(
             status="done",
             explanation="goal achieved",
         )
         assert resp.status == "done"
 
     def test_fail_response(self) -> None:
-        resp = AutoResponse(
+        resp = FinalResponse(
             status="fail",
             explanation="unrecoverable error",
         )
         assert resp.status == "fail"
 
 
-class TestAutoTools:
+class TestTools:
     def test_tool_names(self) -> None:
-        names = [tool["name"] for tool in AUTO_TOOLS]
+        names = [tool["name"] for tool in TOOLS]
         assert names == ["run_command", "send_control"]
 
     def test_tools_are_strict(self) -> None:
-        for tool in AUTO_TOOLS:
+        for tool in TOOLS:
             assert tool["strict"] is True
             params = tool["parameters"]
             assert params is not None
             assert params["additionalProperties"] is False
 
     def test_run_command_schema_requires_risk(self) -> None:
-        run_command = AUTO_TOOLS[0]
+        run_command = TOOLS[0]
         params = run_command["parameters"]
         assert params is not None
         required = cast("list[str]", params["required"])
@@ -232,22 +222,17 @@ class TestLLMClient:
 
     def test_system_prompt_exists(self) -> None:
         assert "terminal" in SYSTEM_PROMPT.lower()
-        assert "command" in SYSTEM_PROMPT.lower()
-        assert "same language" in SYSTEM_PROMPT.lower()
+        assert "goal" in SYSTEM_PROMPT.lower()
+        assert "run_command" in SYSTEM_PROMPT
+        assert "send_control" in SYSTEM_PROMPT
+        assert "in English by default" in SYSTEM_PROMPT
+        assert "language of the query" in SYSTEM_PROMPT
+        assert "uname" in SYSTEM_PROMPT
+        assert "show version" in SYSTEM_PROMPT
 
-    def test_auto_system_prompt_exists(self) -> None:
-        assert "terminal" in AUTO_SYSTEM_PROMPT.lower()
-        assert "goal" in AUTO_SYSTEM_PROMPT.lower()
-        assert "run_command" in AUTO_SYSTEM_PROMPT
-        assert "send_control" in AUTO_SYSTEM_PROMPT
-        assert "in English by default" in AUTO_SYSTEM_PROMPT
-        assert "language of the query" in AUTO_SYSTEM_PROMPT
-        assert "uname" in AUTO_SYSTEM_PROMPT
-        assert "show version" in AUTO_SYSTEM_PROMPT
-
-    def test_build_auto_messages(self) -> None:
+    def test_build_initial_messages(self) -> None:
         client = LLMClient(_make_config())
-        messages = client.build_auto_messages(
+        messages = client.build_initial_messages(
             query="ディスク使用量を確認して",
             screen_text="user@host:~$ ",
         )
@@ -258,22 +243,21 @@ class TestLLMClient:
         assert "ディスク使用量を確認して" in content
         assert "user@host:~$ " in content
 
-    def test_log_query_on_build_auto(self) -> None:
+    def test_log_query_on_build_initial(self) -> None:
         with tempfile.NamedTemporaryFile(mode="r", suffix=".jsonl", delete=False) as f:
             log_path = f.name
         config = _make_config()
         config.log_file = log_path
         client = LLMClient(config)
-        client.build_auto_messages(query="check disk", screen_text="$ ")
+        client.build_initial_messages(query="check disk", screen_text="$ ")
         with open(log_path) as f:
             lines = f.readlines()
         assert len(lines) == 1
         entry = json.loads(lines[0])
         assert entry["type"] == "query"
-        assert entry["mode"] == "auto"
         assert entry["query"] == "check disk"
         assert "timestamp" in entry
 
     def test_no_log_when_log_file_none(self) -> None:
         client = LLMClient(_make_config())
-        client.build_auto_messages(query="test", screen_text="$ ")
+        client.build_initial_messages(query="test", screen_text="$ ")

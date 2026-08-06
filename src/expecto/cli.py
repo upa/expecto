@@ -8,10 +8,10 @@ from dotenv import load_dotenv
 
 from expecto.config import ExpectoConfig
 from expecto.dangerous import DangerousCommandMatcher
+from expecto.executor import Executor
 from expecto.input_router import InputRouter
 from expecto.io_relay import IORelay
 from expecto.llm_client import LLMClient
-from expecto.mode_executor import ModeExecutor
 from expecto.pty_manager import NESTING_ENV_VAR, PTYManager
 from expecto.query_ui import QueryModeUI
 from expecto.screen_buffer import ScreenBuffer
@@ -67,7 +67,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--confirm-level",
         choices=["destructive", "mutating", "none"],
         default=None,
-        help="Auto mode: minimum command risk that requires user confirmation "
+        help="Minimum command risk that requires user confirmation "
         "(default: destructive)",
     )
     parser.add_argument(
@@ -152,14 +152,11 @@ def main(argv: list[str] | None = None) -> None:
         assert pty_mgr.master_fd is not None
         os.write(pty_mgr.master_fd, data)
 
-    # on_query_submit closes over relay and mode_executor, which are
+    # on_query_submit closes over relay and executor, which are
     # created below; both exist before any input can arrive.
-    def on_query_submit(query: str, mode: str) -> None:
-        if mode == "auto":
-            query_ui.finalize()
-        else:
-            query_ui.deactivate()
-        relay.start_mode(mode_executor.execute(query, mode))
+    def on_query_submit(query: str) -> None:
+        query_ui.finalize()
+        relay.start_execution(executor.execute(query))
 
     input_router = InputRouter(
         write_to_pty=write_to_pty,
@@ -167,8 +164,7 @@ def main(argv: list[str] | None = None) -> None:
         on_query_cancel=query_ui.hide,
         on_query_start=query_ui.show,
         on_query_update=query_ui.update,
-        completion_hotkey=config.completion_hotkey,
-        auto_hotkey=config.auto_hotkey,
+        hotkey=config.hotkey,
     )
 
     raw_io_log_fh = open(config.raw_io_log_file, "a") if config.raw_io_log_file else None
@@ -180,7 +176,7 @@ def main(argv: list[str] | None = None) -> None:
         working_summary=working_summary,
     )
 
-    mode_executor = ModeExecutor(
+    executor = Executor(
         llm_client=llm_client,
         screen_buffer=screen_buffer,
         write_to_pty=write_to_pty,
@@ -188,7 +184,7 @@ def main(argv: list[str] | None = None) -> None:
         relay=relay,
         settle_ms=config.settle_ms,
         threshold_ms=config.threshold_ms,
-        max_auto_steps=config.max_auto_steps,
+        max_steps=config.max_steps,
         history_lines=config.history_lines,
         working_summary=working_summary,
         confirm_level=config.confirm_level,

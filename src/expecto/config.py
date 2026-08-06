@@ -31,9 +31,8 @@ class ExpectoConfig:
     history_lines: int
     settle_ms: int
     threshold_ms: int
-    max_auto_steps: int
-    completion_hotkey: int
-    auto_hotkey: int
+    max_steps: int
+    hotkey: int
     raw_io_log_file: str | None
     log_file: str | None
     scrollback_lines: int = 5000
@@ -66,9 +65,8 @@ class ExpectoConfig:
             history_lines=500,
             settle_ms=500,
             threshold_ms=30000,
-            max_auto_steps=15,
-            completion_hotkey=0x1F,
-            auto_hotkey=0x1D,
+            max_steps=15,
+            hotkey=0x1F,
             raw_io_log_file=None,
             log_file=None,
             scrollback_lines=5000,

@@ -12,7 +12,7 @@ from expecto.input_router import InputRouter, State
 from expecto.io_relay import IORelay
 from expecto.screen_buffer import ScreenBuffer
 
-COMPLETION_HOTKEY = bytes([0x1F])
+HOTKEY = bytes([0x1F])
 ENTER = bytes([0x0D])
 
 MakeSession = Callable[..., Coroutine[object, object, "Session"]]
@@ -112,7 +112,7 @@ class TestRelayPump:
         forwarded: list[bytes] = []
         router = InputRouter(
             write_to_pty=forwarded.append,
-            on_query_submit=lambda q, m: None,
+            on_query_submit=lambda q: None,
             on_query_cancel=lambda: None,
         )
         session = await make_session(input_router=router)
@@ -159,7 +159,7 @@ class TestRelayPump:
 
 
 def _make_executing_router(
-    on_submit: Callable[[str, str], None],
+    on_submit: Callable[[str], None],
 ) -> InputRouter:
     return InputRouter(
         write_to_pty=lambda d: None,
@@ -168,12 +168,12 @@ def _make_executing_router(
     )
 
 
-class TestModeTask:
-    async def test_ctrl_c_cancels_mode_task(self, make_session: MakeSession) -> None:
+class TestExecutionTask:
+    async def test_ctrl_c_cancels_execution_task(self, make_session: MakeSession) -> None:
         started = asyncio.Event()
         cancelled = asyncio.Event()
 
-        async def fake_mode() -> None:
+        async def fake_execution() -> None:
             started.set()
             try:
                 await asyncio.Event().wait()
@@ -181,13 +181,13 @@ class TestModeTask:
                 cancelled.set()
                 raise
 
-        def on_submit(query: str, mode: str) -> None:
-            session.relay.start_mode(fake_mode())
+        def on_submit(query: str) -> None:
+            session.relay.start_execution(fake_execution())
 
         router = _make_executing_router(on_submit)
         session = await make_session(input_router=router)
 
-        session.user_types(COMPLETION_HOTKEY + b"go" + ENTER)
+        session.user_types(HOTKEY + b"go" + ENTER)
         await asyncio.wait_for(started.wait(), timeout=2)
         assert router.state == State.EXECUTING
 
@@ -199,11 +199,11 @@ class TestModeTask:
     async def test_other_keys_discarded_while_executing(self, make_session: MakeSession) -> None:
         finish = asyncio.Event()
 
-        async def fake_mode() -> None:
+        async def fake_execution() -> None:
             await finish.wait()
 
-        def on_submit(query: str, mode: str) -> None:
-            session.relay.start_mode(fake_mode())
+        def on_submit(query: str) -> None:
+            session.relay.start_execution(fake_execution())
 
         forwarded: list[bytes] = []
         router = InputRouter(
@@ -213,7 +213,7 @@ class TestModeTask:
         )
         session = await make_session(input_router=router)
 
-        session.user_types(COMPLETION_HOTKEY + ENTER)
+        session.user_types(HOTKEY + ENTER)
         await _settle_pump()
         session.user_types(b"abc")
         await _settle_pump()
@@ -230,17 +230,17 @@ class TestModeTask:
     async def test_wait_key_resolves_on_accepted_byte(self, make_session: MakeSession) -> None:
         answer: list[int] = []
 
-        async def fake_mode() -> None:
+        async def fake_execution() -> None:
             key = await session.relay.wait_key(frozenset({0x79, 0x6E}))
             answer.append(key)
 
-        def on_submit(query: str, mode: str) -> None:
-            session.relay.start_mode(fake_mode())
+        def on_submit(query: str) -> None:
+            session.relay.start_execution(fake_execution())
 
         router = _make_executing_router(on_submit)
         session = await make_session(input_router=router)
 
-        session.user_types(COMPLETION_HOTKEY + ENTER)
+        session.user_types(HOTKEY + ENTER)
         await _settle_pump()
         session.user_types(b"x")  # not accepted: discarded
         await _settle_pump()
@@ -252,7 +252,7 @@ class TestModeTask:
     async def test_ctrl_c_answers_prompt_instead_of_cancelling(self, make_session: MakeSession) -> None:
         outcome: list[str] = []
 
-        async def fake_mode() -> None:
+        async def fake_execution() -> None:
             try:
                 key = await session.relay.wait_key(frozenset({0x79, 0x03}))
                 outcome.append("answered" if key == 0x03 else "other")
@@ -260,52 +260,52 @@ class TestModeTask:
                 outcome.append("cancelled")
                 raise
 
-        def on_submit(query: str, mode: str) -> None:
-            session.relay.start_mode(fake_mode())
+        def on_submit(query: str) -> None:
+            session.relay.start_execution(fake_execution())
 
         router = _make_executing_router(on_submit)
         session = await make_session(input_router=router)
 
-        session.user_types(COMPLETION_HOTKEY + ENTER)
+        session.user_types(HOTKEY + ENTER)
         await _settle_pump()
         session.user_types(b"\x03")
         await _settle_pump()
         assert outcome == ["answered"]
 
-    async def test_mode_error_reported_and_state_restored(self, make_session: MakeSession) -> None:
-        async def failing_mode() -> None:
+    async def test_execution_error_reported_and_state_restored(self, make_session: MakeSession) -> None:
+        async def failing_execution() -> None:
             raise RuntimeError("boom")
 
-        def on_submit(query: str, mode: str) -> None:
-            session.relay.start_mode(failing_mode())
+        def on_submit(query: str) -> None:
+            session.relay.start_execution(failing_execution())
 
         router = _make_executing_router(on_submit)
         session = await make_session(input_router=router)
 
-        session.user_types(COMPLETION_HOTKEY + ENTER)
+        session.user_types(HOTKEY + ENTER)
         await _settle_pump()
         assert router.state == State.PASSTHROUGH
         out = session.screen_output()
-        assert b"[expecto: mode error:" in out
+        assert b"[expecto: error:" in out
         assert b"boom" in out
 
-    async def test_run_cancels_mode_task_on_eof(self, make_session: MakeSession) -> None:
+    async def test_run_cancels_execution_task_on_eof(self, make_session: MakeSession) -> None:
         cancelled = asyncio.Event()
 
-        async def fake_mode() -> None:
+        async def fake_execution() -> None:
             try:
                 await asyncio.Event().wait()
             except asyncio.CancelledError:
                 cancelled.set()
                 raise
 
-        def on_submit(query: str, mode: str) -> None:
-            session.relay.start_mode(fake_mode())
+        def on_submit(query: str) -> None:
+            session.relay.start_execution(fake_execution())
 
         router = _make_executing_router(on_submit)
         session = await make_session(input_router=router)
 
-        session.user_types(COMPLETION_HOTKEY + ENTER)
+        session.user_types(HOTKEY + ENTER)
         await _settle_pump()
         session.child_sock.close()
         await asyncio.wait_for(session.run_task, timeout=2)

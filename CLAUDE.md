@@ -4,22 +4,18 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-`expecto` is a transparent TTY wrapper CLI tool that sits between the terminal and user I/O. It relays input/output to a child process (default: `$SHELL`) in passthrough mode, and on a hotkey enters query mode where the user types a natural-language query. The query plus recent terminal history is sent to an LLM, which returns a command to inject into the PTY.
+`expecto` is a transparent TTY wrapper CLI tool that sits between the terminal and user I/O. It relays input/output to a child process (default: `$SHELL`) in passthrough mode, and on a hotkey (`Ctrl-/`) enters query mode where the user types a natural-language query (goal). The query plus recent terminal history is sent to an LLM, which loops command-execute-observe against the terminal until the goal is met, with idle-based settle detection. The LLM can also send control characters (e.g., Ctrl-C) to manage long-running commands.
 
 Key differentiator: wraps the **tty itself**, not a specific shell — works over ssh, vendor CLI (routers/switches), etc.
 
-Two hotkeys, two modes — the hotkey pressed determines the execution mode:
-- **completion mode** (`Ctrl-/`): LLM suggests one command, injected without Enter — user reviews and executes
-- **auto mode** (`Ctrl-]`): LLM loops command-execute-observe until goal is met, with idle-based settle detection. LLM can also send control characters (e.g., Ctrl-C) to manage long-running commands.
-
 ## Status
 
-Phase 1 (completion mode) complete. Phase 2 (auto mode) core loop complete (LLMClient with Responses API function calling — `run_command` / `send_control` tools, ModeExecutor tool-call loop, idle-timer settle detection). Working Summary implemented (`working_summary.py`, see `design/DESIGN-WorkingSummary.md`). Concurrency is a single-threaded asyncio event loop — one always-on relay pump, mode executions as cancellable tasks, no threads/locks (see `design/DESIGN-Async.md`). `design/DESIGN.md` is the authoritative specification.
+Core loop complete (LLMClient with Responses API function calling — `run_command` / `send_control` tools, Executor tool-call loop, idle-timer settle detection). A former one-shot "completion mode" has been removed; the command-execute-observe loop is expecto's sole behavior. Working Summary implemented (`working_summary.py`, see `design/DESIGN-WorkingSummary.md`). Concurrency is a single-threaded asyncio event loop — one always-on relay pump, executions as cancellable tasks, no threads/locks (see `design/DESIGN-Async.md`). `design/DESIGN.md` is the authoritative specification.
 
 ### TODO
 
 - **Secret masking**: LLM に送るスクリーン履歴からパスワード・APIキー等を簡易マスキング
-- **Prompt engineering**: completion mode / auto mode のシステムプロンプト内容の精査・改善（現状は最低限の指示のみ）
+- **Prompt engineering**: システムプロンプト内容の精査・改善（現状は最低限の指示のみ）
 
 ## Tech Stack
 
@@ -33,17 +29,17 @@ Phase 1 (completion mode) complete. Phase 2 (auto mode) core loop complete (LLMC
 
 ## Architecture
 
-State machine (InputRouter): `PASSTHROUGH` → (completion hotkey) `QUERY_COMPLETION` / (auto hotkey) `QUERY_AUTO` → (Enter) `EXECUTING` → back to `PASSTHROUGH` when the mode task finishes. Query input UI is shared; only the post-submit dispatch differs. Everything after query submit runs as a cancellable asyncio mode task — user Ctrl-C while executing cancels that task.
+State machine (InputRouter): `PASSTHROUGH` → (hotkey) `QUERY` → (Enter) `EXECUTING` → back to `PASSTHROUGH` when the execution task finishes. Everything after query submit runs as a cancellable asyncio execution task — user Ctrl-C while executing cancels that task.
 
 Core components (each a separate module under `src/expecto/`):
 - `tty_controller` — raw mode, termios save/restore, window-size helpers (SIGWINCH itself is registered in `cli` via `loop.add_signal_handler`)
 - `pty_manager` — pty allocation, child process fork/exec
-- `io_relay` — always-on asyncio relay pump (loop.add_reader), bidirectional byte relay, mode-task management, settle/key-wait event hub
-- `input_router` — per-byte state machine, dual hotkey detection, UTF-8 buffering
+- `io_relay` — always-on asyncio relay pump (loop.add_reader), bidirectional byte relay, execution-task management, settle/key-wait event hub
+- `input_router` — per-byte state machine, hotkey detection, UTF-8 buffering
 - `screen_buffer` — pyte-based screen capture + scrollback ring buffer for LLM context
-- `query_ui` — gray inline miniprompt (`? ` / `! `) drawn at the cursor position
+- `query_ui` — gray inline miniprompt (`? `) drawn at the cursor position
 - `llm_client` — OpenAI Responses API via AsyncOpenAI, Structured Outputs
-- `mode_executor` — completion/auto mode logic (async, cancellation-based interrupts)
+- `executor` — the command-execute-observe loop (async, cancellation-based interrupts)
 - `settle` — idle-timer output settle detection (`wait_settle` coroutine, no PS1 dependency)
 - `dangerous` — regex backstop for unmistakably catastrophic commands
 - `working_summary` — session context summary (long-term memory), background asyncio task
@@ -70,7 +66,7 @@ Core components (each a separate module under `src/expecto/`):
 
 - No shell-specific dependencies (PS1, readline) — must work over ssh/vendor CLI
 - Settle detection is idle-timer only (no prompt markers). When settle threshold is exceeded without settling, current output is sent to LLM for decision (not treated as timeout error)
-- Dangerous command gate in auto mode (3 layers): LLM self-classifies each command's risk (`read_only`/`mutating`/`destructive` in the run_command schema); a deterministic regex backstop (builtin + `~/.config/expecto/dangerous_patterns.txt`) escalates matches to destructive (escalate-only); commands at/above `--confirm-level` (default: destructive) require y/n confirmation. Decline feeds back to the LLM as a tool result, not an abort
-- Auto mode asks user confirmation (continue? y/n) every `max_auto_steps` steps (default 15, checkpoint interval, keeps the response chain on continue) and supports Ctrl-C interrupt
+- Dangerous command gate (3 layers): LLM self-classifies each command's risk (`read_only`/`mutating`/`destructive` in the run_command schema); a deterministic regex backstop (builtin + `~/.config/expecto/dangerous_patterns.txt`) escalates matches to destructive (escalate-only); commands at/above `--confirm-level` (default: destructive) require y/n confirmation. Decline feeds back to the LLM as a tool result, not an abort
+- The execution loop asks user confirmation (continue? y/n) every `max_steps` steps (default 15, checkpoint interval, keeps the response chain on continue) and supports Ctrl-C interrupt
 - LLM response format enforced via OpenAI Structured Outputs, not system prompt
 - Design document is in Japanese; code and comments should follow whatever language convention is established
