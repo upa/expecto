@@ -9,6 +9,7 @@ ReasoningEffortLevel = Literal["none", "minimal", "low", "medium", "high", "xhig
 ConfirmLevel = Literal["destructive", "mutating", "none"]
 
 DEFAULT_DANGEROUS_PATTERNS_FILE = "~/.config/expecto/dangerous_patterns.txt"
+DEFAULT_ENV_FILE = "~/.config/expecto/.env"
 
 _REASONING_EFFORT_MAP: dict[str, ReasoningEffortLevel] = {
     "none": "none",

@@ -24,7 +24,7 @@ Core loop complete (LLMClient with Responses API function calling — `run_comma
 - Key dependencies: `pyte` (terminal emulation), `openai` (LLM SDK, AsyncOpenAI with Structured Outputs)
 - Heavy use of stdlib: `asyncio`, `pty`, `termios`, `tty`, `os`, `signal`, `fcntl`
 - Build/packaging: `pyproject.toml` (hatchling, `expecto` script entry point)
-- Config: env vars (`.env` supported via python-dotenv) + CLI flags; `~/.config/expecto/config.toml` planned
+- Config: env vars (`.env` from cwd, falling back to `~/.config/expecto/.env`) + CLI flags; `~/.config/expecto/config.toml` planned
 - API key: `OPENAI_API_KEY` env var (summary LLM overridable via `SUMMARY_OPENAI_*`)
 
 ## Architecture

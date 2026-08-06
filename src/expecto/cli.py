@@ -4,9 +4,9 @@ import os
 import signal
 import sys
 
-from dotenv import load_dotenv
+from dotenv import find_dotenv, load_dotenv
 
-from expecto.config import ExpectoConfig
+from expecto.config import DEFAULT_ENV_FILE, ExpectoConfig
 from expecto.dangerous import DangerousCommandMatcher
 from expecto.executor import Executor
 from expecto.input_router import InputRouter
@@ -84,6 +84,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def load_env() -> None:
+    """Load .env from the current directory (searching upwards, dotenv's
+    convention); fall back to ~/.config/expecto/.env. Existing environment
+    variables always take precedence over file values."""
+    found = find_dotenv(usecwd=True)
+    if found:
+        load_dotenv(found)
+        return
+    load_dotenv(os.path.expanduser(DEFAULT_ENV_FILE))
+
+
 def main(argv: list[str] | None = None) -> None:
     if os.environ.get(NESTING_ENV_VAR):
         print(
@@ -92,7 +103,7 @@ def main(argv: list[str] | None = None) -> None:
         )
         sys.exit(1)
 
-    load_dotenv()
+    load_env()
 
     args = parse_args(argv)
     config = ExpectoConfig.from_env()

@@ -301,9 +301,11 @@ OPTIONS (実装済み):
   --raw-io-log-file PATH     raw I/Oログの出力先 (デバッグ用、既定は無効)
 ```
 
-LLM 接続は環境変数で指定する (`.env` を `load_dotenv()` で読む):
+LLM 接続は環境変数で指定する:
 `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL` (既定: gpt-4o) /
 `OPENAI_REASONING_EFFORT`。
+
+`.env` ファイルの探索順: カレントディレクトリ (python-dotenv の慣例に従い親方向にも探索) → 見つからなければ `~/.config/expecto/.env`。既に設定済みの環境変数はファイルの値より常に優先される。インストール済みコマンドとしてどこから起動しても API キー等を読めるようにするための仕組み。
 
 Working summary 生成用の LLM 接続 (URL・APIキー・モデル・reasoning effort) は環境変数 `SUMMARY_OPENAI_BASE_URL` / `SUMMARY_OPENAI_API_KEY` / `SUMMARY_OPENAI_MODEL` / `SUMMARY_OPENAI_REASONING_EFFORT` で指定する (未設定時は対応する `OPENAI_*` にフォールバック)。詳細は `DESIGN-WorkingSummary.md` §7 を参照。
 
