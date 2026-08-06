@@ -9,8 +9,8 @@
 ## 1. 目的 / 位置づけ
 
 `expecto` セッション内でユーザーがこれまで行ってきた操作の要約 (working summary) を保持し、
-LLM 呼び出し時 (completion mode / auto mode 共通) にシステムプロンプトへ含めることで、
-文脈を踏まえたコマンド提案・自動実行を可能にする。
+LLM 呼び出し時にシステムプロンプトへ含めることで、
+文脈を踏まえた自動実行を可能にする。
 
 ### 1.1 短期記憶と長期記憶の役割分担
 
@@ -41,8 +41,8 @@ LLM 呼び出し時 (completion mode / auto mode 共通) にシステムプロ�
 
 - `instructions=` は `previous_response_id` チェーンに引き継がれず、毎リクエスト送信する。
   この性質は working summary と好相性で、**summary をシステムプロンプトに入れれば
-  auto mode の会話チェーン中でも常に最新版を届けられる**。
-- auto mode は function calling (`run_command` / `send_control` tools) ベースだが、
+  会話チェーン中でも常に最新版を届けられる**。
+- 実行ループは function calling (`run_command` / `send_control` tools) ベースだが、
   instructions が毎リクエスト送信される点は変わらない。tool 結果
   (`function_call_output`) には「そのコマンドが生んだ新規出力のみ」が渡される
   (DESIGN.md §5.5) ため、**セッション全体の文脈を供給する役割は instructions 側
@@ -51,8 +51,8 @@ LLM 呼び出し時 (completion mode / auto mode 共通) にシステムプロ�
   (`context_management: [{type: "compaction", compact_threshold: N}]` によるサーバー側自動圧縮、
   および `/responses/compact` エンドポイントによる明示実行) が存在する。
   ただしこれは **LLM 会話履歴の圧縮**であり、working summary が対象とする
-  **ターミナル I/O 履歴の要約**とは別レイヤー。auto mode のチェーンは
-  `max_auto_steps` (既定 15) のチェックポイントで区切られるため v0.1 では採用しない (§10 参照)。
+  **ターミナル I/O 履歴の要約**とは別レイヤー。実行ループのチェーンは
+  `max_steps` (既定 15) のチェックポイントで区切られるため v0.1 では採用しない (§10 参照)。
 
 ### 2.2 エージェント実装のベストプラクティス
 
@@ -142,8 +142,8 @@ updated summary by MERGING new information into the previous summary.
 
 ### 4.4 メイン呼び出しへの注入
 
-`complete()` / `auto_step()` に `working_summary: str | None = None` を追加し、
-非 None なら instructions (`SYSTEM_PROMPT` / `AUTO_SYSTEM_PROMPT`) 末尾に付加する:
+`step()` に `working_summary: str | None = None` を追加し、
+非 None なら instructions (`SYSTEM_PROMPT`) 末尾に付加する:
 
 ```
 ## Session Context
@@ -152,11 +152,11 @@ Activities so far: {activities}
 Notes: {notes}
 ```
 
-- instructions は auto mode の各ステップ (function calling の各ターン) でも
+- instructions は実行ループの各ステップ (function calling の各ターン) でも
   毎回送信されるため、チェーン途中でも更新された summary を反映できる。
-  ただし v0.1 では auto ループ中に summary を更新しない (§6) ので、
-  1 回の auto 実行内では同一の summary が使われる。
-- auto mode の tool 結果は新規出力のみ (§2.1) であるため、初回メッセージの
+  ただし v0.1 では実行ループ中に summary を更新しない (§6) ので、
+  1 回の実行内では同一の summary が使われる。
+- tool 結果は新規出力のみ (§2.1) であるため、初回メッセージの
   生画面 + instructions 内の working summary がセッション文脈のすべてとなる。
 
 ---
@@ -185,7 +185,7 @@ class WorkingSummaryManager:
         バックグラウンド更新 (asyncio.Task) を開始"""
 
     async def ensure_summary(self) -> None:
-        """ModeExecutor.execute() 冒頭で await される。
+        """Executor.execute() 冒頭で await される。
         - 更新が in-flight → 完了を待つ (asyncio.wait)
         - summary が無く、かつ蓄積行数 >= trigger_lines → インライン生成
         - それ以外 → 何もしない"""
@@ -215,7 +215,7 @@ new_output = screen_buffer.get_scrolled_tail(min(pending, max_input_lines))
   **含めない**。これは §1.1 の役割分担 (summary = スクロールアウトした情報の長期記憶)
   と一致し、生成直後に陳腐化する情報を summary に混ぜないためでもある。
 - **`mark()` / `get_text_since()` は使用しない**: これらは pyte の `screen.dirty`
-  (単一コンシューマ前提の変更行 set) をクリアするため、auto mode の tool 結果抽出と
+  (単一コンシューマ前提の変更行 set) をクリアするため、実行ループの tool 結果抽出と
   競合する。working summary 側は dirty set に触れない読み取り専用 API のみ使う (§10-5)。
 
 ### 5.3 エラー処理
@@ -238,8 +238,8 @@ new_output = screen_buffer.get_scrolled_tail(min(pending, max_input_lines))
   in-flight タスクの完了を `asyncio.wait` で待つ (summary が古い/無い状態で
   本来の呼び出しを行うと品質が下がるため)。待ち時間は `[thinking...]` 表示で
   カバーされる。
-- **Ctrl-C との関係**: `ensure_summary()` はモードタスク内で await されるため、
-  ユーザー Ctrl-C (モードタスクのキャンセル) で即座に中断できる。
+- **Ctrl-C との関係**: `ensure_summary()` は実行タスク内で await されるため、
+  ユーザー Ctrl-C (実行タスクのキャンセル) で即座に中断できる。
   行数トリガー起動の背景タスクは await 側のキャンセルに巻き込まれず完走し、
   結果は次回のクエリに活きる。インライン生成は一緒にキャンセルされ、
   次回トリガーで再試行される。
@@ -249,12 +249,12 @@ new_output = screen_buffer.get_scrolled_tail(min(pending, max_input_lines))
 - **`[thinking...]` 中は pty 読み取りが止まる** (`pause_pty`) ため、
   `ensure_summary()` の実行中に `check_trigger()` が並行して新しい更新を
   始めることはない。
-- **auto ループ中のトリガー**: settle 待ち中はポンプが動くため
-  `check_trigger()` による背景更新は auto ループと並行して走りうる。
+- **実行ループ中のトリガー**: settle 待ち中はポンプが動くため
+  `check_trigger()` による背景更新は実行ループと並行して走りうる。
   背景更新は読み取り専用 API (`get_scrolled_tail` 等) しか使わないため
-  auto mode の `mark()`/`get_text_since()` と干渉しない (§10-5)。
-  auto ループは開始時に取得した summary を実行中ずっと使う
-  (1 回の auto 実行内では同一 summary) ため、instructions が揺れることもない。
+  実行ループの `mark()`/`get_text_since()` と干渉しない (§10-5)。
+  実行ループは開始時に取得した summary を実行中ずっと使う
+  (1 回の実行内では同一 summary) ため、instructions が揺れることもない。
 
 ---
 
@@ -270,7 +270,7 @@ new_output = screen_buffer.get_scrolled_tail(min(pending, max_input_lines))
 
 | 項目                                               | 既定値             | CLI オプション                | 根拠                                                                                                                                             |
 |----------------------------------------------------|--------------------|-------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------|
-| `scrollback_lines` (新設: pyte HistoryScreen 容量) | 5000               | `--scrollback-lines N`        | メモリコストほぼゼロ (数百KB)。要約差分のバースト耐性に加え、auto mode の tool 結果抽出 (`get_text_since`) が 1 コマンドの大出力で溢れにくくなる |
+| `scrollback_lines` (新設: pyte HistoryScreen 容量) | 5000               | `--scrollback-lines N`        | メモリコストほぼゼロ (数百KB)。要約差分のバースト耐性に加え、実行ループの tool 結果抽出 (`get_text_since`) が 1 コマンドの大出力で溢れにくくなる |
 | `history_lines` (メイン LLM に送る生画面行数)      | 500 (200 から変更) | `--history-lines N`           | ≒5〜10k トークン。環境推測に十分な文脈を与えつつレイテンシ・コスト許容内                                                                         |
 | `summary_trigger_lines`                            | 500                | `--summary-trigger-lines N`   | 背景 LLM 呼び出しの頻度を抑える。500 行 ≒ 5〜10k トークン/回。カウントは「スクロールバックへ押し出された行数」ベース (§5.2)                      |
 | `summary_max_input_lines`                          | 2000               | `--summary-max-input-lines N` | バーストで pending が溜まりすぎた場合の入力上限                                                                                                  |
@@ -316,10 +316,10 @@ v0.1 ではこの近似を許容する (直近の生画面が短期記憶とし�
 | ファイル                    | 変更内容                                                                                                                                                                                                                                                                      |
 |-----------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `screen_buffer.py`          | `scrolled_lines_total` プロパティ (既存の `_CountingDeque.total_appended` を公開)。`get_scrolled_tail(n)` (スクロールバック末尾 N 行の描画。dirty set には触れない)。`get_text(last_n: int \| None = None)` で末尾 N 行に制限。コンストラクタ引数を `scrollback_lines` に変更 |
-| `llm_client.py`             | `SummaryResult` スキーマ、`SUMMARY_PROMPT`、`summarize()`。summary 用 `openai.OpenAI` クライアントを別途保持 (§7.1)。`complete()` / `auto_step()` に `working_summary` 引数を追加し instructions 末尾に付加 (§4.4)                                                            |
+| `llm_client.py`             | `SummaryResult` スキーマ、`SUMMARY_PROMPT`、`summarize()`。summary 用 `openai.OpenAI` クライアントを別途保持 (§7.1)。`step()` に `working_summary` 引数を追加し instructions 末尾に付加 (§4.4)                                                                                |
 | `working_summary.py` (新規) | `WorkingSummaryManager` (§5)                                                                                                                                                                                                                                                  |
 | `io_relay.py`               | コンストラクタに `working_summary: WorkingSummaryManager \| None = None` を追加。pty 出力を `feed()` した直後に `check_trigger()` を呼ぶ                                                                                                                                      |
-| `mode_executor.py`          | `execute()` 冒頭で `ensure_summary()` を呼び (`[thinking...]` 表示中)、`summary_text` を `complete()` / `auto_step()` に渡す                                                                                                                                                  |
+| `executor.py`               | `execute()` 冒頭で `ensure_summary()` を呼び (`[thinking...]` 表示中)、`summary_text` を `step()` に渡す                                                                                                                                                                      |
 | `config.py`                 | §7 の動作パラメータを `ExpectoConfig` に追加 (CLI から設定、環境変数からは読まない)。§7.1 の summary 用 LLM 接続フィールドを追加し、`from_env()` で `SUMMARY_OPENAI_*` → `OPENAI_*` のフォールバック解決を行う                                                                    |
 | `cli.py`                    | §7 の CLI オプションを argparse に追加し config へ反映。`WorkingSummaryManager` の生成と結線                                                                                                                                                                                  |
 
@@ -333,10 +333,10 @@ v0.1 ではこの近似を許容する (直近の生画面が短期記憶とし�
   3. 差分更新で previous summary が LLM に渡る
   4. in-flight 中の `ensure_summary()` が完了を待つ
   5. 生成失敗時に旧 summary を維持し、次回トリガーで再試行される
-- `test_screen_buffer.py`: `scrolled_lines_total` / `get_scrolled_tail(n)` / `get_text(last_n)` を追加。`mark()`/`get_text_since()` (auto mode 用) と並行使用しても互いに影響しないことの検証
+- `test_screen_buffer.py`: `scrolled_lines_total` / `get_scrolled_tail(n)` / `get_text(last_n)` を追加。`mark()`/`get_text_since()` (tool 結果抽出用) と並行使用しても互いに影響しないことの検証
 - `test_llm_client.py`: `summarize()`、`working_summary` 付き instructions の検証
 - `test_config.py`: `SUMMARY_OPENAI_*` → `OPENAI_*` フォールバックの検証 (設定時 / 未設定時)
-- `test_mode_executor.py`: `ensure_summary()` が呼ばれ summary が LLM に渡ることの検証
+- `test_executor.py`: `ensure_summary()` が呼ばれ summary が LLM に渡ることの検証
 
 ---
 
@@ -353,10 +353,10 @@ v0.1 ではこの近似を許容する (直近の生画面が短期記憶とし�
    生データが破棄済みのため原理的に不可能。代わりにスキーマのアンカー構造 (§4.1) と
    マージ指示プロンプト (§4.3) で劣化を抑える。
 4. **Responses API ネイティブ Compaction は v0.1 では使わない**: 対象レイヤーが異なる (§2.1)。
-   将来 `max_auto_steps` を大きく増やす場合、auto mode チェーンの圧縮手段として検討する。
+   将来 `max_steps` を大きく増やす場合、実行ループチェーンの圧縮手段として検討する。
 5. **`mark()` / `get_text_since()` を流用しない**: pyte の `screen.dirty` は
    「クリアはコンシューマの責務」という単一コンシューマ前提の仕組みであり、
-   auto mode の tool 結果抽出が既に使用している。working summary が `mark()` を呼ぶと
-   auto mode のマークを壊すため、蓄積量カウンタ (`scrolled_lines_total`) と
+   実行ループの tool 結果抽出が既に使用している。working summary が `mark()` を呼ぶと
+   実行ループのマークを壊すため、蓄積量カウンタ (`scrolled_lines_total`) と
    読み取り専用のスクロールバック参照 (`get_scrolled_tail`) のみを使う (§5.2)。
    カウンタが「可視画面に留まる行を数えない」点も、summary の対象範囲 (§1.1) と整合する。

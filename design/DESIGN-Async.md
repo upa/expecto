@@ -8,6 +8,17 @@
   常時ポンプ設計では stdin 喪失 (EOF) がセッション終了 = モードタスクのキャンセル
   になるため、「確認待ちのまま stdin が消えたら interrupted」に置き換えた (§5 と
   整合)。
+- **本ドキュメント実装後の変更**: completion mode は削除され、実行ループ (旧 auto
+  mode) が expecto の唯一の振る舞いになった (DESIGN.md §12)。本文中の completion /
+  auto mode への言及と API 名は移行当時の記録である。現在の名前:
+  `ModeExecutor` → `Executor` (`mode_executor.py` → `executor.py`)、
+  `start_mode()` → `start_execution()` (「モードタスク」→「実行タスク」)、
+  `auto_step()` → `step()`、`build_auto_messages()` → `build_initial_messages()`、
+  `AutoResponse` → `FinalResponse`、`AutoStepResult` → `StepResult`、
+  `AUTO_TOOLS` → `TOOLS`、`max_auto_steps` → `max_steps`、
+  `LLMCompleter` → `LLMStepper`。ホットキーは `Ctrl-/` の 1 つに統合され、
+  InputRouter の状態は `PASSTHROUGH / QUERY / EXECUTING` の 3 つ。
+  エラー表示は `[expecto: error: ...]`、終了表示は `[expecto done: ...]` 等。
 
 ---
 
