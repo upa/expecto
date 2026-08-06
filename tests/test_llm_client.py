@@ -2,11 +2,16 @@ import json
 import tempfile
 from typing import cast
 
-from openai.types.responses import ResponseFunctionToolCall
+from openai.lib.streaming.responses import ResponseTextDeltaEvent
+from openai.types.responses import (
+    ResponseFunctionToolCall,
+    ResponseOutputMessage,
+    ResponseOutputText,
+)
+from openai.types.responses.parsed_response import ParsedResponse
 
 from expecto.config import ExpectoConfig
 from expecto.llm_client import (
-    FinalResponse,
     LLMClient,
     RunCommandParams,
     SendControlParams,
@@ -54,22 +59,6 @@ class TestToolParams:
     def test_send_control_params(self) -> None:
         params = SendControlParams(key="ctrl-c")
         assert params.key == "ctrl-c"
-
-
-class TestFinalResponse:
-    def test_done_response(self) -> None:
-        resp = FinalResponse(
-            status="done",
-            explanation="goal achieved",
-        )
-        assert resp.status == "done"
-
-    def test_fail_response(self) -> None:
-        resp = FinalResponse(
-            status="fail",
-            explanation="unrecoverable error",
-        )
-        assert resp.status == "fail"
 
 
 class TestTools:
@@ -151,6 +140,148 @@ class TestParseToolCall:
         assert "invalid arguments" in parsed.error
 
 
+def _text_delta_event(delta: str, snapshot: str) -> ResponseTextDeltaEvent:
+    return ResponseTextDeltaEvent(
+        type="response.output_text.delta",
+        content_index=0,
+        delta=delta,
+        item_id="msg_1",
+        logprobs=[],
+        output_index=0,
+        sequence_number=0,
+        snapshot=snapshot,
+    )
+
+
+def _message_item(text: str) -> ResponseOutputMessage:
+    return ResponseOutputMessage(
+        id="msg_1",
+        type="message",
+        role="assistant",
+        status="completed",
+        content=[ResponseOutputText(type="output_text", text=text, annotations=[])],
+    )
+
+
+def _run_command_item(call_id: str, command: str) -> ResponseFunctionToolCall:
+    arguments = json.dumps(
+        {"command": command, "risk": "read_only", "risk_reason": "test"},
+    )
+    return ResponseFunctionToolCall(
+        type="function_call",
+        call_id=call_id,
+        name="run_command",
+        arguments=arguments,
+    )
+
+
+def _parsed_response(
+    output: list[object], response_id: str = "resp_1",
+) -> ParsedResponse[None]:
+    return cast(
+        "ParsedResponse[None]",
+        ParsedResponse.model_construct(id=response_id, output=output),
+    )
+
+
+class _FakeStream:
+    """Stands in for the AsyncResponseStreamManager returned by
+    client.responses.stream(): async context manager, async iterator of
+    events, and get_final_response()."""
+
+    def __init__(self, events: list[object], final: ParsedResponse[None]) -> None:
+        self._events = events
+        self._final = final
+
+    async def __aenter__(self) -> "_FakeStream":
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        return None
+
+    def __aiter__(self) -> "_FakeStream":
+        return self
+
+    async def __anext__(self) -> object:
+        if not self._events:
+            raise StopAsyncIteration
+        return self._events.pop(0)
+
+    async def get_final_response(self) -> ParsedResponse[None]:
+        return self._final
+
+
+class TestStep:
+    def _client_with_fake_stream(
+        self,
+        events: list[object],
+        final: ParsedResponse[None],
+    ) -> tuple[LLMClient, dict[str, object]]:
+        client = LLMClient(_make_config())
+        captured: dict[str, object] = {}
+
+        def fake_stream(**kwargs: object) -> _FakeStream:
+            captured.update(kwargs)
+            return _FakeStream(events, final)
+
+        setattr(client._client.responses, "stream", fake_stream)  # noqa: B010
+        return client, captured
+
+    async def test_streams_deltas_and_returns_final_text(self) -> None:
+        events: list[object] = [
+            _text_delta_event("Hello ", "Hello "),
+            _text_delta_event("world", "Hello world"),
+        ]
+        final = _parsed_response([_message_item("Hello world")])
+        client, _ = self._client_with_fake_stream(events, final)
+
+        chunks: list[str] = []
+        result = await client.step(
+            [{"role": "user", "content": "hi"}], on_delta=chunks.append,
+        )
+        assert chunks == ["Hello ", "world"]
+        assert result.final_text == "Hello world"
+        assert result.tool_calls == []
+        assert result.response_id == "resp_1"
+
+    async def test_works_without_on_delta(self) -> None:
+        events: list[object] = [_text_delta_event("hi", "hi")]
+        final = _parsed_response([_message_item("hi")])
+        client, _ = self._client_with_fake_stream(events, final)
+
+        result = await client.step([{"role": "user", "content": "hi"}])
+        assert result.final_text == "hi"
+
+    async def test_tool_call_response_has_no_final_text(self) -> None:
+        final = _parsed_response([_run_command_item("call_1", "df -h")])
+        client, _ = self._client_with_fake_stream([], final)
+
+        chunks: list[str] = []
+        result = await client.step(
+            [{"role": "user", "content": "check disk"}], on_delta=chunks.append,
+        )
+        assert chunks == []
+        assert result.final_text is None
+        assert len(result.tool_calls) == 1
+        assert isinstance(result.tool_calls[0].params, RunCommandParams)
+        assert result.tool_calls[0].params.command == "df -h"
+
+    async def test_request_parameters(self) -> None:
+        final = _parsed_response([_message_item("done")])
+        client, captured = self._client_with_fake_stream([], final)
+
+        await client.step(
+            [{"role": "user", "content": "hi"}],
+            previous_response_id="resp_0",
+        )
+        assert captured["model"] == "gpt-4o"
+        assert captured["instructions"] == SYSTEM_PROMPT
+        assert captured["tools"] == TOOLS
+        assert captured["parallel_tool_calls"] is False
+        assert captured["store"] is True
+        assert captured["previous_response_id"] == "resp_0"
+
+
 class TestSummaryResult:
     def test_model_fields(self) -> None:
         result = SummaryResult(
@@ -229,6 +360,7 @@ class TestLLMClient:
         assert "language of the query" in SYSTEM_PROMPT
         assert "uname" in SYSTEM_PROMPT
         assert "show version" in SYSTEM_PROMPT
+        assert "stop calling tools" in SYSTEM_PROMPT
 
     def test_build_initial_messages(self) -> None:
         client = LLMClient(_make_config())
