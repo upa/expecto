@@ -8,7 +8,7 @@ ReasoningEffortLevel = Literal["none", "minimal", "low", "medium", "high", "xhig
 
 ConfirmLevel = Literal["destructive", "mutating", "none"]
 
-DEFAULT_DANGEROUS_PATTERNS_FILE = "~/.config/jou/dangerous_patterns.txt"
+DEFAULT_DANGEROUS_PATTERNS_FILE = "~/.config/expecto/dangerous_patterns.txt"
 
 _REASONING_EFFORT_MAP: dict[str, ReasoningEffortLevel] = {
     "none": "none",
@@ -22,7 +22,7 @@ _REASONING_EFFORT_MAP: dict[str, ReasoningEffortLevel] = {
 
 
 @dataclass
-class JouConfig:
+class ExpectoConfig:
     shell: str
     model: str
     openai_api_key: str
@@ -47,7 +47,7 @@ class JouConfig:
     dangerous_patterns_file: str = ""
 
     @classmethod
-    def from_env(cls) -> JouConfig:
+    def from_env(cls) -> ExpectoConfig:
         raw_effort = os.environ.get("OPENAI_REASONING_EFFORT", "")
         effort = _REASONING_EFFORT_MAP.get(raw_effort)
 

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-`jou` is a transparent TTY wrapper CLI tool that sits between the terminal and user I/O. It relays input/output to a child process (default: `$SHELL`) in passthrough mode, and on a hotkey enters query mode where the user types a natural-language query. The query plus recent terminal history is sent to an LLM, which returns a command to inject into the PTY.
+`expecto` is a transparent TTY wrapper CLI tool that sits between the terminal and user I/O. It relays input/output to a child process (default: `$SHELL`) in passthrough mode, and on a hotkey enters query mode where the user types a natural-language query. The query plus recent terminal history is sent to an LLM, which returns a command to inject into the PTY.
 
 Key differentiator: wraps the **tty itself**, not a specific shell — works over ssh, vendor CLI (routers/switches), etc.
 
@@ -27,15 +27,15 @@ Phase 1 (completion mode) complete. Phase 2 (auto mode) core loop complete (LLMC
 - Target OS: macOS, Linux
 - Key dependencies: `pyte` (terminal emulation), `openai` (LLM SDK, AsyncOpenAI with Structured Outputs)
 - Heavy use of stdlib: `asyncio`, `pty`, `termios`, `tty`, `os`, `signal`, `fcntl`
-- Build/packaging: `pyproject.toml` (hatchling, `jou` script entry point)
-- Config: env vars (`.env` supported via python-dotenv) + CLI flags; `~/.config/jou/config.toml` planned
+- Build/packaging: `pyproject.toml` (hatchling, `expecto` script entry point)
+- Config: env vars (`.env` supported via python-dotenv) + CLI flags; `~/.config/expecto/config.toml` planned
 - API key: `OPENAI_API_KEY` env var (summary LLM overridable via `SUMMARY_OPENAI_*`)
 
 ## Architecture
 
 State machine (InputRouter): `PASSTHROUGH` → (completion hotkey) `QUERY_COMPLETION` / (auto hotkey) `QUERY_AUTO` → (Enter) `EXECUTING` → back to `PASSTHROUGH` when the mode task finishes. Query input UI is shared; only the post-submit dispatch differs. Everything after query submit runs as a cancellable asyncio mode task — user Ctrl-C while executing cancels that task.
 
-Core components (each a separate module under `src/jou/`):
+Core components (each a separate module under `src/expecto/`):
 - `tty_controller` — raw mode, termios save/restore, window-size helpers (SIGWINCH itself is registered in `cli` via `loop.add_signal_handler`)
 - `pty_manager` — pty allocation, child process fork/exec
 - `io_relay` — always-on asyncio relay pump (loop.add_reader), bidirectional byte relay, mode-task management, settle/key-wait event hub
@@ -47,7 +47,7 @@ Core components (each a separate module under `src/jou/`):
 - `settle` — idle-timer output settle detection (`wait_settle` coroutine, no PS1 dependency)
 - `dangerous` — regex backstop for unmistakably catastrophic commands
 - `working_summary` — session context summary (long-term memory), background asyncio task
-- `config` — env var + CLI arg merging (`~/.config/jou/config.toml` is planned, not implemented)
+- `config` — env var + CLI arg merging (`~/.config/expecto/config.toml` is planned, not implemented)
 - `cli` — entry point, argparse, asyncio.run
 
 ## Build & Test
@@ -58,7 +58,7 @@ Core components (each a separate module under `src/jou/`):
 - Run single test: `uv run pytest tests/test_foo.py::TestClass::test_name -v`
 - Type check: `uv run ty check`
 - Type check single path: `uv run ty check src/<path>`
-- Tests live in `tests/` and mirror `src/jou/` modules. Create or update tests alongside every code change.
+- Tests live in `tests/` and mirror `src/expecto/` modules. Create or update tests alongside every code change.
 
 ## Code Style
 
@@ -70,7 +70,7 @@ Core components (each a separate module under `src/jou/`):
 
 - No shell-specific dependencies (PS1, readline) — must work over ssh/vendor CLI
 - Settle detection is idle-timer only (no prompt markers). When settle threshold is exceeded without settling, current output is sent to LLM for decision (not treated as timeout error)
-- Dangerous command gate in auto mode (3 layers): LLM self-classifies each command's risk (`read_only`/`mutating`/`destructive` in the run_command schema); a deterministic regex backstop (builtin + `~/.config/jou/dangerous_patterns.txt`) escalates matches to destructive (escalate-only); commands at/above `--confirm-level` (default: destructive) require y/n confirmation. Decline feeds back to the LLM as a tool result, not an abort
+- Dangerous command gate in auto mode (3 layers): LLM self-classifies each command's risk (`read_only`/`mutating`/`destructive` in the run_command schema); a deterministic regex backstop (builtin + `~/.config/expecto/dangerous_patterns.txt`) escalates matches to destructive (escalate-only); commands at/above `--confirm-level` (default: destructive) require y/n confirmation. Decline feeds back to the LLM as a tool result, not an abort
 - Auto mode asks user confirmation (continue? y/n) every `max_auto_steps` steps (default 15, checkpoint interval, keeps the response chain on continue) and supports Ctrl-C interrupt
 - LLM response format enforced via OpenAI Structured Outputs, not system prompt
 - Design document is in Japanese; code and comments should follow whatever language convention is established

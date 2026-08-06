@@ -1,6 +1,6 @@
 import asyncio
 
-from jou.settle import SettleResult, wait_settle
+from expecto.settle import SettleResult, wait_settle
 
 
 class TestWaitSettle:

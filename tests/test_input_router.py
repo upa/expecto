@@ -1,4 +1,4 @@
-from jou.input_router import InputRouter, State
+from expecto.input_router import InputRouter, State
 
 
 class TestPassthrough:

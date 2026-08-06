@@ -1,7 +1,7 @@
 import os
 import pty
 
-from jou.query_ui import QueryModeUI, _display_width
+from expecto.query_ui import QueryModeUI, _display_width
 
 
 class TestDisplayWidth:
@@ -158,7 +158,7 @@ class TestQueryModeUI:
 
 class TestInputRouterWithQueryUI:
     def test_callbacks_called(self) -> None:
-        from jou.input_router import InputRouter
+        from expecto.input_router import InputRouter
 
         started: list[str] = []
         updated: list[str] = []

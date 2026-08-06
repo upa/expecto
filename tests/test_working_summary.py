@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import asyncio
 
-from jou.llm_client import SummaryResult
-from jou.screen_buffer import ScreenBuffer
-from jou.working_summary import WorkingSummaryManager
+from expecto.llm_client import SummaryResult
+from expecto.screen_buffer import ScreenBuffer
+from expecto.working_summary import WorkingSummaryManager
 
 
 class FakeSummaryLLM:

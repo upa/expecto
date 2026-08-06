@@ -4,8 +4,8 @@ import asyncio
 from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
-    from jou.llm_client import SummaryResult
-    from jou.screen_buffer import ScreenBuffer
+    from expecto.llm_client import SummaryResult
+    from expecto.screen_buffer import ScreenBuffer
 
 
 class SummaryGenerator(Protocol):

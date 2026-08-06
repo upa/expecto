@@ -6,22 +6,22 @@ import sys
 
 from dotenv import load_dotenv
 
-from jou.config import JouConfig
-from jou.dangerous import DangerousCommandMatcher
-from jou.input_router import InputRouter
-from jou.io_relay import IORelay
-from jou.llm_client import LLMClient
-from jou.mode_executor import ModeExecutor
-from jou.pty_manager import NESTING_ENV_VAR, PTYManager
-from jou.query_ui import QueryModeUI
-from jou.screen_buffer import ScreenBuffer
-from jou.tty_controller import TTYController
-from jou.working_summary import WorkingSummaryManager
+from expecto.config import ExpectoConfig
+from expecto.dangerous import DangerousCommandMatcher
+from expecto.input_router import InputRouter
+from expecto.io_relay import IORelay
+from expecto.llm_client import LLMClient
+from expecto.mode_executor import ModeExecutor
+from expecto.pty_manager import NESTING_ENV_VAR, PTYManager
+from expecto.query_ui import QueryModeUI
+from expecto.screen_buffer import ScreenBuffer
+from expecto.tty_controller import TTYController
+from expecto.working_summary import WorkingSummaryManager
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        prog="jou",
+        prog="expecto",
         description="Transparent TTY wrapper with LLM-powered command assistance",
     )
     parser.add_argument(
@@ -74,7 +74,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--dangerous-patterns-file",
         default=None,
         help="File with additional dangerous command regex patterns "
-        "(default: ~/.config/jou/dangerous_patterns.txt)",
+        "(default: ~/.config/expecto/dangerous_patterns.txt)",
     )
     parser.add_argument(
         "command",
@@ -87,7 +87,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> None:
     if os.environ.get(NESTING_ENV_VAR):
         print(
-            "jou: already inside a jou session; nested sessions are not supported. exited.",
+            "expecto: already inside an expecto session; nested sessions are not supported. exited.",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -95,7 +95,7 @@ def main(argv: list[str] | None = None) -> None:
     load_dotenv()
 
     args = parse_args(argv)
-    config = JouConfig.from_env()
+    config = ExpectoConfig.from_env()
 
     if args.raw_io_log_file:
         config.raw_io_log_file = args.raw_io_log_file
@@ -139,7 +139,7 @@ def main(argv: list[str] | None = None) -> None:
         config.dangerous_patterns_file or None,
     )
     for error in pattern_errors:
-        print(f"jou: warning: {error}", file=sys.stderr)
+        print(f"expecto: warning: {error}", file=sys.stderr)
 
     working_summary = WorkingSummaryManager(
         llm_client=llm_client,

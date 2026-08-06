@@ -1,6 +1,6 @@
 import os
 
-from jou.pty_manager import NESTING_ENV_VAR, PTYManager
+from expecto.pty_manager import NESTING_ENV_VAR, PTYManager
 
 
 class TestPTYManager:
@@ -48,7 +48,7 @@ class TestPTYManager:
         mgr.close()
         assert mgr.master_fd is None
 
-    def test_child_env_marks_jou_session(self):
+    def test_child_env_marks_expecto_session(self):
         mgr = PTYManager()
         mgr.spawn(["sh", "-c", f"echo marker=${NESTING_ENV_VAR}"])
         assert mgr.master_fd is not None

@@ -5,14 +5,14 @@ import os
 import sys
 from typing import IO, TYPE_CHECKING
 
-from jou.settle import SettleResult, wait_settle
+from expecto.settle import SettleResult, wait_settle
 
 if TYPE_CHECKING:
     from collections.abc import Coroutine
 
-    from jou.input_router import InputRouter
-    from jou.screen_buffer import ScreenBuffer
-    from jou.working_summary import WorkingSummaryManager
+    from expecto.input_router import InputRouter
+    from expecto.screen_buffer import ScreenBuffer
+    from expecto.working_summary import WorkingSummaryManager
 
 
 class IORelay:
@@ -102,7 +102,7 @@ class IORelay:
         self._pty_reader_added = True
 
     async def wait_settle(self, settle_ms: int, threshold_ms: int) -> SettleResult:
-        """Wait until pty output settles (see jou.settle.wait_settle)."""
+        """Wait until pty output settles (see expecto.settle.wait_settle)."""
         assert not self._pty_paused, "wait_settle requires pty reading to be active"
         return await wait_settle(self._output_seen, settle_ms, threshold_ms)
 
@@ -166,7 +166,7 @@ class IORelay:
             return
         exc = task.exception()
         if exc is not None and self._stdout_fd >= 0:
-            msg = f"\r\n\x1b[90m[jou: mode error: {exc!r}]\x1b[0m\r\n"
+            msg = f"\r\n\x1b[90m[expecto: mode error: {exc!r}]\x1b[0m\r\n"
             os.write(self._stdout_fd, msg.encode())
 
     # --- fd callbacks ---

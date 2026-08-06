@@ -2,7 +2,7 @@
 
 - ステータス: 実装済み (§11 の全ステップ完了)
 - 親ドキュメント: `DESIGN.md`
-- 本ドキュメントは jou の並行処理基盤を select + thread から asyncio 単一スレッドへ
+- 本ドキュメントは expecto の並行処理基盤を select + thread から asyncio 単一スレッドへ
   移行するための詳細設計。実装はこちらを正とする。
 - 実装時の設計との差分: 旧「非対話環境 (stdin なし) では destructive を自動拒否」は、
   常時ポンプ設計では stdin 喪失 (EOF) がセッション終了 = モードタスクのキャンセル
@@ -129,7 +129,7 @@ raw I/O ログ
 `relay.start_mode(executor.execute(query, mode))` を呼ぶ。done callback で
 (a) SGR リセットの flush と pending なキー要求の破棄、(b) InputRouter を
 PASSTHROUGH に戻す、(c) `CancelledError` 以外の例外を outer tty にグレーで
-表示する (`[jou: mode error: ...]`)。
+表示する (`[expecto: mode error: ...]`)。
 
 **`pause_pty()` の意味論**: 読み取り自体を止める (`remove_reader`)。
 pty のカーネルバッファが溢れれば子プロセスの write がブロックする — これは

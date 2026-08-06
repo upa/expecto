@@ -1,4 +1,4 @@
-from jou.screen_buffer import ScreenBuffer
+from expecto.screen_buffer import ScreenBuffer
 
 
 class TestScreenBuffer:

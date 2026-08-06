@@ -4,8 +4,8 @@ from typing import cast
 
 from openai.types.responses import ResponseFunctionToolCall
 
-from jou.config import JouConfig
-from jou.llm_client import (
+from expecto.config import ExpectoConfig
+from expecto.llm_client import (
     AUTO_SYSTEM_PROMPT,
     AUTO_TOOLS,
     AutoResponse,
@@ -21,8 +21,8 @@ from jou.llm_client import (
 )
 
 
-def _make_config() -> JouConfig:
-    return JouConfig(
+def _make_config() -> ExpectoConfig:
+    return ExpectoConfig(
         shell="/bin/bash",
         model="gpt-4o",
         openai_api_key="sk-test",

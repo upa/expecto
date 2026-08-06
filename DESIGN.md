@@ -1,5 +1,5 @@
 
-# jo-u (`jou`) 設計ドキュメント
+# expecto 設計ドキュメント
 
 - ステータス: Draft v0.1 (プロトタイプ実装用)
 - 対象実装言語: Python 3.11+ (プロトタイプ)
@@ -10,12 +10,12 @@
 
 ## 1. 目的 / コンセプト
 
-`jou` は、ターミナル(tty)とユーザーの入出力の間に透過的に挟まる CLI ツールである。
+`expecto` は、ターミナル(tty)とユーザーの入出力の間に透過的に挟まる CLI ツールである。
 
 - 普段は通常のシェル(またはユーザーが起動した任意のプログラム)への入出力をそのまま中継する「透明なラッパー」として振る舞う。
 - ユーザーが特定のキーバインド(ホットキー)を押すと **query mode** に入り、自然文でのクエリを受け付ける。
 - クエリ確定(Enter)時に、直近のターミナル入出力の履歴とクエリを LLM に渡し、LLM はそれを達成するためのコマンドを **tty へ入力する形で** 実行する。
-- 重要な特性: `jou` は個々のシェルではなく **tty そのもの** をラップするため、ユーザーが `ssh` で別ホストに入っても、あるいはネットワーク機器(ルーター/スイッチ)のベンダー独自 CLI に入っても、そのまま LLM による支援・代理操作が届く。シェルの `PS1` や readline に依存しない。
+- 重要な特性: `expecto` は個々のシェルではなく **tty そのもの** をラップするため、ユーザーが `ssh` で別ホストに入っても、あるいはネットワーク機器(ルーター/スイッチ)のベンダー独自 CLI に入っても、そのまま LLM による支援・代理操作が届く。シェルの `PS1` や readline に依存しない。
 
 ### 1.1 非目的
 
@@ -31,8 +31,8 @@
 
 | 用語                       | 意味                                                                                               |
 |----------------------------|----------------------------------------------------------------------------------------------------|
-| outer tty                  | `jou` を起動した実際のターミナル(ユーザーが目視している画面)                                       |
-| pty (master/slave)         | `jou` が内部で確保する擬似端末。slave 側に子プロセス(shell/ssh等)をアタッチする                    |
+| outer tty                  | `expecto` を起動した実際のターミナル(ユーザーが目視している画面)                                       |
+| pty (master/slave)         | `expecto` が内部で確保する擬似端末。slave 側に子プロセス(shell/ssh等)をアタッチする                    |
 | child process              | pty の slave にアタッチされるプロセス。デフォルトは `$SHELL`、あるいは起動時に指定した任意コマンド |
 | passthrough mode           | 通常状態。outer tty ⇄ pty master のバイトを素通しする                                              |
 | query mode                 | ホットキーで入る、クエリ入力用のオーバーレイモード                                                 |
@@ -45,7 +45,7 @@
 ## 3. ハイレベルな動作フロー
 
 ```
-起動: jou [-- command...]
+起動: expecto [-- command...]
   └─ 指定がなければ $SHELL を起動
 
 [passthrough mode]
@@ -77,7 +77,7 @@
         └─ auto mode (auto hotkey で起動) ───────────────┘
             ループ (function calling):
               1. LLMが tool (run_command / send_control) を呼び出す
-              2. jou が pty master に コマンド + Enter (または制御文字) を書き込み
+              2. expecto が pty master に コマンド + Enter (または制御文字) を書き込み
               3. 出力が安定(settle)するまで待つ
                  settle せず閾値時間を超えた場合は「settle しなかった」
                  旨の注記を結果に付ける
@@ -101,7 +101,7 @@
         ▲ stdout                 │ stdin (raw mode)
         │                        ▼
 ┌───────────────────────────────────────────────┐
-│                    jou (親プロセス)               │
+│                    expecto (親プロセス)               │
 │                                                 │
 │  TTYController      : outer ttyのraw化/復元        │
 │  InputRouter         : 1バイトずつ見て              │
@@ -127,7 +127,7 @@
 
 ### 5.1 TTYController
 
-- 責務: `jou` 起動時に outer tty の `termios` 設定を保存し、raw モードにする。終了時(正常終了・例外・シグナル)に必ず元の設定へ復元する。
+- 責務: `expecto` 起動時に outer tty の `termios` 設定を保存し、raw モードにする。終了時(正常終了・例外・シグナル)に必ず元の設定へ復元する。
 - Python標準: `termios`, `tty` モジュール。`tty.setraw(fd)` を使うが、復元用に `termios.tcgetattr()` の結果を保存しておくこと。
 - `atexit` とシグナルハンドラ(`SIGTERM`, `SIGINT` を自プロセスが受けた場合)の両方で復元処理を確実に呼ぶ。
 - `SIGWINCH` のハンドラ登録は cli が asyncio の `loop.add_signal_handler()` で行う(イベントループ上で実行され安全)。ハンドラは TTYController の `get_window_size()` / `set_pty_window_size()` で outer tty の現在サイズを pty へ反映し、あわせて `ScreenBuffer.resize()` で pyte スクリーンも追従させる。
@@ -136,9 +136,9 @@
 
 - 責務: pty master/slave の確保、child process の fork/exec、終了検知。
 - Python標準の `pty` モジュール(`pty.fork()`)を第一候補とする。より柔軟な制御が必要なら `ptyprocess` ライブラリの利用も検討(プロセス終了検知やリサイズAPIが扱いやすい)。
-- child process のデフォルトは `os.environ.get("SHELL", "/bin/bash")`。`jou -- ssh myrouter` のように任意コマンドの指定も可能にする。
-- child の終了(exit)を検知したら `jou` 自体も終了する。
-- child process には環境変数 `JOU_ACTIVE=1` を設定する(`execvp` で子孫プロセスに伝播)。`jou` は起動時にこの変数を検査し、既に設定されていれば「jou セッション内でのネスト起動」としてエラーメッセージを出して終了する(§10 参照)。意図的にネストしたい場合は `env -u JOU_ACTIVE jou` で回避できる。
+- child process のデフォルトは `os.environ.get("SHELL", "/bin/bash")`。`expecto -- ssh myrouter` のように任意コマンドの指定も可能にする。
+- child の終了(exit)を検知したら `expecto` 自体も終了する。
+- child process には環境変数 `EXPECTO_ACTIVE=1` を設定する(`execvp` で子孫プロセスに伝播)。`expecto` は起動時にこの変数を検査し、既に設定されていれば「expecto セッション内でのネスト起動」としてエラーメッセージを出して終了する(§10 参照)。意図的にネストしたい場合は `env -u EXPECTO_ACTIVE expecto` で回避できる。
 
 ### 5.3 IORelay (常時ポンプ + イベントハブ)
 
@@ -266,8 +266,8 @@ function_call 本体はサーバー側に保存されているため、クライ
 - **auto mode**:
   - 開始時(クエリ確定直後)にまず改行 1 つを pty に送り、シェルの新しいプロンプトを表示・settle 待ちで画面に反映してから、最初の LLM 呼び出しに進む。クエリ行が直前のプロンプト行を消費しているため、これを行わないと最初のコマンドがプロンプトのない行に注入されたように見える。
   - LLM が function calling で `run_command` / `send_control` を呼び出すループとして実装する(§5.7)。tool call の実行(pty master への書き込み + settle 待ち + 新規出力の回収(§5.5 の mark / get_text_since)と `function_call_output` の構築)は ModeExecutor が担う。
-  - **危険コマンドの確認ゲート(3層)**: (1) LLM が `run_command` の必須フィールド `risk`(`read_only` / `mutating` / `destructive`)+ `risk_reason` で毎コマンドのリスクを自己申告する(環境適応の主判定。ベンダー CLI の知識は LLM 側にあり、working summary の環境推測が精度を支える)。(2) 決定論的バックストップ: 組み込み + ユーザー定義(`~/.config/jou/dangerous_patterns.txt`、1行1正規表現・`#`コメント・大文字小文字無視)の正規表現にマッチしたコマンドは LLM の申告に関係なく `destructive` に**昇格**する(昇格専用 — 確認を免除する方向には働かない)。(3) `--confirm-level`(既定 `destructive`)以上のリスクのコマンドは実行前にユーザーへ y/n 確認。**拒否は abort ではなく** `function_call_output` で「ユーザーが拒否した」を LLM に返し、代替アプローチを取らせる。非対話環境では確認できないため拒否扱い。この機構は保証ではなくプロンプト削減であり(LLM 自己申告は prompt injection・自己評価バイアスに対し堅牢でない)、最終的な安全装置は「全コマンドと出力が常にユーザーの画面に見える」構造 + ユーザー在席 + Ctrl-C + チェックポイントである。
-  - `run_command` のコマンドエコーは、jou のステータス表示と同じグレーで表示する。コマンド注入直前に outer tty へ SGR(グレー)を書き、IORelay に予約 (`arm_sgr_reset_at_newline()`) しておくと、ポンプがエコーの最初の改行(Enter のエコー)の直後にリセットを挿入する。改行が来ないまま settle・中断・EOF となった場合も `flush_sgr_reset()`(冪等)で必ずリセットする。SGR は outer tty にのみ書き、ScreenBuffer には入らないため LLM へ渡すテキストには影響しない(シェル自身がエコーに色を付ける場合はそちらが優先されうる、ベストエフォート)。
+  - **危険コマンドの確認ゲート(3層)**: (1) LLM が `run_command` の必須フィールド `risk`(`read_only` / `mutating` / `destructive`)+ `risk_reason` で毎コマンドのリスクを自己申告する(環境適応の主判定。ベンダー CLI の知識は LLM 側にあり、working summary の環境推測が精度を支える)。(2) 決定論的バックストップ: 組み込み + ユーザー定義(`~/.config/expecto/dangerous_patterns.txt`、1行1正規表現・`#`コメント・大文字小文字無視)の正規表現にマッチしたコマンドは LLM の申告に関係なく `destructive` に**昇格**する(昇格専用 — 確認を免除する方向には働かない)。(3) `--confirm-level`(既定 `destructive`)以上のリスクのコマンドは実行前にユーザーへ y/n 確認。**拒否は abort ではなく** `function_call_output` で「ユーザーが拒否した」を LLM に返し、代替アプローチを取らせる。非対話環境では確認できないため拒否扱い。この機構は保証ではなくプロンプト削減であり(LLM 自己申告は prompt injection・自己評価バイアスに対し堅牢でない)、最終的な安全装置は「全コマンドと出力が常にユーザーの画面に見える」構造 + ユーザー在席 + Ctrl-C + チェックポイントである。
+  - `run_command` のコマンドエコーは、expecto のステータス表示と同じグレーで表示する。コマンド注入直前に outer tty へ SGR(グレー)を書き、IORelay に予約 (`arm_sgr_reset_at_newline()`) しておくと、ポンプがエコーの最初の改行(Enter のエコー)の直後にリセットを挿入する。改行が来ないまま settle・中断・EOF となった場合も `flush_sgr_reset()`(冪等)で必ずリセットする。SGR は outer tty にのみ書き、ScreenBuffer には入らないため LLM へ渡すテキストには影響しない(シェル自身がエコーに色を付ける場合はそちらが優先されうる、ベストエフォート)。
   - ループ処理は下記 settle 検知 (§5.9) を利用する。`max_auto_steps`(既定 15、LLM 呼び出し回数でカウント)ステップごとに**チェックポイント**としてユーザーに継続確認(`continue? (y/n)`)を行う。y なら `previous_response_id` チェーンを維持したまま続行、n / Esc / Ctrl-C なら終了。hard-abort ではなく確認にすることで、上限が「タスク失敗」ではなく「人間の目を挟む機会」として機能する(対話型ツールとして、ユーザー在席が第一の安全装置)。確認待ちの間も pty 出力の中継は継続する(常時ポンプが担う)。stdin が失われた場合(EOF)はセッション終了としてモードタスクがキャンセルされる。
   - LLMは `send_control` tool で制御文字（Ctrl-C等）を送信できる。これにより、長時間実行中のコマンドの中断などをLLM自身が判断できる。
   - ユーザーはいつでも `Ctrl-C` で auto mode を中断できるようにする(中断検知は InputRouter が auto mode 中の入力を優先的にハンドルする形にする)。
@@ -283,7 +283,7 @@ function_call 本体はサーバー側に保存されているため、クライ
 
 ### 5.10 WorkingSummary (セッションコンテキスト)
 
-`jou` セッション内でユーザーがこれまで行ってきた操作の要約 (working summary) を保持し、LLM 呼び出し時（completion mode / auto mode 共通）にシステムプロンプトへ含めることで、文脈を踏まえたコマンド提案・自動実行を可能にする。
+`expecto` セッション内でユーザーがこれまで行ってきた操作の要約 (working summary) を保持し、LLM 呼び出し時（completion mode / auto mode 共通）にシステムプロンプトへ含めることで、文脈を踏まえたコマンド提案・自動実行を可能にする。
 
 詳細設計は **`DESIGN-WorkingSummary.md`** を参照。要点:
 
@@ -315,7 +315,7 @@ function_call 本体はサーバー側に保存されているため、クライ
 ## 7. CLI / 設定
 
 ```
-jou [OPTIONS] [-- COMMAND ...]
+expecto [OPTIONS] [-- COMMAND ...]
 
 OPTIONS (実装済み):
   --shell PATH               子プロセスとして起動するコマンド (既定: $SHELL)
@@ -326,7 +326,7 @@ OPTIONS (実装済み):
   --confirm-level LEVEL      auto mode で確認を求める最低リスク
                              (destructive|mutating|none、既定: destructive)
   --dangerous-patterns-file PATH  危険コマンド正規表現の追加ファイル
-                             (既定: ~/.config/jou/dangerous_patterns.txt)
+                             (既定: ~/.config/expecto/dangerous_patterns.txt)
   --log-file PATH            クエリ・LLM要求/応答のJSONLログ出力先 (既定は無効)
   --raw-io-log-file PATH     raw I/Oログの出力先 (デバッグ用、既定は無効)
 ```
@@ -337,7 +337,7 @@ LLM 接続は環境変数で指定する (`.env` を `load_dotenv()` で読む):
 
 Working summary 生成用の LLM 接続 (URL・APIキー・モデル・reasoning effort) は環境変数 `SUMMARY_OPENAI_BASE_URL` / `SUMMARY_OPENAI_API_KEY` / `SUMMARY_OPENAI_MODEL` / `SUMMARY_OPENAI_REASONING_EFFORT` で指定する (未設定時は対応する `OPENAI_*` にフォールバック)。詳細は `DESIGN-WorkingSummary.md` §7 を参照。
 
-未実装 (将来対応): `--completion-hotkey` / `--auto-hotkey` (現状は既定の ctrl-/ と ctrl-] 固定。config 上のフィールドはある)、`--model`、`--max-auto-steps` (既定 15 固定)、`--settle-ms` (既定 500 固定)、および設定ファイル `~/.config/jou/config.toml` (既定値を書けるようにし、CLIオプションが上書きする。APIキーは環境変数を利用し設定ファイルに平置きしない)。
+未実装 (将来対応): `--completion-hotkey` / `--auto-hotkey` (現状は既定の ctrl-/ と ctrl-] 固定。config 上のフィールドはある)、`--model`、`--max-auto-steps` (既定 15 固定)、`--settle-ms` (既定 500 固定)、および設定ファイル `~/.config/expecto/config.toml` (既定値を書けるようにし、CLIオプションが上書きする。APIキーは環境変数を利用し設定ファイルに平置きしない)。
 
 ### TODO (将来追加予定の改善)
 
@@ -370,7 +370,7 @@ Working summary 生成用の LLM 接続 (URL・APIキー・モデル・reasoning
 
 ## 9. 安全性・注意点
 
-- **危険コマンドの排除**: jou は pty ラッパーであり、実行先が ssh 先や NW 装置の場合ローカル OS のサンドボックスは届かないため、使える手段は実行前ゲートのみ。§5.8 の 3 層ゲート(LLM リスク自己申告 / 決定論的バックストップによる昇格 / ユーザー確認)で対応する。コマンド体系が UNIX に限らないため静的ブロックリストだけでは覆えず、環境適応の主判定は LLM が担い、静的パターンは「明白に破滅級」の下限保証に限定する。本格的なサンドボックスや権限制御は範囲外。
+- **危険コマンドの排除**: expecto は pty ラッパーであり、実行先が ssh 先や NW 装置の場合ローカル OS のサンドボックスは届かないため、使える手段は実行前ゲートのみ。§5.8 の 3 層ゲート(LLM リスク自己申告 / 決定論的バックストップによる昇格 / ユーザー確認)で対応する。コマンド体系が UNIX に限らないため静的ブロックリストだけでは覆えず、環境適応の主判定は LLM が担い、静的パターンは「明白に破滅級」の下限保証に限定する。本格的なサンドボックスや権限制御は範囲外。
 - **シークレットの扱い**: raw ログ・LLMへの送信内容にパスワードやAPIキーが混入しうる。v0.1では簡易マスキング(例: `password`, `token`, `secret` を含む行の値部分を伏字にする)を検討するが、完全性は保証しない旨をドキュメントに明記する。
 - **auto modeの暴走対策**: ステップ数チェックポイントでの継続確認(既定 15 ステップごと、非対話環境では終了)と、ユーザーによる即時中断(Ctrl-C)を必須実装とする。`previous_response_id` は過去入力を毎回再課金するため、コストはステップ数に対し超線形に伸びる — 将来的にトークン/コスト予算上限(SWE-agent 型)の併設を検討する。
 - **ホットキーの衝突**: 子プロセス側(vim, tmux, ルーターCLI等)が同じキーを使っている場合に奪い合いが発生する。設定で変更可能にしておくことが必須。
@@ -383,7 +383,7 @@ Working summary 生成用の LLM 接続 (URL・APIキー・モデル・reasoning
 2. **パスワードプロンプトの扱い**: sshやsudoのパスワード入力中にhistoryバッファへ内容が残る可能性。マスキングロジックの精度向上が必要。
 3. **完了検知の精度**: アイドル検知は「出力がただ遅いだけ」のケース(大きなダウンロード等)と「本当に終わった」ケースを区別できない。将来的にOSC 133等のシェル統合や、プロンプト正規表現の学習的検出を追加検討。
 4. **マルチバイト入力**: 日本語入力(IME)がある場合、raw モードでの1バイトずつの処理とIME側のコンポジションの扱いに注意が必要(v0.1はASCIIコマンド入力を主眼とし、日本語クエリ自体は問題ないが、IME変換中のキーイベントの扱いは要検証)。
-5. **ネストしたjou**: 非対応(想定しない)。ローカルでのネスト起動は、`jou` が子プロセスに設定する環境変数 `JOU_ACTIVE` により起動時に検知してエラー終了する(§5.2)。外側の jou がホットキーを先に捕まえてしまい、過去セッションのスクロールバックを引き継いだ LLM 応答が返るなど、気づきにくい誤動作の原因になるため。ssh 先で `jou` を起動するケースは環境変数が伝わらないため検知できない(引き続き非対応)。
+5. **ネストしたexpecto**: 非対応(想定しない)。ローカルでのネスト起動は、`expecto` が子プロセスに設定する環境変数 `EXPECTO_ACTIVE` により起動時に検知してエラー終了する(§5.2)。外側の expecto がホットキーを先に捕まえてしまい、過去セッションのスクロールバックを引き継いだ LLM 応答が返るなど、気づきにくい誤動作の原因になるため。ssh 先で `expecto` を起動するケースは環境変数が伝わらないため検知できない(引き続き非対応)。
 
 ---
 
@@ -422,10 +422,10 @@ Working summary 生成用の LLM 接続 (URL・APIキー・モデル・reasoning
 ## 13. 想定ディレクトリ構成
 
 ```
-jou/
+expecto/
 ├── pyproject.toml
 ├── src/
-│   └── jou/
+│   └── expecto/
 │       ├── __init__.py
 │       ├── cli.py            # エントリポイント、引数解析、asyncio.run
 │       ├── tty_controller.py # raw mode化/復元、ウィンドウサイズ取得/反映
@@ -453,7 +453,7 @@ jou/
 ## 16. テスト・型チェック方針
 
 - テストフレームワークには `pytest` を使用する。
-- **テストケース作成のクライテリア**: `jou` のために実装したロジックをテストすること。標準ライブラリや既存ライブラリの動作をただ確認するだけのテストケース（例: argparse がオプションをパースできること自体の検証）は書かない。
+- **テストケース作成のクライテリア**: `expecto` のために実装したロジックをテストすること。標準ライブラリや既存ライブラリの動作をただ確認するだけのテストケース（例: argparse がオプションをパースできること自体の検証）は書かない。
 - async コンポーネントのテストには `pytest-asyncio` を使用する (`asyncio_mode = "auto"` を `pyproject.toml` に設定済み。テストコルーチンにデコレータは不要)。
 - 型チェックには `ty` を使用する (`uv run ty check`)。設定は `pyproject.toml` の `[tool.ty]` に記述する。
 - すべてのコードに型ヒントを付与する。公開インターフェースは明示的な型を書き、`Any` の使用は避ける。
@@ -465,7 +465,7 @@ jou/
 
 ## 15. 参考にした既存ツール(先行事例調査より)
 
-- [Butterfish Shell](https://github.com/bakks/butterfish) — シェルラッパー型。大文字始まりでLLMプロンプト、`!`でGoal Mode(自動実行)。PS1マーカーで完了検知。`jou`との違いは、シェルのみをラップし子プロセス(ssh等)には介入しない点。
+- [Butterfish Shell](https://github.com/bakks/butterfish) — シェルラッパー型。大文字始まりでLLMプロンプト、`!`でGoal Mode(自動実行)。PS1マーカーで完了検知。`expecto`との違いは、シェルのみをラップし子プロセス(ssh等)には介入しない点。
 - [pty-mcp](https://github.com/raychao-oao/pty-mcp) — ローカル/SSH/シリアル(ネットワーク機器)向けPTYセッションをAIエージェントに提供するMCPサーバー。settle detection・wait_forパターンマッチの実装が参考になる。
 - [coder/agent-tty](https://github.com/coder/agent-tty) — PTY駆動+スクリーン記録・検証ツール。tmux/expect/asciinema/Playwrightとの比較整理が実装方針検討の参考になった。
 - `expect`, `script(1)`, `asciinema`, `ttyrec` — PTY記録・自動応答の古典的ツール群。基本技術(forkpty, termios raw mode)の土台。

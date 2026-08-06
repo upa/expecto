@@ -15,7 +15,7 @@ from openai.types.shared_params import Reasoning
 from pydantic import BaseModel, ValidationError
 
 if TYPE_CHECKING:
-    from jou.config import JouConfig, ReasoningEffortLevel
+    from expecto.config import ExpectoConfig, ReasoningEffortLevel
 
 SYSTEM_PROMPT = """\
 You are an assistant that suggests commands for the terminal the user is \
@@ -211,7 +211,7 @@ def _build_summary_input(
 
 
 class LLMClient:
-    def __init__(self, config: JouConfig) -> None:
+    def __init__(self, config: ExpectoConfig) -> None:
         self._config = config
         self._client: openai.AsyncOpenAI = openai.AsyncOpenAI(
             api_key=config.openai_api_key,

@@ -10,10 +10,10 @@ from typing import TYPE_CHECKING, Literal, cast
 
 import pytest
 
-from jou.dangerous import DangerousCommandMatcher
-from jou.input_router import InputRouter
-from jou.io_relay import IORelay
-from jou.llm_client import (
+from expecto.dangerous import DangerousCommandMatcher
+from expecto.input_router import InputRouter
+from expecto.io_relay import IORelay
+from expecto.llm_client import (
     AutoResponse,
     AutoStepResult,
     CompletionResponse,
@@ -22,9 +22,9 @@ from jou.llm_client import (
     SendControlParams,
     SummaryResult,
 )
-from jou.mode_executor import ConfirmLevel, ModeExecutor
-from jou.screen_buffer import ScreenBuffer
-from jou.working_summary import WorkingSummaryManager
+from expecto.mode_executor import ConfirmLevel, ModeExecutor
+from expecto.screen_buffer import ScreenBuffer
+from expecto.working_summary import WorkingSummaryManager
 
 if TYPE_CHECKING:
     from openai.types.responses import ResponseInputParam
@@ -159,13 +159,13 @@ class FakeLLMClient:
 @dataclass
 class AutoHarness:
     """A full auto-mode session: ModeExecutor wired to a running IORelay,
-    with a socketpair standing in for the pty master (jou side / child
+    with a socketpair standing in for the pty master (expecto side / child
     side) and pipes for stdin and stdout."""
 
     relay: IORelay
     router: InputRouter
     run_task: asyncio.Task[None]
-    jou_sock: socket.socket
+    expecto_sock: socket.socket
     child_sock: socket.socket
     stdin_w: int
     stdout_r: int
@@ -242,7 +242,7 @@ async def make_auto() -> AsyncIterator[MakeAuto]:
         screen: ScreenBuffer | None = None,
     ) -> AutoHarness:
         screen = screen if screen is not None else ScreenBuffer()
-        jou_sock, child_sock = socket.socketpair()
+        expecto_sock, child_sock = socket.socketpair()
         stdin_r, stdin_w = os.pipe()
         stdout_r, stdout_w = os.pipe()
         os.set_blocking(stdout_r, False)
@@ -274,14 +274,14 @@ async def make_auto() -> AsyncIterator[MakeAuto]:
             dangerous_matcher=dangerous_matcher,
         )
         run_task = asyncio.create_task(
-            relay.run(jou_sock.fileno(), stdin_fd=stdin_r, stdout_fd=stdout_w),
+            relay.run(expecto_sock.fileno(), stdin_fd=stdin_r, stdout_fd=stdout_w),
         )
         await asyncio.sleep(0)
         harness = AutoHarness(
             relay=relay,
             router=router,
             run_task=run_task,
-            jou_sock=jou_sock,
+            expecto_sock=expecto_sock,
             child_sock=child_sock,
             stdin_w=stdin_w,
             stdout_r=stdout_r,
@@ -298,7 +298,7 @@ async def make_auto() -> AsyncIterator[MakeAuto]:
         harness.relay.stop()
         await asyncio.gather(harness.run_task, return_exceptions=True)
         harness.child_sock.close()
-        harness.jou_sock.close()
+        harness.expecto_sock.close()
     for fd in fds:
         with contextlib.suppress(OSError):
             os.close(fd)

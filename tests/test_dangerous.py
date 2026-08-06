@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from jou.dangerous import DangerousCommandMatcher
+from expecto.dangerous import DangerousCommandMatcher
 
 
 def _builtin_matcher() -> DangerousCommandMatcher:

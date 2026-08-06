@@ -2,7 +2,7 @@ import os
 import pty
 import termios
 
-from jou.tty_controller import TTYController
+from expecto.tty_controller import TTYController
 
 
 class TestTTYControllerWithPTY:

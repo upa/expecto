@@ -8,9 +8,9 @@ from dataclasses import dataclass
 
 import pytest
 
-from jou.input_router import InputRouter, State
-from jou.io_relay import IORelay
-from jou.screen_buffer import ScreenBuffer
+from expecto.input_router import InputRouter, State
+from expecto.io_relay import IORelay
+from expecto.screen_buffer import ScreenBuffer
 
 COMPLETION_HOTKEY = bytes([0x1F])
 ENTER = bytes([0x0D])
@@ -21,12 +21,12 @@ MakeSession = Callable[..., Coroutine[object, object, "Session"]]
 @dataclass
 class Session:
     """A relay wired to fake fds: a socketpair stands in for the pty
-    master (jou side / child side), pipes for stdin and stdout."""
+    master (expecto side / child side), pipes for stdin and stdout."""
 
     relay: IORelay
     run_task: asyncio.Task[None]
     child_sock: socket.socket
-    jou_sock: socket.socket
+    expecto_sock: socket.socket
     stdin_w: int
     stdout_r: int
 
@@ -57,7 +57,7 @@ async def make_session() -> AsyncIterator[MakeSession]:
         input_router: InputRouter | None = None,
         screen_buffer: ScreenBuffer | None = None,
     ) -> Session:
-        jou_sock, child_sock = socket.socketpair()
+        expecto_sock, child_sock = socket.socketpair()
         stdin_r, stdin_w = os.pipe()
         stdout_r, stdout_w = os.pipe()
         os.set_blocking(stdout_r, False)
@@ -65,14 +65,14 @@ async def make_session() -> AsyncIterator[MakeSession]:
 
         relay = IORelay(input_router=input_router, screen_buffer=screen_buffer)
         run_task = asyncio.create_task(
-            relay.run(jou_sock.fileno(), stdin_fd=stdin_r, stdout_fd=stdout_w),
+            relay.run(expecto_sock.fileno(), stdin_fd=stdin_r, stdout_fd=stdout_w),
         )
         await asyncio.sleep(0)
         session = Session(
             relay=relay,
             run_task=run_task,
             child_sock=child_sock,
-            jou_sock=jou_sock,
+            expecto_sock=expecto_sock,
             stdin_w=stdin_w,
             stdout_r=stdout_r,
         )
@@ -85,7 +85,7 @@ async def make_session() -> AsyncIterator[MakeSession]:
         session.relay.stop()
         await asyncio.gather(session.run_task, return_exceptions=True)
         session.child_sock.close()
-        session.jou_sock.close()
+        session.expecto_sock.close()
     for fd in fds_to_close:
         try:
             os.close(fd)
@@ -286,7 +286,7 @@ class TestModeTask:
         await _settle_pump()
         assert router.state == State.PASSTHROUGH
         out = session.screen_output()
-        assert b"[jou: mode error:" in out
+        assert b"[expecto: mode error:" in out
         assert b"boom" in out
 
     async def test_run_cancels_mode_task_on_eof(self, make_session: MakeSession) -> None:

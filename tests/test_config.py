@@ -1,6 +1,6 @@
 import pytest
 
-from jou.config import JouConfig
+from expecto.config import ExpectoConfig
 
 _ENV_VARS = [
     "OPENAI_API_KEY",
@@ -19,12 +19,12 @@ def _clean_env(mp: pytest.MonkeyPatch) -> None:
         mp.delenv(var, raising=False)
 
 
-class TestJouConfig:
+class TestExpectoConfig:
     def test_from_env_defaults(self) -> None:
         mp = pytest.MonkeyPatch()
         _clean_env(mp)
         try:
-            config = JouConfig.from_env()
+            config = ExpectoConfig.from_env()
             assert config.model == "gpt-4o"
             assert config.openai_api_key == ""
             assert config.openai_base_url is None
@@ -55,7 +55,7 @@ class TestJouConfig:
         mp.setenv("OPENAI_BASE_URL", "https://custom.api/v1")
         mp.setenv("OPENAI_REASONING_EFFORT", "low")
         try:
-            config = JouConfig.from_env()
+            config = ExpectoConfig.from_env()
             assert config.openai_api_key == "sk-test"
             assert config.model == "gpt-4o-mini"
             assert config.openai_base_url == "https://custom.api/v1"
@@ -68,7 +68,7 @@ class TestJouConfig:
         _clean_env(mp)
         mp.setenv("OPENAI_BASE_URL", "")
         try:
-            config = JouConfig.from_env()
+            config = ExpectoConfig.from_env()
             assert config.openai_base_url is None
         finally:
             mp.undo()
@@ -84,7 +84,7 @@ class TestSummaryEnvFallback:
         mp.setenv("OPENAI_BASE_URL", "https://main.api/v1")
         mp.setenv("OPENAI_REASONING_EFFORT", "high")
         try:
-            config = JouConfig.from_env()
+            config = ExpectoConfig.from_env()
             assert config.summary_openai_api_key == "sk-main"
             assert config.summary_model == "gpt-4o-mini"
             assert config.summary_openai_base_url == "https://main.api/v1"
@@ -104,7 +104,7 @@ class TestSummaryEnvFallback:
         mp.setenv("SUMMARY_OPENAI_BASE_URL", "https://summary.api/v1")
         mp.setenv("SUMMARY_OPENAI_REASONING_EFFORT", "low")
         try:
-            config = JouConfig.from_env()
+            config = ExpectoConfig.from_env()
             assert config.summary_openai_api_key == "sk-summary"
             assert config.summary_model == "gpt-4o-mini"
             assert config.summary_openai_base_url == "https://summary.api/v1"
@@ -123,7 +123,7 @@ class TestSummaryEnvFallback:
         mp.setenv("OPENAI_API_KEY", "sk-main")
         mp.setenv("SUMMARY_OPENAI_MODEL", "gpt-4o-mini")
         try:
-            config = JouConfig.from_env()
+            config = ExpectoConfig.from_env()
             assert config.summary_model == "gpt-4o-mini"
             assert config.summary_openai_api_key == "sk-main"
             assert config.summary_openai_base_url is None

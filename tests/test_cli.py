@@ -1,11 +1,11 @@
 import pytest
 
-from jou.cli import main
-from jou.pty_manager import NESTING_ENV_VAR
+from expecto.cli import main
+from expecto.pty_manager import NESTING_ENV_VAR
 
 
 class TestNestingGuard:
-    def test_refuses_to_start_inside_jou_session(
+    def test_refuses_to_start_inside_expecto_session(
         self,
         monkeypatch: pytest.MonkeyPatch,
         capsys: pytest.CaptureFixture[str],
@@ -15,4 +15,4 @@ class TestNestingGuard:
             main([])
         assert exc_info.value.code == 1
         captured = capsys.readouterr()
-        assert "already inside a jou session" in captured.err
+        assert "already inside an expecto session" in captured.err

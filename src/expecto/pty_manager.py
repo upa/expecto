@@ -1,7 +1,7 @@
 import os
 import pty
 
-NESTING_ENV_VAR = "JOU_ACTIVE"
+NESTING_ENV_VAR = "EXPECTO_ACTIVE"
 
 
 class PTYManager:
@@ -12,7 +12,7 @@ class PTYManager:
     def spawn(self, command: str | list[str]) -> None:
         pid, fd = pty.fork()
         if pid == 0:
-            # Mark the child environment so a nested jou can detect it (see
+            # Mark the child environment so a nested expecto can detect it (see
             # the startup guard in cli.main); inherited through execvp.
             os.environ[NESTING_ENV_VAR] = "1"
             if isinstance(command, str):

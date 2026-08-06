@@ -10,19 +10,19 @@ if TYPE_CHECKING:
 
     from openai.types.responses import ResponseInputParam
 
-    from jou.dangerous import DangerousCommandMatcher
-    from jou.io_relay import IORelay
-    from jou.screen_buffer import ScreenBuffer
-    from jou.working_summary import WorkingSummaryManager
+    from expecto.dangerous import DangerousCommandMatcher
+    from expecto.io_relay import IORelay
+    from expecto.screen_buffer import ScreenBuffer
+    from expecto.working_summary import WorkingSummaryManager
 
-from jou.llm_client import (
+from expecto.llm_client import (
     AutoStepResult,
     CompletionResponse,
     ParsedToolCall,
     RiskLevel,
     RunCommandParams,
 )
-from jou.settle import SettleResult
+from expecto.settle import SettleResult
 
 T = TypeVar("T")
 
@@ -213,7 +213,7 @@ class ModeExecutor:
         mark = self._screen.mark()
 
         if isinstance(call.params, RunCommandParams):
-            # Show the echoed command in gray, like jou's own status
+            # Show the echoed command in gray, like expecto's own status
             # messages; the relay pump resets right after the echoed Enter
             # (first relayed newline), or flush_sgr_reset() below when no
             # newline arrives before settle / interrupt.

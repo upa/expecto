@@ -8,7 +8,7 @@
 
 ## 1. 目的 / 位置づけ
 
-`jou` セッション内でユーザーがこれまで行ってきた操作の要約 (working summary) を保持し、
+`expecto` セッション内でユーザーがこれまで行ってきた操作の要約 (working summary) を保持し、
 LLM 呼び出し時 (completion mode / auto mode 共通) にシステムプロンプトへ含めることで、
 文脈を踏まえたコマンド提案・自動実行を可能にする。
 
@@ -28,7 +28,7 @@ LLM 呼び出し時 (completion mode / auto mode 共通) にシステムプロ�
 
 ### 1.2 環境推測の重要性
 
-`jou` の目的上、SSH 先のルーターやスイッチのベンダー CLI を操作する可能性がある。
+`expecto` の目的上、SSH 先のルーターやスイッチのベンダー CLI を操作する可能性がある。
 ネットワーク装置の CLI コマンドはベンダーごとに異なる (Cisco IOS, Junos, Arista EOS, etc.) ため、
 「どの装置・どの環境にいるか」という推測を summary の独立フィールドとして保持することで、
 後続の LLM 呼び出しにおけるコマンド提案の精度を向上させる (§4.1 参照)。
@@ -163,7 +163,7 @@ Notes: {notes}
 
 ## 5. WorkingSummaryManager
 
-新モジュール `src/jou/working_summary.py`。
+新モジュール `src/expecto/working_summary.py`。
 
 ```python
 class WorkingSummaryManager:
@@ -265,7 +265,7 @@ new_output = screen_buffer.get_scrolled_tail(min(pending, max_input_lines))
 設定手段は 2 系統に分ける:
 
 - **動作パラメータ (行数等)**: DESIGN.md §7 の方針に従い CLI オプションで指定。
-  将来的には `~/.config/jou/config.toml` に既定値を記述して CLI オプションが上書きする。
+  将来的には `~/.config/expecto/config.toml` に既定値を記述して CLI オプションが上書きする。
 - **LLM 接続情報 (URL・APIキー・モデル等)**: 既存の `OPENAI_*` と同様に環境変数で指定 (§7.1)。
 
 | 項目                                               | 既定値             | CLI オプション                | 根拠                                                                                                                                             |
@@ -282,7 +282,7 @@ working summary の生成は背景で頻繁に走るため、メインとは別�
 以下の環境変数で指定し、**`SUMMARY_` 付きの変数が未設定の場合は
 対応する `OPENAI_*` の値にフォールバックする**:
 
-| 環境変数                          | フォールバック先           | 対応する `JouConfig` フィールド    |
+| 環境変数                          | フォールバック先           | 対応する `ExpectoConfig` フィールド    |
 |-----------------------------------|----------------------------|------------------------------------|
 | `SUMMARY_OPENAI_BASE_URL`         | `OPENAI_BASE_URL`          | `summary_openai_base_url`          |
 | `SUMMARY_OPENAI_API_KEY`          | `OPENAI_API_KEY`           | `summary_openai_api_key`           |
@@ -320,7 +320,7 @@ v0.1 ではこの近似を許容する (直近の生画面が短期記憶とし�
 | `working_summary.py` (新規) | `WorkingSummaryManager` (§5)                                                                                                                                                                                                                                                  |
 | `io_relay.py`               | コンストラクタに `working_summary: WorkingSummaryManager \| None = None` を追加。pty 出力を `feed()` した直後に `check_trigger()` を呼ぶ                                                                                                                                      |
 | `mode_executor.py`          | `execute()` 冒頭で `ensure_summary()` を呼び (`[thinking...]` 表示中)、`summary_text` を `complete()` / `auto_step()` に渡す                                                                                                                                                  |
-| `config.py`                 | §7 の動作パラメータを `JouConfig` に追加 (CLI から設定、環境変数からは読まない)。§7.1 の summary 用 LLM 接続フィールドを追加し、`from_env()` で `SUMMARY_OPENAI_*` → `OPENAI_*` のフォールバック解決を行う                                                                    |
+| `config.py`                 | §7 の動作パラメータを `ExpectoConfig` に追加 (CLI から設定、環境変数からは読まない)。§7.1 の summary 用 LLM 接続フィールドを追加し、`from_env()` で `SUMMARY_OPENAI_*` → `OPENAI_*` のフォールバック解決を行う                                                                    |
 | `cli.py`                    | §7 の CLI オプションを argparse に追加し config へ反映。`WorkingSummaryManager` の生成と結線                                                                                                                                                                                  |
 
 ---
