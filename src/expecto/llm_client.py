@@ -18,7 +18,7 @@ from pydantic import BaseModel, ValidationError
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from expecto.config import ExpectoConfig, ReasoningEffortLevel
+    from expecto.config import ExpectoConfig
 
 SYSTEM_PROMPT = """\
 You are an assistant that operates the terminal the user is using (which \
@@ -200,19 +200,10 @@ class LLMClient:
             api_key=config.openai_api_key,
             base_url=config.openai_base_url,
         )
-        # Summary settings fall back to the main ones when unset, mirroring
-        # the SUMMARY_OPENAI_* -> OPENAI_* env var fallback for configs
-        # constructed without from_env().
-        self._summary_client: openai.AsyncOpenAI = openai.AsyncOpenAI(
-            api_key=config.summary_openai_api_key or config.openai_api_key,
-            base_url=config.summary_openai_base_url or config.openai_base_url,
-        )
+        # The summary LLM shares the main connection (same API key and
+        # base_url); only the model may differ (a lighter model for the
+        # background summaries).
         self._summary_model: str = config.summary_model or config.model
-        self._summary_reasoning_effort: ReasoningEffortLevel | None = (
-            config.summary_openai_reasoning_effort
-            if config.summary_openai_reasoning_effort is not None
-            else config.openai_reasoning_effort
-        )
         self._log_file = config.log_file
 
     def _log(self, entry: dict[str, Any]) -> None:
@@ -320,8 +311,8 @@ class LLMClient:
             {"role": "user", "content": user_content},
         ]
         reasoning: Reasoning | None = (
-            Reasoning(effort=self._summary_reasoning_effort)
-            if self._summary_reasoning_effort is not None
+            Reasoning(effort=self._config.openai_reasoning_effort)
+            if self._config.openai_reasoning_effort is not None
             else None
         )
 
@@ -333,7 +324,7 @@ class LLMClient:
         })
 
         try:
-            response = await self._summary_client.responses.parse(
+            response = await self._client.responses.parse(
                 model=self._summary_model,
                 instructions=SUMMARY_SYSTEM_PROMPT,
                 input=input_msgs,

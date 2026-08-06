@@ -289,6 +289,8 @@ expecto [OPTIONS] [-- COMMAND ...]
 
 OPTIONS (実装済み):
   --shell PATH               子プロセスとして起動するコマンド (既定: $SHELL)
+  --config PATH              設定ファイルのパス
+                             (既定: ~/.config/expecto/config.toml)
   --history-lines N          LLMに渡すスクリーン履歴の行数 (既定: 500)
   --scrollback-lines N       pyteスクロールバック容量 (既定: 5000)
   --summary-trigger-lines N  working summary 更新トリガーの行数 (既定: 500)
@@ -301,15 +303,15 @@ OPTIONS (実装済み):
   --raw-io-log-file PATH     raw I/Oログの出力先 (デバッグ用、既定は無効)
 ```
 
-LLM 接続は環境変数で指定する:
-`OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL` (既定: gpt-4o) /
-`OPENAI_REASONING_EFFORT`。
+設定は `~/.config/expecto/config.toml` に記述し、優先順位は
+**組み込み既定値 < config.toml < CLI フラグ**。環境変数から読むのは
+`OPENAI_API_KEY` ただ 1 つで(未設定なら起動時エラー)、モデル・base_url・
+reasoning effort・hotkey・summary 設定などその他すべては config.toml で指定する。
+スキーマ・エラーハンドリング・hotkey 表記の詳細は **`DESIGN-Config.md`** を参照。
 
-`.env` ファイルの探索順: カレントディレクトリ (python-dotenv の慣例に従い親方向にも探索) → 見つからなければ `~/.config/expecto/.env`。既に設定済みの環境変数はファイルの値より常に優先される。インストール済みコマンドとしてどこから起動しても API キー等を読めるようにするための仕組み。
+`.env` ファイルの探索順: カレントディレクトリ (python-dotenv の慣例に従い親方向にも探索) → 見つからなければ `~/.config/expecto/.env`。既に設定済みの環境変数はファイルの値より常に優先される。インストール済みコマンドとしてどこから起動しても API キーを読めるようにするための仕組み。
 
-Working summary 生成用の LLM 接続 (URL・APIキー・モデル・reasoning effort) は環境変数 `SUMMARY_OPENAI_BASE_URL` / `SUMMARY_OPENAI_API_KEY` / `SUMMARY_OPENAI_MODEL` / `SUMMARY_OPENAI_REASONING_EFFORT` で指定する (未設定時は対応する `OPENAI_*` にフォールバック)。詳細は `DESIGN-WorkingSummary.md` §7 を参照。
-
-未実装 (将来対応): `--hotkey` (現状は既定の ctrl-/ 固定。config 上のフィールドはある)、`--model`、`--max-steps` (既定 15 固定)、`--settle-ms` (既定 500 固定)、および設定ファイル `~/.config/expecto/config.toml` (既定値を書けるようにし、CLIオプションが上書きする。APIキーは環境変数を利用し設定ファイルに平置きしない)。
+未実装 (将来対応): `--hotkey` / `--model` / `--max-steps` / `--settle-ms` の CLI フラグ (いずれも config.toml で設定可能になったため優先度低)。
 
 ### TODO (将来追加予定の改善)
 

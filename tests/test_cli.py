@@ -30,6 +30,7 @@ class TestLoadEnv:
         home.mkdir()
         monkeypatch.chdir(cwd)
         monkeypatch.setenv("HOME", str(home))
+        monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
         return home
 
     def test_cwd_env_takes_precedence(
@@ -77,3 +78,60 @@ class TestLoadEnv:
         monkeypatch.setenv("EXPECTO_TEST_VAR", "from_shell")
         load_env()
         assert os.environ["EXPECTO_TEST_VAR"] == "from_shell"
+
+
+class TestStartupErrors:
+    def _isolate(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+        cwd = tmp_path / "cwd"
+        home = tmp_path / "home"
+        cwd.mkdir()
+        home.mkdir()
+        monkeypatch.chdir(cwd)
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+        monkeypatch.delenv(NESTING_ENV_VAR, raising=False)
+        return home
+
+    def test_missing_api_key_exits(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        self._isolate(monkeypatch, tmp_path)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        with pytest.raises(SystemExit) as exc_info:
+            main([])
+        assert exc_info.value.code == 1
+        assert "OPENAI_API_KEY is not set" in capsys.readouterr().err
+
+    def test_missing_explicit_config_file_exits(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        self._isolate(monkeypatch, tmp_path)
+        missing = tmp_path / "nonexistent.toml"
+        with pytest.raises(SystemExit) as exc_info:
+            main(["--config", str(missing)])
+        assert exc_info.value.code == 1
+        assert "config file not found" in capsys.readouterr().err
+
+    def test_config_warnings_are_printed(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Warnings from the config file appear on stderr (the run itself
+        stops at the missing API key)."""
+        self._isolate(monkeypatch, tmp_path)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        config_file = tmp_path / "config.toml"
+        config_file.write_text("unknown_key = 1\n")
+        with pytest.raises(SystemExit):
+            main(["--config", str(config_file)])
+        err = capsys.readouterr().err
+        assert "expecto: warning:" in err
+        assert "unknown_key" in err
