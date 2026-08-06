@@ -29,8 +29,8 @@ ConfirmLevel = Literal["destructive", "mutating", "none"]
 
 DECLINED_TOOL_OUTPUT = (
     "Command was not executed: the user declined to run it. "
-    "Take a different approach, or finish with status \"fail\" if the goal "
-    "cannot be achieved without it."
+    "Take a different approach, or stop calling tools and explain why the "
+    "goal cannot be achieved without it."
 )
 
 CONTROL_CHAR_MAP: dict[str, bytes] = {
