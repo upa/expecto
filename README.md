@@ -1,11 +1,9 @@
 
-# expecto
+# expecto 👻 — Summon an AI agent into your terminal
 
-Summon an AI agent into your terminal. 
-
-`expecto` wraps the tty, not your shell. It silently follows
-everything on your terminal, and when you ask the AI agent, the agent
-runs commands on your behalf until the goal is done.
+An AI agent summoned by `expecto` silently follows everything on your
+terminal, and when you ask the AI agent, the agent runs commands on
+your behalf until the goal is done.
 
 
 
@@ -42,6 +40,6 @@ Press `Ctrl-/` (the default hotkey) to query your AI agent.
 `expecto` is implemented as a transparent `pty` wrapper, so it
 captures all terminal I/O below it. This is what makes it
 shell-agnostic.  Also, `expecto` can control remote machines through
-SSH. Remote machines are not only Linux machines but also
-anything with a CLI, such as network devices.
+SSH. Remote machines are not only Linux machines but also anything
+with a CLI, such as network devices.
 
