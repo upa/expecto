@@ -37,7 +37,7 @@
 | passthrough mode           | 通常状態。outer tty ⇄ pty master のバイトを素通しする                                              |
 | query mode                 | ホットキーで入る、クエリ入力用のオーバーレイモード                                                 |
 | 実行ループ (execution)     | クエリ確定後、LLM がゴールを達成するまでコマンド実行→出力確認→次のコマンド、を繰り返す agentic ループ。expecto の唯一の実行動作 |
-| screen buffer / scrollback | LLM に渡すために保持している「直近の入出力の履歴」(生バイト列とクリーン化テキストの両方)           |
+| screen buffer / scrollback | LLM に渡すために保持している「直近の出力履歴」(pyte でクリーン化したテキスト)                      |
 
 ---
 
@@ -105,7 +105,7 @@
 └───────────────────────────────────────────────┘
 
 並行処理は asyncio 単一スレッドのイベントループで行う(スレッド・Lock は
-使わない)。詳細は **`DESIGN-Async.md`** を参照。
+使わない)。詳細は **`Async.md`** を参照。
         │ pty master fd
         ▼
    pty slave ── child process ($SHELL, ssh, など)
@@ -132,7 +132,7 @@
 
 ### 5.3 IORelay (常時ポンプ + イベントハブ)
 
-- 責務: asyncio イベントループ上で `loop.add_reader()` により outer tty の stdin fd と pty master fd を監視し、双方向にバイトを中継する常時ポンプ。加えて、実行ループのためのイベントハブ (settle 待ち・キー待ち・pty 読み取りの一時停止・実行タスク管理) を担う (DESIGN-Async.md §4.1)。
+- 責務: asyncio イベントループ上で `loop.add_reader()` により outer tty の stdin fd と pty master fd を監視し、双方向にバイトを中継する常時ポンプ。加えて、実行ループのためのイベントハブ (settle 待ち・キー待ち・pty 読み取りの一時停止・実行タスク管理) を担う (Async.md §3.1)。
 - fd コールバックの概形 (同期処理のみ):
   ```
   stdin_fd 読み取り → InputRouter.handle(data)   # hotkey検出 & 状態別ルーティング
@@ -147,11 +147,12 @@
 
 - 1バイトずつ状態機械として処理する。UTF-8マルチバイト文字の分割に注意(バッファリングして完全な1文字になるまで待つ処理が必要)。
 - ホットキーは 1 つ: `Ctrl-/` (0x1f) を既定とする。設定可能にし、衝突が判明したら容易に変更できるようにする。
-- **端末応答シーケンスの転送** (`response_filter.py` の `ResponseFilter`): 子プロセスは外側端末へ問い合わせを送り、応答が届くまで入力処理を保留することがある (fish 4.x は毎プロンプトで CPR `\x1b[6n`・OSC 11・Primary DA を送る。bash/readline は送らない)。QUERY / EXECUTING 中は stdin を pty に流さないため、そのままでは応答が子プロセスに届かず、注入コマンドが処理されない (§10-5)。そこで両状態では通常のバイト処理の手前に応答認識の状態機械を挟み、端末→アプリケーション応答と確定したシーケンスのみ pty へ転送する:
+- **端末応答シーケンスの転送** (`response_filter.py` の `ResponseFilter`): 子プロセスは外側端末へ問い合わせを送り、応答が届くまで入力処理を保留することがある (fish 4.x は毎プロンプトで CPR `\x1b[6n`・OSC 11・Primary DA を送る。bash/readline は送らない)。QUERY / EXECUTING 中は stdin を pty に流さないため、そのままでは応答が子プロセスに届かず、注入コマンドが処理されない。そこで両状態では通常のバイト処理の手前に応答認識の状態機械を挟み、端末→アプリケーション応答と確定したシーケンスのみ pty へ転送する:
   - CSI 応答: 最終文字 `R n y t`、または `?`/`>` プレフィクス付きの `c`・`?` 付きの `u` (DA・kitty keyboard protocol 応答)。矢印キー (`\x1b[A`)・`~` 系・kitty キー入力 (`?` なし `u`) は応答とみなさず従来処理へ再生する。
   - OSC / DCS 応答 (BEL / ST 終端): キーボードからは発生しないため内容を問わず転送。
   - チャンク (1回の read) 末尾で ESC 1バイトだけが保留されている場合はユーザーの Esc キーとして扱う。2バイト以上の有効プレフィクスはチャンクをまたいで保留し、分割された応答にも対応する。保留上限 1024 バイト。
   - 副次効果として、OSC 応答の終端 `\x1b\` に含まれる ESC が y/n 確認プロンプト (`wait_key`) に「n」と誤答する問題も防ぐ。
+  - 応答と区別できない一部のキー (F3 の CPR 衝突等) が実行中に pty へ届く可能性は許容する。
 - query mode 中の入力ハンドリング:
   - 通常文字 → クエリバッファに追記 + ミニプロンプトに反映
   - Backspace → 1文字削除
@@ -160,11 +161,8 @@
 
 ### 5.5 ScreenBuffer (履歴管理)
 
-- 二重に履歴を保持する:
-  1. **raw ログ**: pty からの生バイト列(直近 N KB、リングバッファ)。デバッグ用。
-  2. **クリーンテキスト**: [`pyte`](https://pypi.org/project/pyte/) の `pyte.Screen` + `pyte.Stream` を使い、ANSIエスケープシーケンスを解釈した「現在の画面内容」および直近のスクロールバック行を保持する。LLMに渡すのは主にこちら。
-- LLMへの入力としては、直近の「表示されているテキスト」を中心に、必要であれば直前に実行したコマンド文字列も別途保持して付与する(コマンド入力自体はScreenBuffer上にも現れるが、明示的にログしておくとプロンプト構築が楽)。
-- トークン量を抑えるため、既定では直近 Nスクリーン分 or 直近 M 行 のみを送る設計とし、`--history-lines` などで調整可能にする。
+- [`pyte`](https://pypi.org/project/pyte/) の `pyte.HistoryScreen` + `pyte.Stream` を使い、ANSIエスケープシーケンスを解釈した「現在の画面内容」および直近のスクロールバック行(容量 `scrollback_lines`、既定 5000)をクリーンテキストとして保持する。LLM に渡すのはこれ。生バイト列は保持しない(デバッグ用の raw I/O ログは `--raw-io-log-file` 指定時に IORelay がファイルへ書く)。
+- トークン量を抑えるため、LLM へは直近 `history_lines`(既定 500)行のみを送る(`get_text(last_n=...)`)。
 - **新規出力の抽出 (tool 結果用)**: 実行ループの tool 結果には「そのコマンドが生んだ新規出力のみ」を渡す(全履歴を毎回再送しない)。
   - `mark()`: 現時点の状態を記録して `ScreenMark` を返す。記録内容は「スクロールバックへ押し出した累計行数(deque の maxlen 溢れや clear に影響されない単調カウンタ)」と「カーソル行」。同時に pyte の `screen.dirty`(変更行の set。pyte は追加のみ、クリアはコンシューマの責務)をクリアする。
   - `get_text_since(mark)`: 「mark 以降に履歴へ押し出された行(mark 時点でカーソルより上にあった既存行がスクロールで押し出された分は除外)」+「mark 以降に変更された可視行の範囲」を結合して返す。スクロールが起きた場合、可視部分は mark 時点のカーソル行の移動先から下を採用する(スクロールは全行を dirty にするため)。
@@ -179,11 +177,11 @@
 ### 5.7 LLMClient
 
 - OpenAI **Chat Completions API** を利用する(Responses API は OpenAI 以外の互換バックエンドの対応が不十分なため不採用)。実行ループの各ステップは `AsyncOpenAI` の `client.chat.completions.stream()`(streaming)、compaction の引き継ぎ要約 (§5.10) は `client.chat.completions.parse()`(Structured Outputs)。モデルは設定可能(既定は現行世代の高速モデル)。
-- 入力: `instructions=` でシステムプロンプト、`input=` でユーザーメッセージ。
+- 入力: `messages=` に system プロンプト以下の会話履歴全体を渡す(履歴は LLMClient が保持。下記「会話履歴」)。
 - システムプロンプトは英語で記述し、「コマンド以外の出力はユーザーのクエリの言語に合わせる」旨を指示する。
 - 実行ループの**最終応答はプレーンテキスト**(スキーマ強制なし)。ゴール達成の要約、または達成不能な場合はその理由をテキストで返すようシステムプロンプトで指示する。done/fail の status フィールドは持たない(区別に実質的な意味がなく、プレーンテキスト化により streaming 表示が単純になるため)。
   - 「継続」は tool call そのもので表現される。**tool call を含まない応答をループ終了とみなす。**
-  - 最終応答のテキストは `response.output_text.delta` イベントで届いた文字から順次、グレーの `[` + 本文 + `]` として outer tty に表示する(§5.8)。
+  - 最終応答のテキストは streaming の `content.delta` イベントで届いた文字から順次、グレーの `[` + 本文 + `]` として outer tty に表示する(§5.8)。
 
 #### Function calling
 
@@ -210,7 +208,7 @@
 
 #### 会話履歴 (クライアント保持) とプロンプトキャッシュ
 
-メッセージ履歴は `LLMClient` が保持し、**session 全体で 1 つの会話**として継続する（詳細は **`DESIGN-Conversation.md`**）:
+メッセージ履歴は `LLMClient` が保持し、**session 全体で 1 つの会話**として継続する（詳細は **`Conversation.md`**）:
 
 ```
 [system: SYSTEM_PROMPT]                  ← 完全静的
@@ -224,20 +222,20 @@
 
 - 履歴は **append-only** で、system プロンプト・tools 定義は完全固定。毎リクエストが前リクエストの完全な延長になるため、プロンプトの prefix キャッシュが session を通じて効く（compaction 直後を除く）。
 - 継続 query では全画面を再送しない（過去の画面は履歴にある）。query 間のユーザーの手動操作は新規出力の差分（`new_output_max_chars` で cap）として渡す。
-- assistant の `tool_calls` には対応する `tool` メッセージが必ず続くよう、中断・checkpoint 停止・拒否を含む全経路で tool 結果を記録する（DESIGN-Conversation.md §4）。
+- assistant の `tool_calls` には対応する `tool` メッセージが必ず続くよう、中断・checkpoint 停止・拒否を含む全経路で tool 結果を記録する（Conversation.md §4）。
 
 ### 5.8 Executor
 
 - クエリ確定後の実行ループ(コマンド実行→出力確認→次のアクション)を制御する。
 - 開始時(クエリ確定直後)にまず改行 1 つを pty に送り、シェルの新しいプロンプトを表示・settle 待ちで画面に反映してから、最初の LLM 呼び出しに進む。クエリ行が直前のプロンプト行を消費しているため、これを行わないと最初のコマンドがプロンプトのない行に注入されたように見える。
 - LLM が function calling で `run_command` / `send_control` を呼び出すループとして実装する(§5.7)。tool call の実行(pty master への書き込み + settle 待ち + 新規出力の回収(§5.5 の mark / get_text_since)と tool 結果の記録)は Executor が担う。
-- **危険コマンドの確認ゲート(3層)**: (1) LLM が `run_command` の必須フィールド `risk`(`read_only` / `mutating` / `destructive`)+ `risk_reason` で毎コマンドのリスクを自己申告する(環境適応の主判定。ベンダー CLI の知識は LLM 側にあり、会話履歴に蓄積された session 文脈が精度を支える)。(2) 決定論的バックストップ: 組み込み + ユーザー定義(`~/.config/expecto/dangerous_patterns.txt`、1行1正規表現・`#`コメント・大文字小文字無視)の正規表現にマッチしたコマンドは LLM の申告に関係なく `destructive` に**昇格**する(昇格専用 — 確認を免除する方向には働かない)。(3) `--confirm-level`(既定 `destructive`)以上のリスクのコマンドは実行前にユーザーへ y/n 確認。**拒否は abort ではなく** tool 結果で「ユーザーが拒否した」を LLM に返し、代替アプローチを取らせる。非対話環境では確認できないため拒否扱い。この機構は保証ではなくプロンプト削減であり(LLM 自己申告は prompt injection・自己評価バイアスに対し堅牢でない)、最終的な安全装置は「全コマンドと出力が常にユーザーの画面に見える」構造 + ユーザー在席 + Ctrl-C + チェックポイントである。
+- **危険コマンドの確認ゲート(3層)**: (1) LLM が `run_command` の必須フィールド `risk`(`read_only` / `mutating` / `destructive`)+ `risk_reason` で毎コマンドのリスクを自己申告する(環境適応の主判定。ベンダー CLI の知識は LLM 側にあり、会話履歴に蓄積された session 文脈が精度を支える)。(2) 決定論的バックストップ: 組み込み + ユーザー定義(`~/.config/expecto/dangerous_patterns.txt`、1行1正規表現・`#`コメント・大文字小文字無視)の正規表現にマッチしたコマンドは LLM の申告に関係なく `destructive` に**昇格**する(昇格専用 — 確認を免除する方向には働かない)。(3) `--confirm-level`(既定 `destructive`)以上のリスクのコマンドは実行前にユーザーへ y/n 確認。**拒否は abort ではなく** tool 結果で「ユーザーが拒否した」を LLM に返し、代替アプローチを取らせる。確認待ちのまま stdin が失われた場合 (EOF) はセッション終了として実行が中断される (interrupted)。この機構は保証ではなくプロンプト削減であり(LLM 自己申告は prompt injection・自己評価バイアスに対し堅牢でない)、最終的な安全装置は「全コマンドと出力が常にユーザーの画面に見える」構造 + ユーザー在席 + Ctrl-C + チェックポイントである。
 - `run_command` のコマンドエコーは、expecto のステータス表示と同じグレーで表示する。コマンド注入直前に outer tty へ SGR(グレー)を書き、IORelay に予約 (`arm_sgr_reset_at_newline()`) しておくと、ポンプがエコーの最初の改行(Enter のエコー)の直後にリセットを挿入する。改行が来ないまま settle・中断・EOF となった場合も `flush_sgr_reset()`(冪等)で必ずリセットする。SGR は outer tty にのみ書き、ScreenBuffer には入らないため LLM へ渡すテキストには影響しない(シェル自身がエコーに色を付ける場合はそちらが優先されうる、ベストエフォート)。
 - ループ処理は下記 settle 検知 (§5.9) を利用する。`max_steps`(既定 15、LLM 呼び出し回数でカウント)ステップごとに**チェックポイント**としてユーザーに継続確認(`continue? (y/n)`)を行う。y なら会話履歴を維持したまま続行、n / Esc / Ctrl-C なら終了。hard-abort ではなく確認にすることで、上限が「タスク失敗」ではなく「人間の目を挟む機会」として機能する(対話型ツールとして、ユーザー在席が第一の安全装置)。確認待ちの間も pty 出力の中継は継続する(常時ポンプが担う)。stdin が失われた場合(EOF)はセッション終了として実行タスクがキャンセルされる。
 - LLMは `send_control` tool で制御文字（Ctrl-C等）を送信できる。これにより、長時間実行中のコマンドの中断などをLLM自身が判断できる。
-- **最終応答の streaming 表示**: 最終応答テキストは `output_text.delta` が届き始めた時点で `[thinking...]` オーバーレイを消去し、グレーの `[` に続けて届いた文字から順次表示、応答完了で `]` + SGR リセットで閉じる。オーバーレイの消去はストリーミング開始時に一度だけ行い、以降は巻き戻さない(複数行の応答で画面がスクロールすると DECSC の保存位置が信頼できないため)。ストリーミング途中で Ctrl-C 中断された場合は、表示済みの部分テキストを画面に残したまま改行して `[expecto interrupted]` を表示する。delta が一度も届かなかった場合(空応答等)は従来どおり完了後に一括表示する。streaming 中も pty の読み取りは pause されたままであり、子プロセス出力との混線は起きない。
+- **最終応答の streaming 表示**: 最終応答テキストは `content.delta` が届き始めた時点で `[thinking...]` オーバーレイを消去し、グレーの `[` に続けて届いた文字から順次表示、応答完了で `]` + SGR リセットで閉じる。オーバーレイの消去はストリーミング開始時に一度だけ行い、以降は巻き戻さない(複数行の応答で画面がスクロールすると DECSC の保存位置が信頼できないため)。ストリーミング途中で Ctrl-C 中断された場合は、表示済みの部分テキストを画面に残したまま改行して `[expecto interrupted]` を表示する。delta が一度も届かなかった場合(空応答等)は従来どおり完了後に一括表示する。streaming 中も pty の読み取りは pause されたままであり、子プロセス出力との混線は起きない。
 - ユーザーはいつでも `Ctrl-C` で実行を中断できるようにする(中断検知は InputRouter が実行中の入力を優先的にハンドルする形にする)。
-- LLM 呼び出し(各ステップの step、およびクエリ直前の compaction)は `AsyncOpenAI` を await する。実行全体が 1 つの asyncio タスクであり、**LLM 応答待ち中を含むあらゆる await 点で Ctrl-C により即座に中断**できる(タスクキャンセル)。キャンセル時は in-flight の HTTP リクエスト自体も中断され、後始末(オーバーレイ消去・SGR リセット・末尾改行)は finally で保証される (DESIGN-Async.md §5)。
+- LLM 呼び出し(各ステップの step、および前回 query 終了後に始まった compaction の待ち合わせ)は `AsyncOpenAI` を await する。実行全体が 1 つの asyncio タスクであり、**LLM 応答待ち中を含むあらゆる await 点で Ctrl-C により即座に中断**できる(タスクキャンセル)。キャンセル時は in-flight の HTTP リクエスト自体も中断され(独立タスクである compaction は完走する)、後始末(オーバーレイ消去・SGR リセット・末尾改行)は finally で保証される (Async.md §4)。
 
 ### 5.9 settle 検知 (出力安定検知)
 
@@ -251,7 +249,7 @@
 
 session の文脈はクライアント保持のメッセージ履歴そのもの（過去の query・コマンド・出力が全部残る）が担う。履歴が閾値 (`compact_thresh`、prompt_tokens 基準) を超えて伸びたら、query の実行終了後（explanation 表示・ユーザーへの操作返却の後）に LLMClient が内部で（Executor からはほぼ透過的に）バックグラウンドで履歴へ引き継ぎ要約 (`HandoffSummary`: environment / activities / notes) を要求し、次の query を要約 + 全画面を先頭にした新しい会話として始める (compaction)。query と query の間のユーザーの手動操作は、次の query に添える新規出力の差分 (`new_output_max_chars` で cap) が伝える。
 
-詳細設計は **`DESIGN-Conversation.md`** を参照。旧 working summary 機構（バックグラウンド常時要約）は同設計への移行で廃止した（経緯は同 §7）。
+詳細設計は **`Conversation.md`** を参照。
 
 ---
 
@@ -263,7 +261,7 @@ session の文脈はクライアント保持のメッセージ履歴そのもの
 | `QUERY`       | クエリ入力受付中                           | Enter → `EXECUTING` / Esc,Ctrl-C → `PASSTHROUGH`      |
 | `EXECUTING`   | 実行ループ (LLM 応答待ち・コマンド実行)    | ゴール達成/失敗/チェックポイントで n/Ctrl-C → `PASSTHROUGH` |
 
-※ `EXECUTING` の中身(LLM 呼び出し・tool 実行・確認プロンプト)は asyncio の実行タスクとして表現され、タスク完了 (done callback) で `PASSTHROUGH` に戻る (DESIGN-Async.md §4.2)。
+※ `EXECUTING` の中身(LLM 呼び出し・tool 実行・確認プロンプト)は asyncio の実行タスクとして表現され、タスク完了 (done callback) で `PASSTHROUGH` に戻る (Async.md §3.2)。
 
 ---
 
@@ -290,7 +288,7 @@ OPTIONS (実装済み):
 **組み込み既定値 < config.toml < CLI フラグ**。環境変数から読むのは
 `OPENAI_API_KEY` ただ 1 つで(未設定なら起動時エラー)、モデル・base_url・
 reasoning effort・hotkey・compaction 閾値などその他すべては config.toml で指定する。
-スキーマ・エラーハンドリング・hotkey 表記の詳細は **`DESIGN-Config.md`** を参照。
+スキーマ・エラーハンドリング・hotkey 表記の詳細は **`Config.md`** を参照。
 
 `.env` ファイルの探索順: カレントディレクトリ (python-dotenv の慣例に従い親方向にも探索) → 見つからなければ `~/.config/expecto/.env`。既に設定済みの環境変数はファイルの値より常に優先される。インストール済みコマンドとしてどこから起動しても API キーを読めるようにするための仕組み。
 
@@ -305,7 +303,7 @@ reasoning effort・hotkey・compaction 閾値などその他すべては config.
 
 ## 8. LLMへ渡すコンテキストの構築
 
-システムプロンプトの骨子(実装時にチューニング)。応答形式は Structured Outputs で強制するため、プロンプト内での JSON 形式指示は不要:
+システムプロンプトの骨子(実装時にチューニング。最終応答はプレーンテキストなので JSON 形式指示は無い):
 
 ```
 あなたはユーザーの操作しているターミナル(またはSSH先、あるいはネットワーク機器のCLI)
@@ -317,9 +315,9 @@ reasoning effort・hotkey・compaction 閾値などその他すべては config.
   コマンドが長時間実行中の場合、Ctrl-Cで中断するか待つかを判断してください。
 ```
 
-ユーザーメッセージには以下を含める:
-- 直近のクリーンテキスト画面/スクロールバック(§5.5)
-- ユーザーのクエリ文字列
+query 開始時の user メッセージには以下を含める (Goal は末尾):
+- session 初回 / compaction 直後: 直近のクリーンテキスト画面 (§5.5) + ユーザーのクエリ文字列 (compaction 直後は先頭に Session Summary)
+- 2 回目以降の query: 前回実行終了以降の新規ターミナル出力の差分 + クエリ文字列 (過去の画面は履歴にあるため再送しない)
 - (ループ中は) 各ステップの履歴は「LLMの tool call」と「その実行結果 (tool メッセージ)」のペアとして会話履歴に蓄積される(§5.7)。これにより、LLMは過去に何を試して何が起きたかを踏まえて次のアクションを判断できる。
 
 ---
@@ -339,8 +337,7 @@ reasoning effort・hotkey・compaction 閾値などその他すべては config.
 2. **パスワードプロンプトの扱い**: sshやsudoのパスワード入力中にhistoryバッファへ内容が残る可能性。マスキングロジックの精度向上が必要。
 3. **完了検知の精度**: アイドル検知は「出力がただ遅いだけ」のケース(大きなダウンロード等)と「本当に終わった」ケースを区別できない。将来的にOSC 133等のシェル統合や、プロンプト正規表現の学習的検出を追加検討。
 4. **マルチバイト入力**: 日本語入力(IME)がある場合、raw モードでの1バイトずつの処理とIME側のコンポジションの扱いに注意が必要(v0.1はASCIIコマンド入力を主眼とし、日本語クエリ自体は問題ないが、IME変換中のキーイベントの扱いは要検証)。
-5. **端末応答と入力保留の干渉** (対応済み): fish 4.x は毎プロンプトで端末に問い合わせ (CPR 等) を送り、応答が届くまで入力処理を保留する。当初の実装は EXECUTING 中の stdin を全破棄していたため、外側端末の応答が子プロセスに届かず、fish 4.x 上でコマンド注入が無反応になった (macOS + wezterm + fish で発見)。§5.4 の ResponseFilter による応答転送で解決。応答と区別できない一部のキー (F3 の CPR 衝突等) が実行中に pty へ届く可能性は許容する。
-6. **ネストしたexpecto**: 非対応(想定しない)。ローカルでのネスト起動は、`expecto` が子プロセスに設定する環境変数 `EXPECTO_ACTIVE` により起動時に検知してエラー終了する(§5.2)。外側の expecto がホットキーを先に捕まえてしまい、過去セッションのスクロールバックを引き継いだ LLM 応答が返るなど、気づきにくい誤動作の原因になるため。ssh 先で `expecto` を起動するケースは環境変数が伝わらないため検知できない(引き続き非対応)。
+5. **ネストしたexpecto**: 非対応(想定しない)。ローカルでのネスト起動は、`expecto` が子プロセスに設定する環境変数 `EXPECTO_ACTIVE` により起動時に検知してエラー終了する(§5.2)。外側の expecto がホットキーを先に捕まえてしまい、過去セッションのスクロールバックを引き継いだ LLM 応答が返るなど、気づきにくい誤動作の原因になるため。ssh 先で `expecto` を起動するケースは環境変数が伝わらないため検知できない(引き続き非対応)。
 
 ---
 
@@ -353,8 +350,6 @@ reasoning effort・hotkey・compaction 閾値などその他すべては config.
 ---
 
 ## 12. プロトタイプの実装スコープ (v0.1 MVP)
-
-当初は「completion mode (LLM が 1 コマンドを提案・注入のみ行い、実行はユーザーに委ねるモード)」を Phase 1、auto mode を Phase 2 として段階実装したが、その後 completion mode は削除し、実行ループ(旧 auto mode)を expecto の唯一の振る舞いとした。現在のスコープ:
 
 - passthrough mode (raw tty中継、SIGWINCH伝播)
 - ホットキーによる query mode 突入・キャンセル
@@ -385,7 +380,7 @@ expecto/
 │       ├── response_filter.py # 端末応答シーケンス認識 (stdin保留中の転送用)
 │       ├── screen_buffer.py  # pyte連携、履歴管理
 │       ├── query_ui.py       # ミニプロンプト描画
-│       ├── llm_client.py     # OpenAI API呼び出し (AsyncOpenAI、Structured Outputs)
+│       ├── llm_client.py     # Chat Completions呼び出し、会話履歴の保持とcompaction
 │       ├── executor.py       # 実行ループ制御
 │       ├── settle.py         # 出力安定検知 (wait_settleコルーチン)
 │       ├── dangerous.py      # 危険コマンド正規表現バックストップ
@@ -396,11 +391,12 @@ expecto/
 ## 14. 依存ライブラリ (想定)
 
 - `pyte` — 端末エミュレーション / クリーンテキスト化
-- `openai` — LLM呼び出し (OpenAI公式Python SDK、AsyncOpenAI / Structured Outputs対応)
+- `openai` — LLM呼び出し (OpenAI公式Python SDK、AsyncOpenAI)
+- `python-dotenv` — `.env` の読み込み (APIキー用)
 - `pytest` / `pytest-asyncio` — テストフレームワーク (dev dependency)
 - 標準ライブラリ: `asyncio`, `pty`, `termios`, `tty`, `os`, `signal`, `fcntl`, `struct`
 
-## 16. テスト・型チェック方針
+## 15. テスト・型チェック方針
 
 - テストフレームワークには `pytest` を使用する。
 - **テストケース作成のクライテリア**: `expecto` のために実装したロジックをテストすること。標準ライブラリや既存ライブラリの動作をただ確認するだけのテストケース（例: argparse がオプションをパースできること自体の検証）は書かない。
@@ -411,11 +407,3 @@ expecto/
 - tty/pty 操作のテストには `pty.openpty()` で疑似端末ペアを作成して使用する。
 - IORelay 等の `sys.stdin` に依存するコンポーネントは、fd を外部から注入可能にしてテスタビリティを確保する。
 
----
-
-## 15. 参考にした既存ツール(先行事例調査より)
-
-- [Butterfish Shell](https://github.com/bakks/butterfish) — シェルラッパー型。大文字始まりでLLMプロンプト、`!`でGoal Mode(自動実行)。PS1マーカーで完了検知。`expecto`との違いは、シェルのみをラップし子プロセス(ssh等)には介入しない点。
-- [pty-mcp](https://github.com/raychao-oao/pty-mcp) — ローカル/SSH/シリアル(ネットワーク機器)向けPTYセッションをAIエージェントに提供するMCPサーバー。settle detection・wait_forパターンマッチの実装が参考になる。
-- [coder/agent-tty](https://github.com/coder/agent-tty) — PTY駆動+スクリーン記録・検証ツール。tmux/expect/asciinema/Playwrightとの比較整理が実装方針検討の参考になった。
-- `expect`, `script(1)`, `asciinema`, `ttyrec` — PTY記録・自動応答の古典的ツール群。基本技術(forkpty, termios raw mode)の土台。

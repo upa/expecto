@@ -4,12 +4,6 @@
 - 親ドキュメント: `DESIGN.md` (§5.7, §5.10)
 - 本ドキュメントは「LLMClient が Chat Completions のメッセージ履歴を session
   全体で保持し、長くなったら compaction で圧縮する」設計の詳細。
-- 経緯: 当初 Responses API の `previous_response_id` チェーンで実装したが、
-  OpenAI 以外のバックエンド (base_url 変更で使う OpenAI 互換 API) の
-  Responses API 対応が不十分なため、Chat Completions API + クライアント側
-  履歴保持に移行した。「チェーン」というサーバー側状態の概念は消滅し、
-  チェーン喪失フォールバックや未送信アイテムのバッファも不要になった。
-  さらに前身の working summary 機構 (バックグラウンド常時要約) の廃止経緯は §7。
 
 ---
 
@@ -46,6 +40,9 @@
 - `system` プロンプト・`tools` 定義・`parallel_tool_calls=False`・model は
   リクエスト間で完全固定。
 - compaction リクエストも同じ system・tools で発行する (§5)。
+- session の要約を system プロンプトへ注入するような方式は、要約が更新される
+  たびに履歴全体のキャッシュを破壊するため採らない (要約の出番は compaction
+  時のみ。§5)。
 
 テスト `test_history_is_append_only_across_requests` がこの不変条件
 (後のリクエストの messages は前のリクエストの messages を prefix に持つ) を検証する。
@@ -85,8 +82,8 @@ Chat Completions は「assistant の `tool_calls` には対応する `tool`
   (`_run_tool_call` の except 節で同期記録してから re-raise)
 - 実行開始前の中断 → 定型の interrupted 出力 (`execute()` 側で未処理の call を補完)
 
-これにより旧チェーン設計の pending items バッファは不要になった。
-checkpoint 停止も実行済み分は記録済みなので、次の query はそのまま続けられる。
+checkpoint 停止で実行が終わった場合も実行済み分は記録済みなので、
+次の query はそのまま続けられる。
 
 ## 5. Compaction (LLMClient 内部・Executor から透過)
 
@@ -116,9 +113,6 @@ checkpoint 停止も実行済み分は記録済みなので、次の query は�
   (API 障害時に文脈を捨てない)。エラーは JSONL ログに記録。バックグラウンド
   タスクは例外を外に漏らさない。
 
-compaction で失われるのは LLM 自身の中間的な思考・説明のみで、ターミナル上の
-事実は要約 + 全画面でカバーされる。
-
 ## 6. config (config.toml トップレベル)
 
 | キー | 既定値 | 意味 |
@@ -126,32 +120,16 @@ compaction で失われるのは LLM 自身の中間的な思考・説明のみ�
 | `compact_thresh` | 100000 | 直近レスポンスの prompt_tokens がこれ以上なら query 終了後に compaction |
 | `new_output_max_chars` | 20000 | query 間差分の最大文字数 (末尾優先で切り詰め) |
 
-## 7. 旧 working summary の廃止 (設計判断の記録)
+## 7. 制約 (受容した割り切り)
 
-前身の設計 (working summary) は「スクロールアウトした出力をバックグラウンドで
-常時要約し、毎 query の system プロンプトに注入する」機構だった。会話履歴が
-query 単位でリセットされる前提では session 文脈の供給源として必須だったが、
-session 全体で履歴を継続する設計への移行で役割がほぼ消滅した:
-
-- session 文脈の供給 → 履歴そのものが担う
-- 環境推測 (SSH 先・ベンダー CLI) の保持 → 履歴内の過去のやりとりが担う
-- query 間の手動操作の記憶 → §3 の差分が担う
-- 履歴リセット時の引き継ぎ → オンデマンドの compaction (§5) が担う。
-  会話の自己要約は端末出力だけの要約より忠実 (LLM 自身の目的・判断も含む) で、
-  生成コストも「500 行スクロールごとに常時」から「compaction 時に 1 回」に下がる
-
-割り切り (受容したトレードオフ):
-
-1. query 間に `new_output_max_chars` を超えて流れた手動出力の超過分は失われる。
-   truncation 注記で LLM に欠落を伝えるにとどめる。
-2. 初回 query 前に `history_lines` を超えてスクロールした操作履歴も同様に失われる。
-3. reasoning 系モデルの思考トークンは Chat Completions ではターン間で
-   引き継がれない (Responses API の優位点)。移行動機である OpenAI 互換
-   バックエンドはそもそも対応していないため実質的な損失は小さい。
-
-また system プロンプトへの summary 注入 (旧方式) は、summary が更新される
-たびに会話全体のプロンプトキャッシュを破壊するため、履歴継続設計とは
-両立しない。これが一連の再設計の直接の動機である。
+1. query 間に `new_output_max_chars` を超えて流れた手動出力の超過分は LLM に
+   渡らない。truncation 注記で欠落を伝えるにとどめる。
+2. 初回 query 前に `history_lines` を超えてスクロールした操作履歴も同様に
+   渡らない。初回時点で画面 `history_lines` 行あれば実用上十分と判断。
+3. reasoning 系モデルの思考トークンはターン間で引き継がれない
+   (Chat Completions の仕様)。
+4. compaction で失われるのは LLM 自身の中間的な思考・説明のみで、ターミナル上の
+   事実は要約 + 全画面でカバーされる。
 
 ## 8. 将来拡張の候補
 
