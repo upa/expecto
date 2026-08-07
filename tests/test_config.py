@@ -67,9 +67,8 @@ class TestDefaults:
         assert config.log_file is None
         assert config.raw_io_log_file is None
         assert config.dangerous_patterns_file == default_dangerous_patterns_file()
-        assert config.summary_model == ""
-        assert config.summary_trigger_lines == 500
-        assert config.summary_max_input_lines == 2000
+        assert config.chain_compact_thresh == 100000
+        assert config.new_output_max_chars == 20000
 
     def test_api_key_from_env(
         self, isolated_home: Path, monkeypatch: pytest.MonkeyPatch,
@@ -104,9 +103,8 @@ dangerous_patterns_file = "~/patterns.txt"
 model = "main-model"
 base_url = "https://main.api/v1"
 reasoning_effort = "high"
-summary_model = "small-model"
-summary_trigger_lines = 50
-summary_max_input_lines = 200
+chain_compact_thresh = 50000
+new_output_max_chars = 5000
 """)
         assert warnings == []
         assert config.shell == "/usr/bin/fish"
@@ -123,9 +121,8 @@ summary_max_input_lines = 200
         assert config.model == "main-model"
         assert config.openai_base_url == "https://main.api/v1"
         assert config.openai_reasoning_effort == "high"
-        assert config.summary_model == "small-model"
-        assert config.summary_trigger_lines == 50
-        assert config.summary_max_input_lines == 200
+        assert config.chain_compact_thresh == 50000
+        assert config.new_output_max_chars == 5000
 
     def test_empty_string_means_unset(self, isolated_home: Path, tmp_path: Path) -> None:
         config, warnings = _load_toml(tmp_path, """

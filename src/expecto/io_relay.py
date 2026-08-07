@@ -12,7 +12,6 @@ if TYPE_CHECKING:
 
     from expecto.input_router import InputRouter
     from expecto.screen_buffer import ScreenBuffer
-    from expecto.working_summary import WorkingSummaryManager
 
 
 class IORelay:
@@ -30,12 +29,10 @@ class IORelay:
         input_router: InputRouter | None = None,
         screen_buffer: ScreenBuffer | None = None,
         log_file: IO[str] | None = None,
-        working_summary: WorkingSummaryManager | None = None,
     ) -> None:
         self._input_router = input_router
         self._screen_buffer = screen_buffer
         self._log_file = log_file
-        self._working_summary = working_summary
 
         self._pty_fd: int = -1
         self._stdin_fd: int = -1
@@ -199,8 +196,6 @@ class IORelay:
             return
         if self._screen_buffer is not None:
             self._screen_buffer.feed(data)
-            if self._working_summary is not None:
-                self._working_summary.check_trigger()
         self._write_stdout(data)
         self._output_seen.set()
 

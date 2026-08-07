@@ -66,27 +66,6 @@ class ScreenBuffer:
             all_lines = all_lines[len(all_lines) - last_n:]
         return "\n".join(all_lines)
 
-    @property
-    def scrolled_lines_total(self) -> int:
-        """Monotonic count of lines pushed into scrollback since creation."""
-        return self._history_top.total_appended
-
-    def get_scrolled_tail(self, n: int) -> str:
-        """Render the last n lines of the scrollback (read-only: does not
-        touch the dirty set used by mark()/get_text_since()). Lines already
-        evicted from the scrollback are flagged with a truncation note."""
-        if n <= 0:
-            return ""
-        available = len(self._history_top)
-        take = min(n, available)
-        lines = [
-            self._render_history_line(line)
-            for line in list(self._history_top)[available - take:]
-        ]
-        if n > available:
-            lines.insert(0, "[... earlier output truncated: exceeded scrollback capacity ...]")
-        return "\n".join(lines)
-
     def mark(self) -> ScreenMark:
         """Record the current screen state and reset change tracking.
 

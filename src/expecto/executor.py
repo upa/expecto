@@ -9,13 +9,15 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
     from openai.types.responses import ResponseInputParam
+    from openai.types.responses.response_input_param import FunctionCallOutput
 
     from expecto.dangerous import DangerousCommandMatcher
     from expecto.io_relay import IORelay
-    from expecto.screen_buffer import ScreenBuffer
-    from expecto.working_summary import WorkingSummaryManager
+    from expecto.screen_buffer import ScreenBuffer, ScreenMark
 
 from expecto.llm_client import (
+    ChainLostError,
+    HandoffSummary,
     ParsedToolCall,
     RiskLevel,
     RunCommandParams,
@@ -33,6 +35,10 @@ DECLINED_TOOL_OUTPUT = (
     "goal cannot be achieved without it."
 )
 
+INTERRUPTED_TOOL_OUTPUT = (
+    "The task was interrupted by the user before this command was executed."
+)
+
 CONTROL_CHAR_MAP: dict[str, bytes] = {
     "ctrl-c": b"\x03",
     "ctrl-d": b"\x04",
@@ -40,20 +46,36 @@ CONTROL_CHAR_MAP: dict[str, bytes] = {
 }
 
 
+def _tool_output_item(call_id: str, output: str) -> FunctionCallOutput:
+    return {
+        "type": "function_call_output",
+        "call_id": call_id,
+        "output": output,
+    }
+
+
 class LLMStepper(Protocol):
     async def step(
         self,
         input_items: ResponseInputParam,
         previous_response_id: str | None = None,
-        working_summary: str | None = None,
         on_delta: Callable[[str], None] | None = None,
     ) -> StepResult: ...
 
-    def build_initial_messages(
+    def build_query_message(
         self,
         query: str,
-        screen_text: str,
+        *,
+        screen_text: str | None = None,
+        new_output: str | None = None,
+        summary: HandoffSummary | None = None,
     ) -> ResponseInputParam: ...
+
+    async def compact(
+        self,
+        previous_response_id: str,
+        pending_items: ResponseInputParam | None = None,
+    ) -> HandoffSummary: ...
 
 
 class _StreamingFinal:
@@ -96,9 +118,10 @@ class Executor:
         threshold_ms: int = 30000,
         max_steps: int = 15,
         history_lines: int = 500,
-        working_summary: WorkingSummaryManager | None = None,
         confirm_level: ConfirmLevel = "destructive",
         dangerous_matcher: DangerousCommandMatcher | None = None,
+        chain_compact_thresh: int = 100000,
+        new_output_max_chars: int = 20000,
     ) -> None:
         self._llm = llm_client
         self._screen = screen_buffer
@@ -109,9 +132,17 @@ class Executor:
         self._threshold_ms = threshold_ms
         self._max_steps = max_steps
         self._history_lines = history_lines
-        self._working_summary = working_summary
         self._confirm_level = confirm_level
         self._dangerous_matcher = dangerous_matcher
+        self._chain_compact_thresh = chain_compact_thresh
+        self._new_output_max_chars = new_output_max_chars
+
+        # Session-wide response chain state. One chain spans queries; it
+        # is replaced on compaction (see _compact_chain).
+        self._chain_id: str | None = None
+        self._chain_input_tokens: int = 0
+        self._pending_items: ResponseInputParam = []
+        self._last_mark: ScreenMark | None = None
 
     async def _thinking(
         self, awaitable: Awaitable[T], label: bytes = b"[thinking...]",
@@ -132,17 +163,10 @@ class Executor:
                 os.write(self._stdout_fd, b"\x1b8\x1b[J")
             self._relay.resume_pty()
 
-    async def _ensure_working_summary(self) -> str | None:
-        """Bring the working summary up to date and return its prompt text."""
-        if self._working_summary is None:
-            return None
-        await self._working_summary.ensure_summary()
-        return self._working_summary.summary_text
-
     async def execute(self, query: str) -> None:
-        """Run one execution (the LLM command-execute-observe loop).
-        Runs as the relay's execution task; user Ctrl-C arrives as task
-        cancellation."""
+        """Run one execution (the LLM command-execute-observe loop) on the
+        session-wide response chain. Runs as the relay's execution task;
+        user Ctrl-C arrives as task cancellation."""
         stream: _StreamingFinal | None = None
         try:
             # The finalized query line took over the prompt line on the
@@ -151,28 +175,54 @@ class Executor:
             self._write_to_pty(b"\n")
             await self._relay.wait_settle(self._settle_ms, self._threshold_ms)
 
-            working_summary = await self._thinking(self._ensure_working_summary())
-            screen_text = self._screen.get_text(last_n=self._history_lines)
-            input_items: ResponseInputParam = self._llm.build_initial_messages(
-                query, screen_text,
-            )
-            prev_response_id: str | None = None
+            summary: HandoffSummary | None = None
+            if (
+                self._chain_id is not None
+                and self._chain_input_tokens >= self._chain_compact_thresh
+            ):
+                summary = await self._thinking(
+                    self._compact_chain(), label=b"[compacting...]",
+                )
+
+            input_items: ResponseInputParam = [
+                *self._pending_items,
+                *self._build_query_message(query, summary),
+            ]
+            prev_response_id = self._chain_id
+            chain_lost_retried = False
 
             step = 0
             checkpoint = self._max_steps
             while True:
                 step += 1
                 stream = _StreamingFinal(self._stdout_fd)
-                result = await self._thinking(
-                    self._llm.step(
-                        input_items,
-                        previous_response_id=prev_response_id,
-                        working_summary=working_summary,
-                        on_delta=stream.on_delta,
-                    ),
-                    stream=stream,
-                )
+                try:
+                    result = await self._thinking(
+                        self._llm.step(
+                            input_items,
+                            previous_response_id=prev_response_id,
+                            on_delta=stream.on_delta,
+                        ),
+                        stream=stream,
+                    )
+                except ChainLostError:
+                    if chain_lost_retried or prev_response_id is None:
+                        raise
+                    # The stored chain is gone (e.g. expired server-side);
+                    # restart this query on a fresh chain. The old chain
+                    # cannot be summarized anymore, so context is the full
+                    # screen only.
+                    chain_lost_retried = True
+                    self._reset_chain()
+                    input_items = self._build_query_message(query, None)
+                    prev_response_id = None
+                    step -= 1
+                    continue
                 prev_response_id = result.response_id
+                self._chain_id = result.response_id
+                if result.input_tokens is not None:
+                    self._chain_input_tokens = result.input_tokens
+                self._pending_items = []
 
                 if not result.tool_calls:
                     if stream.started:
@@ -186,14 +236,25 @@ class Executor:
                 # call) has already been streamed; end the open message.
                 stream.close()
 
+                # Build the outputs directly into _pending_items: whatever
+                # is not delivered by a later step in this execution (stop
+                # at a checkpoint, interrupt) must go out with the next
+                # query, or the chain would be left with an unanswered
+                # function_call.
                 outputs: ResponseInputParam = []
-                for call in result.tool_calls:
-                    output_text = await self._run_tool_call(call)
-                    outputs.append({
-                        "type": "function_call_output",
-                        "call_id": call.call_id,
-                        "output": output_text,
-                    })
+                self._pending_items = outputs
+                try:
+                    for call in result.tool_calls:
+                        output_text = await self._run_tool_call(call)
+                        outputs.append(_tool_output_item(call.call_id, output_text))
+                except asyncio.CancelledError:
+                    # _run_tool_call answers the in-flight call itself;
+                    # cover calls that never started.
+                    for missed in result.tool_calls[len(outputs):]:
+                        outputs.append(
+                            _tool_output_item(missed.call_id, INTERRUPTED_TOOL_OUTPUT),
+                        )
+                    raise
                 input_items = outputs
 
                 if step == checkpoint:
@@ -215,6 +276,59 @@ class Executor:
             # get here through cancellation at EOF.
             with contextlib.suppress(OSError):
                 self._write_to_pty(b"\n")
+            # Track where this execution ended so the next query can send
+            # only the terminal output produced in between.
+            self._last_mark = self._screen.mark()
+
+    def _build_query_message(
+        self, query: str, summary: HandoffSummary | None,
+    ) -> ResponseInputParam:
+        if self._chain_id is None:
+            return self._llm.build_query_message(
+                query,
+                screen_text=self._screen.get_text(last_n=self._history_lines),
+                summary=summary,
+            )
+        return self._llm.build_query_message(
+            query, new_output=self._new_output_since_last(),
+        )
+
+    def _new_output_since_last(self) -> str | None:
+        """Terminal output produced since the previous execution ended
+        (the user's manual activity between queries), tail-capped at
+        new_output_max_chars."""
+        if self._last_mark is None:
+            return None
+        text = self._screen.get_text_since(self._last_mark)
+        if not text.strip():
+            return None
+        if len(text) > self._new_output_max_chars:
+            text = (
+                "[... earlier output truncated ...]\n"
+                + text[len(text) - self._new_output_max_chars:]
+            )
+        return text
+
+    async def _compact_chain(self) -> HandoffSummary | None:
+        """Compact the chain into a handoff summary and reset it. On
+        failure the old chain is kept and compaction is retried at the
+        next query (the LLM client logs the error)."""
+        assert self._chain_id is not None
+        try:
+            summary = await self._llm.compact(
+                self._chain_id, self._pending_items or None,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            return None
+        self._reset_chain()
+        return summary
+
+    def _reset_chain(self) -> None:
+        self._chain_id = None
+        self._chain_input_tokens = 0
+        self._pending_items = []
 
     async def _run_tool_call(self, call: ParsedToolCall) -> str:
         """Execute one tool call and build its function_call_output text."""
@@ -252,6 +366,17 @@ class Executor:
             settle_result = await self._relay.wait_settle(
                 self._settle_ms, self._threshold_ms,
             )
+        except asyncio.CancelledError:
+            # The command was already sent; answer its function_call with
+            # whatever output arrived so far, to be delivered on the next
+            # request of the chain.
+            self._pending_items.append(_tool_output_item(
+                call.call_id,
+                f"## Terminal Output\n```\n{self._screen.get_text_since(mark)}\n```\n"
+                "[Note] The task was interrupted by the user; the command "
+                "may still be running.",
+            ))
+            raise
         finally:
             self._relay.flush_sgr_reset()
 

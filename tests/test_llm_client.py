@@ -1,26 +1,31 @@
 import json
 import tempfile
+from types import SimpleNamespace
 from typing import cast
 
+import httpx
+import openai
+import pytest
 from openai.lib.streaming.responses import ResponseTextDeltaEvent
 from openai.types.responses import (
     ResponseFunctionToolCall,
+    ResponseInputParam,
     ResponseOutputMessage,
     ResponseOutputText,
 )
 from openai.types.responses.parsed_response import ParsedResponse
+from openai.types.responses.response_usage import ResponseUsage
 
 from expecto.config import ExpectoConfig
 from expecto.llm_client import (
+    COMPACT_REQUEST,
+    ChainLostError,
+    HandoffSummary,
     LLMClient,
     RunCommandParams,
     SendControlParams,
-    SUMMARY_SYSTEM_PROMPT,
-    SummaryResult,
     SYSTEM_PROMPT,
     TOOLS,
-    _build_summary_input,
-    _compose_instructions,
 )
 
 
@@ -176,11 +181,13 @@ def _run_command_item(call_id: str, command: str) -> ResponseFunctionToolCall:
 
 
 def _parsed_response(
-    output: list[object], response_id: str = "resp_1",
+    output: list[object],
+    response_id: str = "resp_1",
+    usage: ResponseUsage | None = None,
 ) -> ParsedResponse[None]:
     return cast(
         "ParsedResponse[None]",
-        ParsedResponse.model_construct(id=response_id, output=output),
+        ParsedResponse.model_construct(id=response_id, output=output, usage=usage),
     )
 
 
@@ -281,76 +288,129 @@ class TestStep:
         assert captured["store"] is True
         assert captured["previous_response_id"] == "resp_0"
 
-
-class TestSummaryResult:
-    def test_model_fields(self) -> None:
-        result = SummaryResult(
-            environment="local shell (bash)",
-            activities="editing config files",
-            notes="no errors",
+    async def test_input_tokens_from_usage(self) -> None:
+        final = _parsed_response(
+            [_message_item("done")],
+            usage=ResponseUsage.model_construct(input_tokens=1234),
         )
-        assert result.environment == "local shell (bash)"
-        assert result.activities == "editing config files"
-        assert result.notes == "no errors"
+        client, _ = self._client_with_fake_stream([], final)
+
+        result = await client.step([{"role": "user", "content": "hi"}])
+        assert result.input_tokens == 1234
+
+    async def test_input_tokens_none_without_usage(self) -> None:
+        final = _parsed_response([_message_item("done")])
+        client, _ = self._client_with_fake_stream([], final)
+
+        result = await client.step([{"role": "user", "content": "hi"}])
+        assert result.input_tokens is None
 
 
-class TestComposeInstructions:
-    def test_without_summary(self) -> None:
-        assert _compose_instructions(SYSTEM_PROMPT, None) == SYSTEM_PROMPT
-
-    def test_with_summary(self) -> None:
-        summary = "## Session Context\nEnvironment: ssh router"
-        composed = _compose_instructions(SYSTEM_PROMPT, summary)
-        assert composed.startswith(SYSTEM_PROMPT)
-        assert composed.endswith(summary)
+def _bad_request(message: str) -> openai.BadRequestError:
+    request = httpx.Request("POST", "https://api.test/v1/responses")
+    return openai.BadRequestError(
+        message, response=httpx.Response(400, request=request), body=None,
+    )
 
 
-class TestBuildSummaryInput:
-    def test_first_generation_has_no_previous_section(self) -> None:
-        content = _build_summary_input(None, "some output", truncated=False)
-        assert "## Previous Summary" not in content
-        assert "some output" in content
+class _FailingStream:
+    def __init__(self, exc: Exception) -> None:
+        self._exc = exc
 
-    def test_merge_includes_previous_summary(self) -> None:
-        previous = SummaryResult(
-            environment="ssh to router1 (Junos)",
-            activities="checking BGP sessions",
-            notes="session to peer 10.0.0.1 is down",
+    async def __aenter__(self) -> "_FailingStream":
+        raise self._exc
+
+    async def __aexit__(self, *exc: object) -> None:
+        return None
+
+
+class TestChainLost:
+    def _client_with_stream_error(self, exc: Exception) -> LLMClient:
+        client = LLMClient(_make_config())
+        setattr(  # noqa: B010
+            client._client.responses, "stream", lambda **kwargs: _FailingStream(exc),
         )
-        content = _build_summary_input(previous, "new output", truncated=False)
-        assert "## Previous Summary" in content
-        assert "Junos" in content
-        assert "10.0.0.1" in content
-        assert "new output" in content
+        return client
 
-    def test_truncated_note(self) -> None:
-        content = _build_summary_input(None, "output", truncated=True)
-        assert "omitted" in content
+    async def test_missing_previous_response_raises_chain_lost(self) -> None:
+        client = self._client_with_stream_error(
+            _bad_request("Previous response with id 'resp_0' not found."),
+        )
+        with pytest.raises(ChainLostError):
+            await client.step(
+                [{"role": "user", "content": "hi"}], previous_response_id="resp_0",
+            )
 
-    def test_not_truncated_has_no_note(self) -> None:
-        content = _build_summary_input(None, "output", truncated=False)
-        assert "omitted" not in content
+    async def test_other_bad_request_passes_through(self) -> None:
+        client = self._client_with_stream_error(_bad_request("Invalid parameter."))
+        with pytest.raises(openai.BadRequestError):
+            await client.step(
+                [{"role": "user", "content": "hi"}], previous_response_id="resp_0",
+            )
+
+    async def test_without_previous_id_passes_through(self) -> None:
+        client = self._client_with_stream_error(
+            _bad_request("Previous response with id 'resp_0' not found."),
+        )
+        with pytest.raises(openai.BadRequestError):
+            await client.step([{"role": "user", "content": "hi"}])
+
+
+class TestCompact:
+    def _client_with_fake_parse(
+        self, parsed: HandoffSummary | None,
+    ) -> tuple[LLMClient, dict[str, object]]:
+        client = LLMClient(_make_config())
+        captured: dict[str, object] = {}
+
+        async def fake_parse(**kwargs: object) -> object:
+            captured.update(kwargs)
+            return SimpleNamespace(output_parsed=parsed)
+
+        setattr(client._client.responses, "parse", fake_parse)  # noqa: B010
+        return client, captured
+
+    async def test_request_reuses_step_prompt_prefix(self) -> None:
+        """instructions and tools match step() so the chain stays cached;
+        the compaction directive travels in the user message."""
+        summary = HandoffSummary(environment="e", activities="a", notes="n")
+        client, captured = self._client_with_fake_parse(summary)
+
+        result = await client.compact("resp_42")
+        assert result is summary
+        assert captured["instructions"] == SYSTEM_PROMPT
+        assert captured["tools"] == TOOLS
+        assert captured["tool_choice"] == "none"
+        assert captured["store"] is False
+        assert captured["previous_response_id"] == "resp_42"
+        input_items = cast("list[dict[str, object]]", captured["input"])
+        assert input_items[-1]["content"] == COMPACT_REQUEST
+
+    async def test_pending_items_delivered_before_request(self) -> None:
+        """Dangling tool outputs are settled on the old chain as part of
+        the compaction request."""
+        summary = HandoffSummary(environment="e", activities="a", notes="n")
+        client, captured = self._client_with_fake_parse(summary)
+        pending = cast(
+            "ResponseInputParam",
+            [{"type": "function_call_output", "call_id": "call_9", "output": "x"}],
+        )
+
+        await client.compact("resp_42", pending)
+        input_items = cast("list[dict[str, object]]", captured["input"])
+        assert input_items[0]["call_id"] == "call_9"
+        assert input_items[-1]["content"] == COMPACT_REQUEST
+
+    async def test_empty_response_raises(self) -> None:
+        client, _ = self._client_with_fake_parse(None)
+        with pytest.raises(ValueError, match="empty response"):
+            await client.compact("resp_42")
 
 
 class TestLLMClient:
     def test_init(self) -> None:
         client = LLMClient(_make_config())
         assert client._client.api_key == "sk-test"
-
-    def test_summary_model_falls_back_to_main_model(self) -> None:
-        client = LLMClient(_make_config())
-        assert client._summary_model == "gpt-4o"
-
-    def test_summary_model_override(self) -> None:
-        config = _make_config()
-        config.summary_model = "small-model"
-        client = LLMClient(config)
-        assert client._summary_model == "small-model"
-
-    def test_summary_system_prompt_exists(self) -> None:
-        assert "summary" in SUMMARY_SYSTEM_PROMPT.lower()
-        assert "environment" in SUMMARY_SYSTEM_PROMPT.lower()
-        assert "merging" in SUMMARY_SYSTEM_PROMPT.lower()
 
     def test_system_prompt_exists(self) -> None:
         assert "terminal" in SYSTEM_PROMPT.lower()
@@ -363,26 +423,56 @@ class TestLLMClient:
         assert "show version" in SYSTEM_PROMPT
         assert "stop calling tools" in SYSTEM_PROMPT
 
-    def test_build_initial_messages(self) -> None:
+
+class TestBuildQueryMessage:
+    def test_fresh_chain_has_screen_and_goal_last(self) -> None:
         client = LLMClient(_make_config())
-        messages = client.build_initial_messages(
-            query="ディスク使用量を確認して",
-            screen_text="user@host:~$ ",
+        messages = client.build_query_message(
+            "ディスク使用量を確認して", screen_text="user@host:~$ ",
         )
         assert len(messages) == 1
         first = cast("dict[str, object]", messages[0])
         assert first["role"] == "user"
         content = str(first["content"])
-        assert "ディスク使用量を確認して" in content
+        assert "## Current Terminal Screen" in content
         assert "user@host:~$ " in content
+        assert "## New Terminal Output" not in content
+        assert content.endswith("## Goal\nディスク使用量を確認して")
 
-    def test_log_query_on_build_initial(self) -> None:
+    def test_continuing_chain_has_new_output_only(self) -> None:
+        client = LLMClient(_make_config())
+        messages = client.build_query_message(
+            "next task", new_output="manual output here",
+        )
+        content = str(cast("dict[str, object]", messages[0])["content"])
+        assert "## New Terminal Output" in content
+        assert "manual output here" in content
+        assert "## Current Terminal Screen" not in content
+        assert content.endswith("## Goal\nnext task")
+
+    def test_summary_section_comes_first(self) -> None:
+        client = LLMClient(_make_config())
+        summary = HandoffSummary(
+            environment="ssh to router1", activities="checked BGP", notes="peer down",
+        )
+        messages = client.build_query_message(
+            "continue", screen_text="$ ", summary=summary,
+        )
+        content = str(cast("dict[str, object]", messages[0])["content"])
+        assert content.startswith("## Session Summary")
+        assert "ssh to router1" in content
+        assert "peer down" in content
+        assert content.index("## Session Summary") < content.index(
+            "## Current Terminal Screen",
+        )
+
+    def test_log_query(self) -> None:
         with tempfile.NamedTemporaryFile(mode="r", suffix=".jsonl", delete=False) as f:
             log_path = f.name
         config = _make_config()
         config.log_file = log_path
         client = LLMClient(config)
-        client.build_initial_messages(query="check disk", screen_text="$ ")
+        client.build_query_message("check disk", screen_text="$ ")
         with open(log_path) as f:
             lines = f.readlines()
         assert len(lines) == 1
@@ -393,4 +483,4 @@ class TestLLMClient:
 
     def test_no_log_when_log_file_none(self) -> None:
         client = LLMClient(_make_config())
-        client.build_initial_messages(query="test", screen_text="$ ")
+        client.build_query_message("test", screen_text="$ ")
