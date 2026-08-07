@@ -37,6 +37,43 @@ model = "gpt-5.6"
 base_url = "[YOUR API ENDPOINT URL]"
 ```
 
+See [Configuration](#configuration) for all available options.
+
+
+## Configuration
+
+`expecto` reads `~/.config/expecto/config.toml` (or a file given by
+`--config`). All keys are optional; command-line flags override the
+file. `OPENAI_API_KEY` is intentionally *not* read from this file —
+set it in the environment or in `~/.config/expecto/.env`.
+
+```toml
+# LLM connection
+model = "gpt-5.4"               # model name
+base_url = ""                   # API endpoint (default: OpenAI)
+reasoning_effort = ""           # none/minimal/low/medium/high/xhigh/max
+summary_model = ""              # model for the working summary (default: same as model)
+
+# Behavior
+shell = ""                      # child command (default: $SHELL)
+hotkey = "ctrl-/"               # hotkey to enter query mode, "ctrl-<char>"
+confirm_level = "destructive"   # risk level that asks y/n: destructive/mutating/none
+max_steps = 15                  # steps between "continue?" checkpoints
+settle_ms = 500                 # idle time to regard command output as settled
+threshold_ms = 30000            # report unsettled output to the LLM after this long
+
+# Context for the LLM
+history_lines = 500             # recent screen lines sent to the LLM
+scrollback_lines = 5000         # scrollback buffer capacity
+summary_trigger_lines = 500     # scrolled-out lines that trigger a summary update
+summary_max_input_lines = 2000  # max lines fed into one summary update
+
+# Files
+log_file = ""                   # JSONL log of queries and LLM requests/responses
+raw_io_log_file = ""            # raw terminal I/O log (for debugging)
+dangerous_patterns_file = ""    # extra dangerous-command regex file
+```
+
 
 ## Architecture
 
