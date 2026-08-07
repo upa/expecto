@@ -1,11 +1,10 @@
 
-# expecto
 
-Summon an AI agent into your terminal. 
+# expecto 👻 — Summon an AI agent into your terminal
 
-`expecto` wraps the tty, not your shell. It silently follows
-everything on your terminal, and when you ask the AI agent, the agent
-runs commands on your behalf until the goal is done.
+An AI agent summoned by `expecto` silently follows everything on your
+terminal, and when you ask the AI agent, it runs commands on your
+behalf until the goal is done.
 
 
 
@@ -18,49 +17,79 @@ git clone https://github.com/upa/expecto
 cd expecto && uv tool install .
 ```
 
-* Set API key:
-
-`OPENAI_API_KEY` is the only environment variable `expecto` reads. Set it
-in your environment:
+* Set API key and run
 
 ```console
 export OPENAI_API_KEY="[API KEY HERE]"
-```
 
-or write it to `~/.config/expecto/.env`, which `expecto` loads at startup:
-
-```
-OPENAI_API_KEY=[API KEY HERE]
-```
-
-Use `--env PATH` to load a different env file. Values already set in the
-environment always win over the file.
-
-
-* Run
-
-```console
+# Execute the `expecto` command
 expecto
 ```
 
 Press `Ctrl-/` (the default hotkey) to query your AI agent.
 
-Everything else — model, `base_url`, hotkey, confirmation level, and so on
-— is configured in `~/.config/expecto/config.toml`:
+Instead of exporting it, you can write the key to
+`~/.config/expecto/.env`, which `expecto` loads at startup (use
+`--env PATH` for a different file):
 
-```toml
-model = "gpt-5.4"
-hotkey = "ctrl-/"
-confirm_level = "destructive"
+```
+OPENAI_API_KEY=[API KEY HERE]
 ```
 
+A key already set in the environment always wins over the file.
+
+
+To change the model or the OpenAI API endpoint, put the following in
+`~/.config/expecto/config.toml`
+
+```toml
+model = "gpt-5.6"
+base_url = "[YOUR API ENDPOINT URL]"
+```
+
+See [Configuration](#configuration) for all available options.
+
+
+## Configuration
+
+`expecto` reads `~/.config/expecto/config.toml` (or a file given by
+`--config`). All keys are optional; command-line flags override the
+file. `OPENAI_API_KEY` is intentionally *not* read from this file —
+set it in the environment or in `~/.config/expecto/.env` (or the file
+given by `--env`).
+
+```toml
+# LLM connection
+model = "gpt-5.4"               # model name
+base_url = ""                   # API endpoint (default: OpenAI)
+reasoning_effort = ""           # none/minimal/low/medium/high/xhigh/max
+
+# Behavior
+shell = ""                      # child command (default: $SHELL)
+hotkey = "ctrl-/"               # hotkey to enter query mode, "ctrl-<char>"
+confirm_level = "destructive"   # risk level that asks y/n: destructive/mutating/none
+max_steps = 15                  # steps between "continue?" checkpoints
+settle_ms = 500                 # idle time to regard command output as settled
+threshold_ms = 30000            # report unsettled output to the LLM after this long
+
+# Context for the LLM
+history_lines = 500             # recent screen lines sent to the LLM
+scrollback_lines = 5000         # scrollback buffer capacity
+compact_thresh = 100000         # prompt tokens that trigger conversation compaction
+new_output_max_chars = 20000    # max chars of between-query output sent to the LLM
+
+# Files
+log_file = ""                   # JSONL log of queries and LLM requests/responses
+raw_io_log_file = ""            # raw terminal I/O log (for debugging)
+dangerous_patterns_file = ""    # extra dangerous-command regex file
+```
 
 
 ## Architecture
 
 `expecto` is implemented as a transparent `pty` wrapper, so it
 captures all terminal I/O below it. This is what makes it
-shell-agnostic.  Also, `expecto` can control remote machines through
-SSH. Remote machines are not only Linux machines but also
-anything with a CLI, such as network devices.
+shell-agnostic. Also, `expecto` can control remote machines through
+SSH. Remote machines are not only Linux machines but also anything
+with a CLI, such as network devices.
 
