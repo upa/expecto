@@ -1,6 +1,9 @@
 # 非同期化 (asyncio) 設計ドキュメント
 
 - ステータス: 実装済み (§11 の全ステップ完了)
+- 注: 本ドキュメントは select+thread → asyncio 移行時点の記述であり、その後の
+  変更 (completion mode の削除、working summary の廃止 — `DESIGN-Chain.md` 参照)
+  は反映していない。並行処理の設計原則 (§2〜§6) は現在も有効。
 - 親ドキュメント: `DESIGN.md`
 - 本ドキュメントは expecto の並行処理基盤を select + thread から asyncio 単一スレッドへ
   移行するための詳細設計。実装はこちらを正とする。

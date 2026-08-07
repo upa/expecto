@@ -6,7 +6,7 @@ import os
 import socket
 from collections.abc import AsyncIterator, Callable, Coroutine
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Literal, cast
+from typing import Literal, cast
 
 import pytest
 
@@ -19,23 +19,13 @@ from expecto.llm_client import (
     RunCommandParams,
     SendControlParams,
     StepResult,
-    SummaryResult,
 )
 from expecto.screen_buffer import ScreenBuffer
-from expecto.working_summary import WorkingSummaryManager
-
-if TYPE_CHECKING:
-    from openai.types.responses import ResponseInputParam
 
 HOTKEY = bytes([0x1F])
 ENTER = bytes([0x0D])
 
 MakeHarness = Callable[..., Coroutine[object, object, "Harness"]]
-
-
-def _item_dict(item: object) -> dict[str, object]:
-    """Narrow a ResponseInputParam item (a large TypedDict union) for key access."""
-    return cast("dict[str, object]", item)
 
 
 def _cmd_result(step: int, command: str) -> StepResult:
@@ -48,7 +38,6 @@ def _cmd_result(step: int, command: str) -> StepResult:
             ),
         ],
         final_text=None,
-        response_id=f"resp_{step}",
     )
 
 
@@ -62,16 +51,11 @@ def _control_result(step: int, key: Literal["ctrl-c", "ctrl-d", "ctrl-z"]) -> St
             ),
         ],
         final_text=None,
-        response_id=f"resp_{step}",
     )
 
 
-def _final_result(step: int, text: str) -> StepResult:
-    return StepResult(
-        tool_calls=[],
-        final_text=text,
-        response_id=f"resp_{step}",
-    )
+def _final_result(text: str) -> StepResult:
+    return StepResult(tool_calls=[], final_text=text)
 
 
 def _risky_cmd_result(step: int, command: str, risk: str = "destructive") -> StepResult:
@@ -88,52 +72,66 @@ def _risky_cmd_result(step: int, command: str, risk: str = "destructive") -> Ste
             ),
         ],
         final_text=None,
-        response_id=f"resp_{step}",
     )
 
 
 class FakeLLMClient:
+    """Implements the LLMStepper protocol: serves canned StepResults and
+    records queries and tool outputs like the real conversation-owning
+    client."""
+
     def __init__(self, results: list[StepResult] | None = None) -> None:
         self._results = results or []
-        self._call_count = 0
         self._write_output: Callable[[bytes], None] | None = None
-        self.last_screen_text: str = ""
-        self.last_query: str = ""
-        self.last_working_summary: str | None = None
-        self.step_calls: list[tuple[ResponseInputParam, str | None]] = []
+        self.step_count = 0
+        self.finish_calls = 0
+        self.queries: list[str] = []
+        self.screen_texts: list[str] = []
+        self.new_outputs: list[str | None] = []
+        self.tool_outputs: list[tuple[str, str]] = []
+
+    @property
+    def last_screen_text(self) -> str | None:
+        return self.screen_texts[-1] if self.screen_texts else None
+
+    @property
+    def last_new_output(self) -> str | None:
+        return self.new_outputs[-1] if self.new_outputs else None
 
     def set_output_sink(self, write: Callable[[bytes], None]) -> None:
         """Wire the fake to the harness: tool-call steps write simulated
         command output to the fake child."""
         self._write_output = write
 
-    async def step(
+    async def start_query(
         self,
-        input_items: ResponseInputParam,
-        previous_response_id: str | None = None,
-        working_summary: str | None = None,
+        query: str,
+        *,
+        screen_text: str,
+        new_output: str | None = None,
         on_delta: Callable[[str], None] | None = None,
     ) -> StepResult:
-        self.last_working_summary = working_summary
-        self.step_calls.append((list(input_items), previous_response_id))
-        result = self._results[self._call_count]
-        self._call_count += 1
+        self.queries.append(query)
+        self.screen_texts.append(screen_text)
+        self.new_outputs.append(new_output)
+        return await self.step(on_delta=on_delta)
+
+    def add_tool_output(self, call_id: str, output: str) -> None:
+        self.tool_outputs.append((call_id, output))
+
+    async def step(
+        self, on_delta: Callable[[str], None] | None = None,
+    ) -> StepResult:
+        result = self._results[self.step_count]
+        self.step_count += 1
         if result.tool_calls and self._write_output is not None:
             self._write_output(
-                f"output from step {self._call_count}\n".encode(),
+                f"output from step {self.step_count}\n".encode(),
             )
         return result
 
-    def build_initial_messages(
-        self,
-        query: str,
-        screen_text: str,
-    ) -> ResponseInputParam:
-        self.last_query = query
-        self.last_screen_text = screen_text
-        return [
-            {"role": "user", "content": f"goal: {query}\nscreen: {screen_text}"},
-        ]
+    def finish_query(self) -> None:
+        self.finish_calls += 1
 
 
 class StreamingFakeLLM(FakeLLMClient):
@@ -145,18 +143,12 @@ class StreamingFakeLLM(FakeLLMClient):
         self._chunks = chunks
 
     async def step(
-        self,
-        input_items: ResponseInputParam,
-        previous_response_id: str | None = None,
-        working_summary: str | None = None,
-        on_delta: Callable[[str], None] | None = None,
+        self, on_delta: Callable[[str], None] | None = None,
     ) -> StepResult:
         if on_delta is not None:
-            for chunk in self._chunks[self._call_count]:
+            for chunk in self._chunks[self.step_count]:
                 on_delta(chunk)
-        return await super().step(
-            input_items, previous_response_id, working_summary, on_delta,
-        )
+        return await super().step(on_delta=on_delta)
 
 
 @dataclass
@@ -178,7 +170,9 @@ class Harness:
     exec_task: asyncio.Task[None] | None = None
 
     def start(self, query: str = "go") -> None:
-        """Enter query mode via the hotkey and submit the query."""
+        """Enter query mode via the hotkey and submit the query. Resets
+        exec_task so wait_done() waits for this query's execution."""
+        self.exec_task = None
         os.write(self.stdin_w, HOTKEY + query.encode() + ENTER)
 
     def user_types(self, data: bytes) -> None:
@@ -242,8 +236,8 @@ async def make_harness() -> AsyncIterator[MakeHarness]:
         history_lines: int = 500,
         confirm_level: ConfirmLevel = "destructive",
         dangerous_matcher: DangerousCommandMatcher | None = None,
-        working_summary: WorkingSummaryManager | None = None,
         screen: ScreenBuffer | None = None,
+        new_output_max_chars: int = 20000,
     ) -> Harness:
         screen = screen if screen is not None else ScreenBuffer()
         expecto_sock, child_sock = socket.socketpair()
@@ -274,9 +268,9 @@ async def make_harness() -> AsyncIterator[MakeHarness]:
             threshold_ms=threshold_ms,
             max_steps=max_steps,
             history_lines=history_lines,
-            working_summary=working_summary,
             confirm_level=confirm_level,
             dangerous_matcher=dangerous_matcher,
+            new_output_max_chars=new_output_max_chars,
         )
         run_task = asyncio.create_task(
             relay.run(expecto_sock.fileno(), stdin_fd=stdin_r, stdout_fd=stdout_w),
@@ -312,7 +306,7 @@ async def make_harness() -> AsyncIterator[MakeHarness]:
 class TestExecution:
     async def test_done_immediately(self, make_harness: MakeHarness) -> None:
         """LLM returns done on first step — no tool call, just done message."""
-        fake_llm = FakeLLMClient(results=[_final_result(1, "task complete")])
+        fake_llm = FakeLLMClient(results=[_final_result("task complete")])
         harness = await make_harness(fake_llm)
         harness.start("say hello")
         await harness.wait_done()
@@ -322,7 +316,7 @@ class TestExecution:
 
     async def test_empty_final_text(self, make_harness: MakeHarness) -> None:
         """A final response with no text still shows an end marker."""
-        fake_llm = FakeLLMClient(results=[_final_result(1, "")])
+        fake_llm = FakeLLMClient(results=[_final_result("")])
         harness = await make_harness(fake_llm)
         harness.start("do something")
         await harness.wait_done()
@@ -334,7 +328,7 @@ class TestExecution:
         """LLM calls run_command then returns done — settle wait between steps."""
         fake_llm = FakeLLMClient(results=[
             _cmd_result(1, "ls"),
-            _final_result(2, "complete"),
+            _final_result("complete"),
         ])
         harness = await make_harness(fake_llm)
         harness.start("list then finish")
@@ -349,7 +343,7 @@ class TestExecution:
         """LLM calls send_control with ctrl-c, then done."""
         fake_llm = FakeLLMClient(results=[
             _control_result(1, "ctrl-c"),
-            _final_result(2, "stopped it"),
+            _final_result("stopped it"),
         ])
         harness = await make_harness(fake_llm)
         harness.start("stop it")
@@ -374,7 +368,7 @@ class TestExecution:
         await asyncio.wait_for(pump, timeout=5)
 
         out = harness.output()
-        assert len(fake_llm.step_calls) == max_steps
+        assert fake_llm.step_count == max_steps
         assert f"reached step {max_steps}".encode() in out
         assert b"continue? (y/n)" in out
         assert f"[expecto stopped at step {max_steps}]".encode() in out
@@ -393,12 +387,7 @@ class TestExecution:
         await harness.wait_done()
         await asyncio.wait_for(pump, timeout=5)
 
-        assert len(fake_llm.step_calls) == 4
-        # The chain is kept across the checkpoint: step 3 receives the
-        # response id of step 2.
-        _, prev_id_step3 = fake_llm.step_calls[2]
-        assert prev_id_step3 == "resp_2"
-
+        assert fake_llm.step_count == 4
         out = harness.output()
         assert b"reached step 2" in out
         assert b"reached step 4" in out
@@ -415,7 +404,7 @@ class TestExecution:
         await harness.wait_done()
         await asyncio.wait_for(pump, timeout=5)
 
-        assert len(fake_llm.step_calls) == 1
+        assert fake_llm.step_count == 1
         assert b"[expecto stopped at step 1]" in harness.output()
 
     async def test_ctrl_c_interrupt_during_settle(self, make_harness: MakeHarness) -> None:
@@ -427,7 +416,7 @@ class TestExecution:
         harness.user_types(b"\x03")
         await harness.wait_done()
 
-        assert len(fake_llm.step_calls) == 1
+        assert fake_llm.step_count == 1
         assert b"[expecto interrupted]" in harness.output()
 
     async def test_ctrl_c_during_llm_call(self, make_harness: MakeHarness) -> None:
@@ -441,13 +430,9 @@ class TestExecution:
                 self.was_cancelled = False
 
             async def step(
-                self,
-                input_items: ResponseInputParam,
-                previous_response_id: str | None = None,
-                working_summary: str | None = None,
-                on_delta: Callable[[str], None] | None = None,
+                self, on_delta: Callable[[str], None] | None = None,
             ) -> StepResult:
-                self.step_calls.append((list(input_items), previous_response_id))
+                self.step_count += 1
                 self.entered.set()
                 try:
                     await asyncio.Event().wait()
@@ -467,46 +452,9 @@ class TestExecution:
         assert fake_llm.was_cancelled  # the in-flight call was truly cancelled
         assert b"[expecto interrupted]" in harness.output()
 
-    async def test_ctrl_c_during_summary_generation(self, make_harness: MakeHarness) -> None:
-        """Ctrl-C during the pre-query working summary generation aborts
-        the execution before any LLM step runs."""
-
-        class BlockingSummaryLLM:
-            def __init__(self) -> None:
-                self.entered = asyncio.Event()
-
-            async def summarize(
-                self,
-                previous: SummaryResult | None,
-                new_output: str,
-                truncated: bool = False,
-            ) -> SummaryResult:
-                self.entered.set()
-                await asyncio.Event().wait()
-                raise AssertionError("unreachable")
-
-        screen = ScreenBuffer(rows=3, cols=40)
-        for i in range(20):
-            screen.feed(f"line {i}\r\n".encode())
-        summary_llm = BlockingSummaryLLM()
-        manager = WorkingSummaryManager(
-            llm_client=summary_llm,
-            screen_buffer=screen,
-            trigger_lines=5,
-        )
-        fake_llm = FakeLLMClient(results=[_final_result(1, "x")])
-        harness = await make_harness(fake_llm, working_summary=manager, screen=screen)
-        harness.start("run something")
-        await asyncio.wait_for(summary_llm.entered.wait(), timeout=5)
-        harness.user_types(b"\x03")
-        await harness.wait_done()
-
-        assert fake_llm.step_calls == []  # the LLM step was never reached
-        assert b"[expecto interrupted]" in harness.output()
-
     async def test_thinking_indicator(self, make_harness: MakeHarness) -> None:
         """The thinking indicator is shown while the LLM call is in flight."""
-        fake_llm = FakeLLMClient(results=[_final_result(1, "done")])
+        fake_llm = FakeLLMClient(results=[_final_result("done")])
         harness = await make_harness(fake_llm)
         harness.start("test")
         await harness.wait_done()
@@ -516,7 +464,7 @@ class TestExecution:
     async def test_multiline_explanation_uses_crlf(self, make_harness: MakeHarness) -> None:
         """Newlines in the final explanation are written as CRLF (raw mode has no ONLCR)."""
         fake_llm = FakeLLMClient(results=[
-            _final_result(1, "Summary:\n- item one\n- item two"),
+            _final_result("Summary:\n- item one\n- item two"),
         ])
         harness = await make_harness(fake_llm)
         harness.start("summarize")
@@ -527,31 +475,23 @@ class TestExecution:
         end_marker = out[out.index(b"[Summary:"):]
         assert b"\r\n" in end_marker
 
-    async def test_tool_output_chaining(self, make_harness: MakeHarness) -> None:
-        """Tool results are sent back as function_call_output with previous_response_id."""
+    async def test_tool_output_recorded_on_conversation(self, make_harness: MakeHarness) -> None:
+        """The query starts the conversation and each tool call's result is
+        recorded before the follow-up step."""
         fake_llm = FakeLLMClient(results=[
             _cmd_result(1, "ls"),
-            _final_result(2, "done"),
+            _final_result("done"),
         ])
         harness = await make_harness(fake_llm)
         harness.screen.feed(b"$ ")
         harness.start("test history")
         await harness.wait_done()
 
-        assert len(fake_llm.step_calls) == 2
-
-        first_items, first_prev_id = fake_llm.step_calls[0]
-        assert first_prev_id is None
-        assert len(first_items) == 1
-        assert "goal:" in str(_item_dict(first_items[0])["content"])
-
-        second_items, second_prev_id = fake_llm.step_calls[1]
-        assert second_prev_id == "resp_1"
-        assert len(second_items) == 1
-        second = _item_dict(second_items[0])
-        assert second["type"] == "function_call_output"
-        assert second["call_id"] == "call_1"
-        output = str(second["output"])
+        assert fake_llm.step_count == 2
+        assert fake_llm.queries == ["test history"]
+        assert len(fake_llm.tool_outputs) == 1
+        call_id, output = fake_llm.tool_outputs[0]
+        assert call_id == "call_1"
         assert "Terminal Output" in output
         assert "output from step 1" in output
 
@@ -561,14 +501,13 @@ class TestExecution:
         screen.feed(b"previous command output\r\nuser@host:~$ ")
         fake_llm = FakeLLMClient(results=[
             _cmd_result(1, "echo hi"),
-            _final_result(2, "done"),
+            _final_result("done"),
         ])
         harness = await make_harness(fake_llm, screen=screen)
         harness.start("say hi")
         await harness.wait_done()
 
-        second_items, _ = fake_llm.step_calls[1]
-        output = str(_item_dict(second_items[0])["output"])
+        _, output = fake_llm.tool_outputs[0]
         assert "output from step 1" in output
         assert "previous command output" not in output
 
@@ -576,7 +515,7 @@ class TestExecution:
         """The echoed command is bracketed in gray; reset follows the first newline."""
         fake_llm = FakeLLMClient(results=[
             _cmd_result(1, "ls"),
-            _final_result(2, "done"),
+            _final_result("done"),
         ])
         harness = await make_harness(fake_llm)
         harness.screen.feed(b"$ ")
@@ -594,22 +533,17 @@ class TestExecution:
 
         class NoNewlineLLM(FakeLLMClient):
             async def step(
-                self,
-                input_items: ResponseInputParam,
-                previous_response_id: str | None = None,
-                working_summary: str | None = None,
-                on_delta: Callable[[str], None] | None = None,
+                self, on_delta: Callable[[str], None] | None = None,
             ) -> StepResult:
-                self.step_calls.append((list(input_items), previous_response_id))
-                result = self._results[self._call_count]
-                self._call_count += 1
+                result = self._results[self.step_count]
+                self.step_count += 1
                 if result.tool_calls and self._write_output is not None:
                     self._write_output(b"partial echo")
                 return result
 
         fake_llm = NoNewlineLLM(results=[
             _cmd_result(1, "ls"),
-            _final_result(2, "done"),
+            _final_result("done"),
         ])
         harness = await make_harness(fake_llm)
         harness.start("list files")
@@ -630,9 +564,8 @@ class TestExecution:
                     ),
                 ],
                 final_text=None,
-                response_id="resp_1",
             ),
-            _final_result(2, "done"),
+            _final_result("done"),
         ])
         harness = await make_harness(fake_llm)
         harness.start("do something")
@@ -641,17 +574,15 @@ class TestExecution:
         # No command was written to the pty, only the nudge and trailing newline.
         assert harness.pty_written == [b"\n", b"\n"]
 
-        second_items, _ = fake_llm.step_calls[1]
-        second = _item_dict(second_items[0])
-        assert second["type"] == "function_call_output"
-        assert second["call_id"] == "call_1"
-        assert str(second["output"]).startswith("Error:")
+        call_id, output = fake_llm.tool_outputs[0]
+        assert call_id == "call_1"
+        assert output.startswith("Error:")
 
     async def test_threshold_note_in_tool_output(self, make_harness: MakeHarness) -> None:
         """When output keeps flowing past the threshold, the tool output carries a note."""
         fake_llm = FakeLLMClient(results=[
             _cmd_result(1, "long-running"),
-            _final_result(2, "done"),
+            _final_result("done"),
         ])
         harness = await make_harness(fake_llm, settle_ms=500, threshold_ms=50)
         stop = asyncio.Event()
@@ -669,8 +600,7 @@ class TestExecution:
             stop.set()
             await writer
 
-        second_items, _ = fake_llm.step_calls[1]
-        output = str(_item_dict(second_items[0])["output"])
+        _, output = fake_llm.tool_outputs[0]
         assert "Terminal Output" in output
         assert "[Note] Output did not settle" in output
 
@@ -679,11 +609,12 @@ class TestExecution:
         screen = ScreenBuffer(rows=3, cols=40, scrollback_lines=50)
         for i in range(20):
             screen.feed(f"line {i}\r\n".encode())
-        fake_llm = FakeLLMClient(results=[_final_result(1, "done")])
+        fake_llm = FakeLLMClient(results=[_final_result("done")])
         harness = await make_harness(fake_llm, history_lines=5, screen=screen)
         harness.start("where am i")
         await harness.wait_done()
 
+        assert fake_llm.last_screen_text is not None
         lines = fake_llm.last_screen_text.split("\n")
         assert len(lines) == 5
         assert "line 0" not in fake_llm.last_screen_text
@@ -694,7 +625,7 @@ class TestStreamingFinalDisplay:
         """Streamed deltas erase the thinking overlay, open the gray
         gray "[" prefix, and are closed with "]" and an SGR reset."""
         fake_llm = StreamingFakeLLM(
-            results=[_final_result(1, "Hello world")],
+            results=[_final_result("Hello world")],
             chunks=[["Hello ", "world"]],
         )
         harness = await make_harness(fake_llm)
@@ -710,7 +641,7 @@ class TestStreamingFinalDisplay:
     async def test_streamed_newlines_use_crlf(self, make_harness: MakeHarness) -> None:
         """Newlines in streamed deltas are normalized to CRLF (raw mode)."""
         fake_llm = StreamingFakeLLM(
-            results=[_final_result(1, "Summary:\n- one")],
+            results=[_final_result("Summary:\n- one")],
             chunks=[["Summary:\n", "- one"]],
         )
         harness = await make_harness(fake_llm)
@@ -729,11 +660,7 @@ class TestStreamingFinalDisplay:
                 self.streamed = asyncio.Event()
 
             async def step(
-                self,
-                input_items: ResponseInputParam,
-                previous_response_id: str | None = None,
-                working_summary: str | None = None,
-                on_delta: Callable[[str], None] | None = None,
+                self, on_delta: Callable[[str], None] | None = None,
             ) -> StepResult:
                 assert on_delta is not None
                 on_delta("partial answer")
@@ -756,7 +683,7 @@ class TestStreamingFinalDisplay:
         """Text streamed in a response that also carries a tool call is
         closed with "]" before the command runs; the loop continues."""
         fake_llm = StreamingFakeLLM(
-            results=[_cmd_result(1, "ls"), _final_result(2, "all done")],
+            results=[_cmd_result(1, "ls"), _final_result("all done")],
             chunks=[["checking"], ["all done"]],
         )
         harness = await make_harness(fake_llm)
@@ -796,7 +723,7 @@ class TestDangerousCommandConfirmation:
     async def test_destructive_confirmed_y_runs(self, make_harness: MakeHarness) -> None:
         _, harness = await self._run_gate(
             make_harness,
-            [_risky_cmd_result(1, "reload"), _final_result(2, "finished")],
+            [_risky_cmd_result(1, "reload"), _final_result("finished")],
             [b"y"],
         )
         assert b"reload\n" in harness.pty_written
@@ -806,21 +733,21 @@ class TestDangerousCommandConfirmation:
         """'n' does not abort the loop: the LLM gets a declined tool result."""
         fake_llm, harness = await self._run_gate(
             make_harness,
-            [_risky_cmd_result(1, "reload"), _final_result(2, "gave up")],
+            [_risky_cmd_result(1, "reload"), _final_result("gave up")],
             [b"n"],
         )
         assert b"reload\n" not in harness.pty_written
-        assert len(fake_llm.step_calls) == 2
-        second_input, _ = fake_llm.step_calls[1]
-        output_item = _item_dict(second_input[0])
-        assert "user declined" in str(output_item["output"])
+        assert fake_llm.step_count == 2
+        call_id, output = fake_llm.tool_outputs[0]
+        assert call_id == "call_1"
+        assert "user declined" in output
 
     async def test_read_only_not_confirmed(self, make_harness: MakeHarness) -> None:
         _, harness = await self._run_gate(
             make_harness,
             [
                 _risky_cmd_result(1, "ls -la", risk="read_only"),
-                _final_result(2, "finished"),
+                _final_result("finished"),
             ],
             [],
         )
@@ -832,7 +759,7 @@ class TestDangerousCommandConfirmation:
             make_harness,
             [
                 _risky_cmd_result(1, "touch /tmp/x", risk="mutating"),
-                _final_result(2, "finished"),
+                _final_result("finished"),
             ],
             [],
         )
@@ -844,7 +771,7 @@ class TestDangerousCommandConfirmation:
             make_harness,
             [
                 _risky_cmd_result(1, "touch /tmp/x", risk="mutating"),
-                _final_result(2, "finished"),
+                _final_result("finished"),
             ],
             [b"y"],
             confirm_level="mutating",
@@ -855,7 +782,7 @@ class TestDangerousCommandConfirmation:
     async def test_confirm_level_none_skips_confirmation(self, make_harness: MakeHarness) -> None:
         _, harness = await self._run_gate(
             make_harness,
-            [_risky_cmd_result(1, "reload"), _final_result(2, "finished")],
+            [_risky_cmd_result(1, "reload"), _final_result("finished")],
             [],
             confirm_level="none",
         )
@@ -869,7 +796,7 @@ class TestDangerousCommandConfirmation:
             make_harness,
             [
                 _risky_cmd_result(1, "write erase", risk="read_only"),
-                _final_result(2, "finished"),
+                _final_result("finished"),
             ],
             [b"n"],
             with_matcher=True,
@@ -884,7 +811,7 @@ class TestDangerousCommandConfirmation:
         the async design a vanished stdin ends the whole session.)"""
         fake_llm = FakeLLMClient(results=[
             _risky_cmd_result(1, "reload"),
-            _final_result(2, "gave up"),
+            _final_result("gave up"),
         ])
         harness = await make_harness(fake_llm)
         harness.start("do something")
@@ -896,48 +823,118 @@ class TestDangerousCommandConfirmation:
         assert b"[expecto interrupted]" in harness.output()
 
 
-class TestWorkingSummaryIntegration:
-    def _make_summary_manager(
-        self, screen: ScreenBuffer,
-    ) -> WorkingSummaryManager:
-        class FakeSummaryLLM:
-            async def summarize(
-                self,
-                previous: SummaryResult | None,
-                new_output: str,
-                truncated: bool = False,
-            ) -> SummaryResult:
-                return SummaryResult(
-                    environment="ssh to router1 (Junos)",
-                    activities="checking BGP",
-                    notes="none",
-                )
 
-        return WorkingSummaryManager(
-            llm_client=FakeSummaryLLM(),
-            screen_buffer=screen,
-            trigger_lines=5,
-        )
-
-    async def test_passes_summary_to_llm(self, make_harness: MakeHarness) -> None:
-        screen = ScreenBuffer(rows=3, cols=40, scrollback_lines=50)
-        for i in range(20):
-            screen.feed(f"line {i}\r\n".encode())
-        manager = self._make_summary_manager(screen)
-        fake_llm = FakeLLMClient(results=[_final_result(1, "finished")])
-        harness = await make_harness(fake_llm, working_summary=manager, screen=screen)
-        harness.start("check bgp")
-        await harness.wait_done()
-
-        summary = fake_llm.last_working_summary
-        assert summary is not None
-        assert "## Session Context" in summary
-        assert "Junos" in summary
-
-    async def test_without_manager_passes_none(self, make_harness: MakeHarness) -> None:
-        fake_llm = FakeLLMClient(results=[_final_result(1, "finished")])
+class TestQueryContext:
+    async def test_first_query_has_screen_no_delta(self, make_harness: MakeHarness) -> None:
+        """The first query carries the full screen; there is no previous
+        execution to diff against."""
+        fake_llm = FakeLLMClient(results=[_final_result("one")])
         harness = await make_harness(fake_llm)
-        harness.start("where am i")
+        harness.screen.feed(b"$ ")
+        harness.start("first")
         await harness.wait_done()
 
-        assert fake_llm.last_working_summary is None
+        assert fake_llm.last_screen_text is not None
+        assert "$" in fake_llm.last_screen_text
+        assert fake_llm.last_new_output is None
+
+    async def test_second_query_carries_inter_query_output(self, make_harness: MakeHarness) -> None:
+        """Output produced between queries (the user's manual activity) is
+        passed as new_output with the next query."""
+        fake_llm = FakeLLMClient(results=[_final_result("one"), _final_result("two")])
+        harness = await make_harness(fake_llm)
+        harness.start("first")
+        await harness.wait_done()
+
+        harness.child_writes(b"manual command output\r\n")
+        await _until(lambda: b"manual command output" in harness.output())
+        harness.start("second")
+        await harness.wait_done()
+
+        assert fake_llm.queries == ["first", "second"]
+        assert fake_llm.last_new_output is not None
+        assert "manual command output" in fake_llm.last_new_output
+
+    async def test_no_delta_when_nothing_happened(self, make_harness: MakeHarness) -> None:
+        fake_llm = FakeLLMClient(results=[_final_result("one"), _final_result("two")])
+        harness = await make_harness(fake_llm)
+        harness.start("first")
+        await harness.wait_done()
+        harness.start("second")
+        await harness.wait_done()
+
+        assert fake_llm.last_new_output is None
+
+    async def test_new_output_capped_tail_kept(self, make_harness: MakeHarness) -> None:
+        """Inter-query output longer than new_output_max_chars keeps the
+        tail and carries a truncation note."""
+        fake_llm = FakeLLMClient(results=[_final_result("one"), _final_result("two")])
+        harness = await make_harness(fake_llm, new_output_max_chars=60)
+        harness.start("first")
+        await harness.wait_done()
+
+        for i in range(20):
+            harness.child_writes(f"line-{i:02d}\r\n".encode())
+        await _until(lambda: b"line-19" in harness.output())
+        harness.start("second")
+        await harness.wait_done()
+
+        new_output = fake_llm.last_new_output
+        assert new_output is not None
+        assert new_output.startswith("[... earlier output truncated ...]\n")
+        assert "line-19" in new_output
+        body = new_output.removeprefix("[... earlier output truncated ...]\n")
+        assert len(body) <= 60
+
+
+class TestConversationIntegrity:
+    """Every tool call must get a recorded output, even across stops and
+    interrupts, so the conversation never carries an unanswered call."""
+
+    async def test_checkpoint_stop_keeps_outputs_recorded(self, make_harness: MakeHarness) -> None:
+        fake_llm = FakeLLMClient(results=[_cmd_result(1, "cmd1"), _final_result("done")])
+        harness = await make_harness(fake_llm, max_steps=1)
+        pump = asyncio.create_task(
+            harness.answer_prompts(b"continue? (y/n)", [b"n"]),
+        )
+        harness.start("first")
+        await harness.wait_done()
+        await asyncio.wait_for(pump, timeout=5)
+        assert b"[expecto stopped at step 1]" in harness.output()
+
+        assert len(fake_llm.tool_outputs) == 1
+        assert fake_llm.tool_outputs[0][0] == "call_1"
+
+    async def test_interrupted_command_records_partial_output(self, make_harness: MakeHarness) -> None:
+        """Ctrl-C during a command records the output collected so far as
+        the call's result."""
+        fake_llm = FakeLLMClient(results=[_cmd_result(1, "sleep 100")])
+        harness = await make_harness(fake_llm, settle_ms=200, threshold_ms=30000)
+        harness.start("run it")
+        await _until(lambda: b"sleep 100\n" in harness.pty_written)
+        harness.user_types(b"\x03")
+        await harness.wait_done()
+        assert b"[expecto interrupted]" in harness.output()
+
+        assert len(fake_llm.tool_outputs) == 1
+        call_id, output = fake_llm.tool_outputs[0]
+        assert call_id == "call_1"
+        assert "interrupted" in output.lower()
+
+    async def test_finish_query_called_on_every_ending(self, make_harness: MakeHarness) -> None:
+        """finish_query() fires after a normal end and after an interrupt,
+        so the client can compact in the background at either ending."""
+        fake_llm = FakeLLMClient(results=[
+            _final_result("done"),
+            _cmd_result(2, "sleep 100"),
+        ])
+        harness = await make_harness(fake_llm, settle_ms=200, threshold_ms=30000)
+        harness.start("first")
+        await harness.wait_done()
+        assert fake_llm.finish_calls == 1
+
+        harness.start("second")
+        await _until(lambda: b"sleep 100\n" in harness.pty_written)
+        harness.user_types(b"\x03")
+        await harness.wait_done()
+        assert fake_llm.finish_calls == 2

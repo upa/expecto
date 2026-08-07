@@ -10,7 +10,7 @@ Key differentiator: wraps the **tty itself**, not a specific shell — works ove
 
 ## Status
 
-Core loop complete (LLMClient with Responses API function calling — `run_command` / `send_control` tools, Executor tool-call loop, idle-timer settle detection). The final response is plain text streamed to the terminal as it arrives (`responses.stream()`, shown gray in `[...]`). A former one-shot "completion mode" has been removed; the command-execute-observe loop is expecto's sole behavior. Working Summary implemented (`working_summary.py`, see `design/DESIGN-WorkingSummary.md`). Concurrency is a single-threaded asyncio event loop — one always-on relay pump, executions as cancellable tasks, no threads/locks (see `design/DESIGN-Async.md`). `design/DESIGN.md` is the authoritative specification.
+Core loop complete (LLMClient with Chat Completions function calling — `run_command` / `send_control` tools, Executor tool-call loop, idle-timer settle detection). The final response is plain text streamed to the terminal as it arrives (`chat.completions.stream()`, shown gray in `[...]`). A former one-shot "completion mode" has been removed; the command-execute-observe loop is expecto's sole behavior. The LLMClient owns the message history, which spans the whole session (append-only for prompt-cache hits) and is compacted transparently into a handoff summary past a token threshold (see `design/DESIGN-Conversation.md`). Concurrency is a single-threaded asyncio event loop — one always-on relay pump, executions as cancellable tasks, no threads/locks (see `design/DESIGN-Async.md`). `design/DESIGN.md` is the authoritative specification.
 
 ### TODO
 
@@ -38,12 +38,11 @@ Core components (each a separate module under `src/expecto/`):
 - `response_filter` — recognizes terminal→application response sequences (CPR/DA/OSC/DCS replies) in stdin so they reach the child while stdin is withheld in query/executing states (fish 4.x blocks on them at every prompt)
 - `screen_buffer` — pyte-based screen capture + scrollback ring buffer for LLM context
 - `query_ui` — gray inline miniprompt (`? `) drawn at the cursor position
-- `llm_client` — OpenAI Responses API via AsyncOpenAI, Structured Outputs
+- `llm_client` — Chat Completions via AsyncOpenAI; owns the session-long message history and its compaction
 - `executor` — the command-execute-observe loop (async, cancellation-based interrupts)
 - `settle` — idle-timer output settle detection (`wait_settle` coroutine, no PS1 dependency)
 - `dangerous` — regex backstop for unmistakably catastrophic commands
-- `working_summary` — session context summary (long-term memory), background asyncio task
-- `config` — env var + CLI arg merging (`~/.config/expecto/config.toml` is planned, not implemented)
+- `config` — config.toml loading (defaults < file < CLI flags), hotkey parsing, startup warnings (see `design/DESIGN-Config.md`)
 - `cli` — entry point, argparse, asyncio.run
 
 ## Build & Test
@@ -68,5 +67,5 @@ Core components (each a separate module under `src/expecto/`):
 - Settle detection is idle-timer only (no prompt markers). When settle threshold is exceeded without settling, current output is sent to LLM for decision (not treated as timeout error)
 - Dangerous command gate (3 layers): LLM self-classifies each command's risk (`read_only`/`mutating`/`destructive` in the run_command schema); a deterministic regex backstop (builtin + `~/.config/expecto/dangerous_patterns.txt`) escalates matches to destructive (escalate-only); commands at/above `--confirm-level` (default: destructive) require y/n confirmation. Decline feeds back to the LLM as a tool result, not an abort
 - The execution loop asks user confirmation (continue? y/n) every `max_steps` steps (default 15, checkpoint interval, keeps the response chain on continue) and supports Ctrl-C interrupt
-- Tool arguments are enforced via strict JSON Schema (+ Pydantic validation); the loop's final response is plain text (no Structured Outputs) so it can be streamed to the screen. Structured Outputs is still used for the working summary
+- Tool arguments are enforced via strict JSON Schema (+ Pydantic validation); the loop's final response is plain text (no Structured Outputs) so it can be streamed to the screen. Structured Outputs is still used for the compaction handoff summary
 - Design document is in Japanese; code and comments should follow whatever language convention is established

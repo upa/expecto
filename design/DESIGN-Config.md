@@ -47,12 +47,11 @@ base_url = ""                     # 未指定なら SDK 既定 (api.openai.com)
 reasoning_effort = ""             # none|minimal|low|medium|high|xhigh|max
                                   # 未指定ならリクエストに reasoning を含めない
 
-summary_model = ""                # working summary 用の軽量モデル。未指定なら model と同じ
-summary_trigger_lines = 500
-summary_max_input_lines = 2000
+compact_thresh = 100000           # 会話履歴の compaction 閾値 (prompt_tokens)
+new_output_max_chars = 20000      # query 間の新規出力差分の最大文字数
 ```
 
-- テーブル(セクション)は使わずフラットなキーのみ。summary の LLM はメインと**同じ接続(API キー・base_url・reasoning effort)を共有**し、モデルだけ `summary_model` で軽いものに差し替えられる(背景で頻繁に走るため)。
+- テーブル(セクション)は使わずフラットなキーのみ。
 - **API キーは受け付けない**: `api_key` が書かれていた場合は「環境変数 `OPENAI_API_KEY` を使え」と警告して無視する。ローカル LLM 等はキーを検証しないため base_url の変更だけで足りる。
 
 ## 4. 優先順位

@@ -1,195 +1,92 @@
+from __future__ import annotations
+
 import json
 import tempfile
 from typing import cast
 
-from openai.lib.streaming.responses import ResponseTextDeltaEvent
-from openai.types.responses import (
-    ResponseFunctionToolCall,
-    ResponseOutputMessage,
-    ResponseOutputText,
+import pytest
+from openai.lib.streaming.chat import ContentDeltaEvent
+from openai.types.chat import ChatCompletionMessage
+from openai.types.chat.chat_completion import ChatCompletion, Choice
+from openai.types.chat.chat_completion_message_function_tool_call import (
+    ChatCompletionMessageFunctionToolCall,
+    Function,
 )
-from openai.types.responses.parsed_response import ParsedResponse
+from openai.types.completion_usage import CompletionUsage
 
 from expecto.config import ExpectoConfig
 from expecto.llm_client import (
+    COMPACT_REQUEST,
+    HandoffSummary,
     LLMClient,
     RunCommandParams,
     SendControlParams,
-    SUMMARY_SYSTEM_PROMPT,
-    SummaryResult,
     SYSTEM_PROMPT,
     TOOLS,
-    _build_summary_input,
-    _compose_instructions,
 )
 
 
-def _make_config() -> ExpectoConfig:
-    return ExpectoConfig(
+def _make_config(**overrides: object) -> ExpectoConfig:
+    config = ExpectoConfig(
         shell="/bin/bash",
         model="gpt-4o",
         openai_api_key="sk-test",
-        openai_base_url=None,
-        openai_reasoning_effort=None,
-        history_lines=200,
-        settle_ms=500,
-        threshold_ms=30000,
-        max_steps=10,
-        hotkey=0x1F,
-        raw_io_log_file=None,
-        log_file=None,
+    )
+    for key, value in overrides.items():
+        setattr(config, key, value)
+    return config
+
+
+def _function_call(
+    call_id: str, name: str, arguments: str,
+) -> ChatCompletionMessageFunctionToolCall:
+    return ChatCompletionMessageFunctionToolCall(
+        id=call_id,
+        type="function",
+        function=Function(name=name, arguments=arguments),
     )
 
 
-class TestToolParams:
-    def test_run_command_params(self) -> None:
-        params = RunCommandParams(command="ls -la")
-        assert params.command == "ls -la"
-        assert params.risk == "read_only"
-
-    def test_run_command_params_with_risk(self) -> None:
-        params = RunCommandParams(
-            command="rm -rf /tmp/work",
-            risk="destructive",
-            risk_reason="deletes files irreversibly",
-        )
-        assert params.risk == "destructive"
-        assert params.risk_reason == "deletes files irreversibly"
-
-    def test_send_control_params(self) -> None:
-        params = SendControlParams(key="ctrl-c")
-        assert params.key == "ctrl-c"
-
-
-class TestTools:
-    def test_tool_names(self) -> None:
-        names = [tool["name"] for tool in TOOLS]
-        assert names == ["run_command", "send_control"]
-
-    def test_tools_are_strict(self) -> None:
-        for tool in TOOLS:
-            assert tool["strict"] is True
-            params = tool["parameters"]
-            assert params is not None
-            assert params["additionalProperties"] is False
-
-    def test_run_command_schema_requires_risk(self) -> None:
-        run_command = TOOLS[0]
-        params = run_command["parameters"]
-        assert params is not None
-        required = cast("list[str]", params["required"])
-        assert set(required) == {"command", "risk", "risk_reason"}
-        properties = cast("dict[str, dict[str, object]]", params["properties"])
-        assert properties["risk"]["enum"] == ["read_only", "mutating", "destructive"]
-
-
-class TestParseToolCall:
-    def test_run_command(self) -> None:
-        client = LLMClient(_make_config())
-        item = ResponseFunctionToolCall(
-            type="function_call",
-            call_id="call_1",
-            name="run_command",
-            arguments='{"command": "df -h", "risk": "read_only", "risk_reason": "only reads disk usage"}',
-        )
-        parsed = client._parse_tool_call(item)
-        assert parsed.call_id == "call_1"
-        assert parsed.name == "run_command"
-        assert isinstance(parsed.params, RunCommandParams)
-        assert parsed.params.command == "df -h"
-        assert parsed.params.risk == "read_only"
-        assert parsed.error is None
-
-    def test_send_control(self) -> None:
-        client = LLMClient(_make_config())
-        item = ResponseFunctionToolCall(
-            type="function_call",
-            call_id="call_2",
-            name="send_control",
-            arguments='{"key": "ctrl-c"}',
-        )
-        parsed = client._parse_tool_call(item)
-        assert isinstance(parsed.params, SendControlParams)
-        assert parsed.params.key == "ctrl-c"
-        assert parsed.error is None
-
-    def test_unknown_tool(self) -> None:
-        client = LLMClient(_make_config())
-        item = ResponseFunctionToolCall(
-            type="function_call",
-            call_id="call_3",
-            name="nonexistent",
-            arguments="{}",
-        )
-        parsed = client._parse_tool_call(item)
-        assert parsed.params is None
-        assert parsed.error is not None
-        assert "unknown tool" in parsed.error
-
-    def test_invalid_arguments(self) -> None:
-        client = LLMClient(_make_config())
-        item = ResponseFunctionToolCall(
-            type="function_call",
-            call_id="call_4",
-            name="send_control",
-            arguments='{"key": "ctrl-x"}',
-        )
-        parsed = client._parse_tool_call(item)
-        assert parsed.params is None
-        assert parsed.error is not None
-        assert "invalid arguments" in parsed.error
-
-
-def _text_delta_event(delta: str, snapshot: str) -> ResponseTextDeltaEvent:
-    return ResponseTextDeltaEvent(
-        type="response.output_text.delta",
-        content_index=0,
-        delta=delta,
-        item_id="msg_1",
-        logprobs=[],
-        output_index=0,
-        sequence_number=0,
-        snapshot=snapshot,
+def _delta_event(delta: str, snapshot: str) -> ContentDeltaEvent:
+    return ContentDeltaEvent(
+        type="content.delta", delta=delta, snapshot=snapshot, parsed=None,
     )
 
 
-def _message_item(text: str) -> ResponseOutputMessage:
-    return ResponseOutputMessage(
-        id="msg_1",
-        type="message",
-        role="assistant",
-        status="completed",
-        content=[ResponseOutputText(type="output_text", text=text, annotations=[])],
+def _completion(
+    message: ChatCompletionMessage,
+    prompt_tokens: int | None = None,
+) -> ChatCompletion:
+    usage = (
+        CompletionUsage.model_construct(prompt_tokens=prompt_tokens)
+        if prompt_tokens is not None
+        else None
+    )
+    return ChatCompletion.model_construct(
+        id="cmpl_1",
+        choices=[Choice.model_construct(message=message)],
+        usage=usage,
     )
 
 
-def _run_command_item(call_id: str, command: str) -> ResponseFunctionToolCall:
-    arguments = json.dumps(
-        {"command": command, "risk": "read_only", "risk_reason": "test"},
-    )
-    return ResponseFunctionToolCall(
-        type="function_call",
-        call_id=call_id,
-        name="run_command",
-        arguments=arguments,
-    )
+def _final_message(text: str) -> ChatCompletionMessage:
+    return ChatCompletionMessage.model_construct(role="assistant", content=text)
 
 
-def _parsed_response(
-    output: list[object], response_id: str = "resp_1",
-) -> ParsedResponse[None]:
-    return cast(
-        "ParsedResponse[None]",
-        ParsedResponse.model_construct(id=response_id, output=output),
+def _tool_call_message(
+    *calls: ChatCompletionMessageFunctionToolCall,
+) -> ChatCompletionMessage:
+    return ChatCompletionMessage.model_construct(
+        role="assistant", content=None, tool_calls=list(calls),
     )
 
 
 class _FakeStream:
-    """Stands in for the AsyncResponseStreamManager returned by
-    client.responses.stream(): async context manager, async iterator of
-    events, and get_final_response()."""
+    """Stands in for the AsyncChatCompletionStreamManager returned by
+    client.chat.completions.stream(): async context manager, async
+    iterator of events, and get_final_completion()."""
 
-    def __init__(self, events: list[object], final: ParsedResponse[None]) -> None:
+    def __init__(self, events: list[object], final: ChatCompletion) -> None:
         self._events = events
         self._final = final
 
@@ -207,150 +104,353 @@ class _FakeStream:
             raise StopAsyncIteration
         return self._events.pop(0)
 
-    async def get_final_response(self) -> ParsedResponse[None]:
+    async def get_final_completion(self) -> ChatCompletion:
         return self._final
 
 
-class TestStep:
-    def _client_with_fake_stream(
-        self,
-        events: list[object],
-        final: ParsedResponse[None],
-    ) -> tuple[LLMClient, dict[str, object]]:
+def _client_with_fake_stream(
+    responses: list[tuple[list[object], ChatCompletion]],
+) -> tuple[LLMClient, list[dict[str, object]]]:
+    """An LLMClient whose stream() serves canned responses; every call's
+    kwargs are captured (messages are copied at call time)."""
+    client = LLMClient(_make_config())
+    captured: list[dict[str, object]] = []
+    queue = list(responses)
+
+    def fake_stream(**kwargs: object) -> _FakeStream:
+        kwargs["messages"] = list(cast("list[object]", kwargs["messages"]))
+        captured.append(kwargs)
+        events, final = queue.pop(0)
+        return _FakeStream(list(events), final)
+
+    setattr(client._client.chat.completions, "stream", fake_stream)  # noqa: B010
+    return client, captured
+
+
+def _msg(entry: object) -> dict[str, object]:
+    return cast("dict[str, object]", entry)
+
+
+class TestToolParams:
+    def test_run_command_params(self) -> None:
+        params = RunCommandParams(command="ls -la")
+        assert params.command == "ls -la"
+        assert params.risk == "read_only"
+
+    def test_send_control_params(self) -> None:
+        params = SendControlParams(key="ctrl-c")
+        assert params.key == "ctrl-c"
+
+
+class TestTools:
+    def test_tool_names(self) -> None:
+        names = [tool["function"]["name"] for tool in TOOLS]
+        assert names == ["run_command", "send_control"]
+
+    def test_tools_are_strict(self) -> None:
+        for tool in TOOLS:
+            function = tool["function"]
+            assert function["strict"] is True
+            params = function["parameters"]
+            assert params["additionalProperties"] is False
+
+    def test_run_command_schema_requires_risk(self) -> None:
+        params = TOOLS[0]["function"]["parameters"]
+        required = cast("list[str]", params["required"])
+        assert set(required) == {"command", "risk", "risk_reason"}
+        properties = cast("dict[str, dict[str, object]]", params["properties"])
+        assert properties["risk"]["enum"] == ["read_only", "mutating", "destructive"]
+
+
+class TestParseToolCall:
+    def test_run_command(self) -> None:
         client = LLMClient(_make_config())
-        captured: dict[str, object] = {}
-
-        def fake_stream(**kwargs: object) -> _FakeStream:
-            captured.update(kwargs)
-            return _FakeStream(events, final)
-
-        setattr(client._client.responses, "stream", fake_stream)  # noqa: B010
-        return client, captured
-
-    async def test_streams_deltas_and_returns_final_text(self) -> None:
-        events: list[object] = [
-            _text_delta_event("Hello ", "Hello "),
-            _text_delta_event("world", "Hello world"),
-        ]
-        final = _parsed_response([_message_item("Hello world")])
-        client, _ = self._client_with_fake_stream(events, final)
-
-        chunks: list[str] = []
-        result = await client.step(
-            [{"role": "user", "content": "hi"}], on_delta=chunks.append,
+        item = _function_call(
+            "call_1",
+            "run_command",
+            '{"command": "df -h", "risk": "read_only", "risk_reason": "reads only"}',
         )
+        parsed = client._parse_tool_call(item)
+        assert parsed.call_id == "call_1"
+        assert parsed.name == "run_command"
+        assert isinstance(parsed.params, RunCommandParams)
+        assert parsed.params.command == "df -h"
+        assert parsed.error is None
+
+    def test_send_control(self) -> None:
+        client = LLMClient(_make_config())
+        item = _function_call("call_2", "send_control", '{"key": "ctrl-c"}')
+        parsed = client._parse_tool_call(item)
+        assert isinstance(parsed.params, SendControlParams)
+        assert parsed.params.key == "ctrl-c"
+        assert parsed.error is None
+
+    def test_unknown_tool(self) -> None:
+        client = LLMClient(_make_config())
+        parsed = client._parse_tool_call(_function_call("call_3", "nonexistent", "{}"))
+        assert parsed.params is None
+        assert parsed.error is not None
+        assert "unknown tool" in parsed.error
+
+    def test_invalid_arguments(self) -> None:
+        client = LLMClient(_make_config())
+        parsed = client._parse_tool_call(
+            _function_call("call_4", "send_control", '{"key": "ctrl-x"}'),
+        )
+        assert parsed.params is None
+        assert parsed.error is not None
+        assert "invalid arguments" in parsed.error
+
+
+class TestConversation:
+    async def test_start_query_streams_and_appends_history(self) -> None:
+        client, captured = _client_with_fake_stream([
+            (
+                [_delta_event("Hello ", "Hello "), _delta_event("world", "Hello world")],
+                _completion(_final_message("Hello world")),
+            ),
+        ])
+        chunks: list[str] = []
+        result = await client.start_query(
+            "greet", screen_text="$ ", on_delta=chunks.append,
+        )
+
         assert chunks == ["Hello ", "world"]
         assert result.final_text == "Hello world"
         assert result.tool_calls == []
-        assert result.response_id == "resp_1"
+        # History: system, user query, assistant final.
+        assert [_msg(m)["role"] for m in client._messages] == [
+            "system", "user", "assistant",
+        ]
+        assert _msg(client._messages[2])["content"] == "Hello world"
 
-    async def test_works_without_on_delta(self) -> None:
-        events: list[object] = [_text_delta_event("hi", "hi")]
-        final = _parsed_response([_message_item("hi")])
-        client, _ = self._client_with_fake_stream(events, final)
-
-        result = await client.step([{"role": "user", "content": "hi"}])
-        assert result.final_text == "hi"
-
-    async def test_tool_call_response_has_no_final_text(self) -> None:
-        final = _parsed_response([_run_command_item("call_1", "df -h")])
-        client, _ = self._client_with_fake_stream([], final)
-
-        chunks: list[str] = []
-        result = await client.step(
-            [{"role": "user", "content": "check disk"}], on_delta=chunks.append,
+    async def test_first_query_uses_screen_goal_last(self) -> None:
+        client, _ = _client_with_fake_stream([
+            ([], _completion(_final_message("done"))),
+        ])
+        await client.start_query(
+            "確認して", screen_text="user@host:~$ ", new_output="ignored",
         )
-        assert chunks == []
+        content = str(_msg(client._messages[1])["content"])
+        assert "## Current Terminal Screen" in content
+        assert "user@host:~$ " in content
+        assert "## New Terminal Output" not in content
+        assert content.endswith("## Goal\n確認して")
+
+    async def test_continuing_query_uses_new_output(self) -> None:
+        client, _ = _client_with_fake_stream([
+            ([], _completion(_final_message("one"))),
+            ([], _completion(_final_message("two"))),
+        ])
+        await client.start_query("first", screen_text="$ ")
+        await client.start_query(
+            "second", screen_text="$ full screen", new_output="manual output",
+        )
+        content = str(_msg(client._messages[3])["content"])
+        assert "## New Terminal Output" in content
+        assert "manual output" in content
+        assert "## Current Terminal Screen" not in content
+        assert content.endswith("## Goal\nsecond")
+
+    async def test_tool_calls_parsed_and_outputs_recorded(self) -> None:
+        args = '{"command": "ls", "risk": "read_only", "risk_reason": "list"}'
+        client, _ = _client_with_fake_stream([
+            (
+                [],
+                _completion(
+                    _tool_call_message(_function_call("call_1", "run_command", args)),
+                ),
+            ),
+            ([], _completion(_final_message("done"))),
+        ])
+        result = await client.start_query("list", screen_text="$ ")
         assert result.final_text is None
         assert len(result.tool_calls) == 1
         assert isinstance(result.tool_calls[0].params, RunCommandParams)
-        assert result.tool_calls[0].params.command == "df -h"
+
+        client.add_tool_output("call_1", "## Terminal Output\nfiles")
+        result = await client.step()
+        assert result.final_text == "done"
+
+        roles = [_msg(m)["role"] for m in client._messages]
+        assert roles == ["system", "user", "assistant", "tool", "assistant"]
+        tool_msg = _msg(client._messages[3])
+        assert tool_msg["tool_call_id"] == "call_1"
+        # The assistant tool call is replayed with the raw arguments string.
+        assistant = _msg(client._messages[2])
+        tool_calls = cast("list[dict[str, object]]", assistant["tool_calls"])
+        assert cast("dict[str, str]", tool_calls[0]["function"])["arguments"] == args
 
     async def test_request_parameters(self) -> None:
-        final = _parsed_response([_message_item("done")])
-        client, captured = self._client_with_fake_stream([], final)
+        client, captured = _client_with_fake_stream([
+            ([], _completion(_final_message("done"))),
+        ])
+        await client.start_query("hi", screen_text="$ ")
 
-        await client.step(
-            [{"role": "user", "content": "hi"}],
-            previous_response_id="resp_0",
+        request = captured[0]
+        assert request["model"] == "gpt-4o"
+        assert request["tools"] == TOOLS
+        assert request["parallel_tool_calls"] is False
+        assert request["stream_options"] == {"include_usage": True}
+        messages = cast("list[object]", request["messages"])
+        first = _msg(messages[0])
+        assert first["role"] == "system"
+        assert first["content"] == SYSTEM_PROMPT
+
+    async def test_history_is_append_only_across_requests(self) -> None:
+        """Each request's messages extend the previous request's messages
+        as an exact prefix — the prompt-cache invariant."""
+        args = '{"command": "ls", "risk": "read_only", "risk_reason": "list"}'
+        client, captured = _client_with_fake_stream([
+            (
+                [],
+                _completion(
+                    _tool_call_message(_function_call("call_1", "run_command", args)),
+                ),
+            ),
+            ([], _completion(_final_message("one"))),
+            ([], _completion(_final_message("two"))),
+        ])
+        await client.start_query("first", screen_text="$ ")
+        client.add_tool_output("call_1", "output")
+        await client.step()
+        await client.start_query("second", screen_text="$ ", new_output="x")
+
+        for earlier, later in zip(captured, captured[1:]):
+            earlier_messages = cast("list[object]", earlier["messages"])
+            later_messages = cast("list[object]", later["messages"])
+            assert later_messages[: len(earlier_messages)] == earlier_messages
+
+    async def test_prompt_tokens_tracked_from_usage(self) -> None:
+        client, _ = _client_with_fake_stream([
+            ([], _completion(_final_message("done"), prompt_tokens=1234)),
+        ])
+        await client.start_query("hi", screen_text="$ ")
+        assert client._last_prompt_tokens == 1234
+
+    def test_prompt_size_estimates_without_usage(self) -> None:
+        client = LLMClient(_make_config())
+        client._messages.append({"role": "user", "content": "x" * 4000})
+        assert client._last_prompt_tokens == 0
+        assert client._prompt_size() >= 1000
+
+
+class TestCompaction:
+    def _client_for_compaction(
+        self,
+        parsed: HandoffSummary | None,
+        parse_error: Exception | None = None,
+    ) -> tuple[LLMClient, list[dict[str, object]], list[dict[str, object]]]:
+        client, stream_captured = _client_with_fake_stream([
+            ([], _completion(_final_message("done"))),
+        ])
+        parse_captured: list[dict[str, object]] = []
+
+        async def fake_parse(**kwargs: object) -> object:
+            kwargs["messages"] = list(cast("list[object]", kwargs["messages"]))
+            parse_captured.append(kwargs)
+            if parse_error is not None:
+                raise parse_error
+            message = ChatCompletionMessage.model_construct(
+                role="assistant", parsed=parsed,
+            )
+            return ChatCompletion.model_construct(
+                choices=[Choice.model_construct(message=message)],
+            )
+
+        setattr(client._client.chat.completions, "parse", fake_parse)  # noqa: B010
+        # A conversation past the threshold.
+        client._messages.append({"role": "user", "content": "old query"})
+        client._messages.append({"role": "assistant", "content": "old answer"})
+        client._last_prompt_tokens = client._compact_thresh
+        return client, stream_captured, parse_captured
+
+    async def test_compacts_after_finish_and_resets_history(self) -> None:
+        summary = HandoffSummary(environment="env", activities="acts", notes="notes")
+        client, stream_captured, parse_captured = self._client_for_compaction(summary)
+
+        # The query's execution ended; compaction runs in the background
+        # and the next query picks up its result.
+        client.finish_query()
+        await client.start_query("next", screen_text="$ prompt")
+
+        # The compact request replayed the old history plus the directive,
+        # with the same system prompt and tools (cache-friendly).
+        compact = parse_captured[0]
+        assert compact["tool_choice"] == "none"
+        assert compact["tools"] == TOOLS
+        compact_messages = cast("list[object]", compact["messages"])
+        assert _msg(compact_messages[0])["content"] == SYSTEM_PROMPT
+        assert _msg(compact_messages[1])["content"] == "old query"
+        assert _msg(compact_messages[-1])["content"] == COMPACT_REQUEST
+
+        # The history restarted: system + the new query carrying the
+        # summary and the full screen.
+        assert [_msg(m)["role"] for m in client._messages[:2]] == ["system", "user"]
+        content = str(_msg(client._messages[1])["content"])
+        assert content.startswith("## Session Summary")
+        assert "env" in content
+        assert "## Current Terminal Screen" in content
+        assert "$ prompt" in content
+        assert content.endswith("## Goal\nnext")
+
+    async def test_compaction_failure_keeps_history(self) -> None:
+        client, _, parse_captured = self._client_for_compaction(
+            None, parse_error=RuntimeError("api down"),
         )
-        assert captured["model"] == "gpt-4o"
-        assert captured["instructions"] == SYSTEM_PROMPT
-        assert captured["tools"] == TOOLS
-        assert captured["parallel_tool_calls"] is False
-        assert captured["store"] is True
-        assert captured["previous_response_id"] == "resp_0"
+        client.finish_query()
+        await client.start_query("next", screen_text="$ ", new_output="delta")
 
+        assert len(parse_captured) == 1
+        # Old history kept; the query was appended as a continuation.
+        contents = [str(_msg(m).get("content", "")) for m in client._messages]
+        assert "old query" in contents
+        query_content = contents[3]
+        assert "## New Terminal Output" in query_content
+        assert "## Session Summary" not in query_content
 
-class TestSummaryResult:
-    def test_model_fields(self) -> None:
-        result = SummaryResult(
-            environment="local shell (bash)",
-            activities="editing config files",
-            notes="no errors",
+    async def test_empty_compaction_response_keeps_history(self) -> None:
+        client, _, _ = self._client_for_compaction(None)
+        client.finish_query()
+        await client.start_query("next", screen_text="$ ", new_output=None)
+        contents = [str(_msg(m).get("content", "")) for m in client._messages]
+        assert "old query" in contents
+
+    async def test_no_compaction_below_threshold(self) -> None:
+        client, _, parse_captured = self._client_for_compaction(
+            HandoffSummary(environment="e", activities="a", notes="n"),
         )
-        assert result.environment == "local shell (bash)"
-        assert result.activities == "editing config files"
-        assert result.notes == "no errors"
+        client._last_prompt_tokens = 10  # far below the threshold
+        client.finish_query()
+        assert client._compact_task is None
+        await client.start_query("next", screen_text="$ ")
+        assert parse_captured == []
 
+    async def test_no_compaction_on_fresh_conversation(self) -> None:
+        client = LLMClient(_make_config())
+        client._last_prompt_tokens = client._compact_thresh
+        client.finish_query()
+        assert client._compact_task is None
 
-class TestComposeInstructions:
-    def test_without_summary(self) -> None:
-        assert _compose_instructions(SYSTEM_PROMPT, None) == SYSTEM_PROMPT
-
-    def test_with_summary(self) -> None:
-        summary = "## Session Context\nEnvironment: ssh router"
-        composed = _compose_instructions(SYSTEM_PROMPT, summary)
-        assert composed.startswith(SYSTEM_PROMPT)
-        assert composed.endswith(summary)
-
-
-class TestBuildSummaryInput:
-    def test_first_generation_has_no_previous_section(self) -> None:
-        content = _build_summary_input(None, "some output", truncated=False)
-        assert "## Previous Summary" not in content
-        assert "some output" in content
-
-    def test_merge_includes_previous_summary(self) -> None:
-        previous = SummaryResult(
-            environment="ssh to router1 (Junos)",
-            activities="checking BGP sessions",
-            notes="session to peer 10.0.0.1 is down",
-        )
-        content = _build_summary_input(previous, "new output", truncated=False)
-        assert "## Previous Summary" in content
-        assert "Junos" in content
-        assert "10.0.0.1" in content
-        assert "new output" in content
-
-    def test_truncated_note(self) -> None:
-        content = _build_summary_input(None, "output", truncated=True)
-        assert "omitted" in content
-
-    def test_not_truncated_has_no_note(self) -> None:
-        content = _build_summary_input(None, "output", truncated=False)
-        assert "omitted" not in content
+    async def test_compaction_runs_in_background(self) -> None:
+        """finish_query() returns immediately; the compaction task runs
+        once control is back on the event loop."""
+        summary = HandoffSummary(environment="e", activities="a", notes="n")
+        client, _, parse_captured = self._client_for_compaction(summary)
+        client.finish_query()
+        assert parse_captured == []  # not run yet (synchronous return)
+        task = client._compact_task
+        assert task is not None
+        await task
+        assert len(parse_captured) == 1
+        assert client._pending_summary is summary
 
 
 class TestLLMClient:
     def test_init(self) -> None:
         client = LLMClient(_make_config())
         assert client._client.api_key == "sk-test"
-
-    def test_summary_model_falls_back_to_main_model(self) -> None:
-        client = LLMClient(_make_config())
-        assert client._summary_model == "gpt-4o"
-
-    def test_summary_model_override(self) -> None:
-        config = _make_config()
-        config.summary_model = "small-model"
-        client = LLMClient(config)
-        assert client._summary_model == "small-model"
-
-    def test_summary_system_prompt_exists(self) -> None:
-        assert "summary" in SUMMARY_SYSTEM_PROMPT.lower()
-        assert "environment" in SUMMARY_SYSTEM_PROMPT.lower()
-        assert "merging" in SUMMARY_SYSTEM_PROMPT.lower()
+        assert [_msg(m)["role"] for m in client._messages] == ["system"]
 
     def test_system_prompt_exists(self) -> None:
         assert "terminal" in SYSTEM_PROMPT.lower()
@@ -363,34 +463,32 @@ class TestLLMClient:
         assert "show version" in SYSTEM_PROMPT
         assert "stop calling tools" in SYSTEM_PROMPT
 
-    def test_build_initial_messages(self) -> None:
-        client = LLMClient(_make_config())
-        messages = client.build_initial_messages(
-            query="ディスク使用量を確認して",
-            screen_text="user@host:~$ ",
-        )
-        assert len(messages) == 1
-        first = cast("dict[str, object]", messages[0])
-        assert first["role"] == "user"
-        content = str(first["content"])
-        assert "ディスク使用量を確認して" in content
-        assert "user@host:~$ " in content
-
-    def test_log_query_on_build_initial(self) -> None:
+    async def test_log_query(self) -> None:
         with tempfile.NamedTemporaryFile(mode="r", suffix=".jsonl", delete=False) as f:
             log_path = f.name
         config = _make_config()
         config.log_file = log_path
         client = LLMClient(config)
-        client.build_initial_messages(query="check disk", screen_text="$ ")
+        setattr(  # noqa: B010
+            client._client.chat.completions,
+            "stream",
+            lambda **kwargs: _FakeStream([], _completion(_final_message("ok"))),
+        )
+        await client.start_query("check disk", screen_text="$ ")
         with open(log_path) as f:
-            lines = f.readlines()
-        assert len(lines) == 1
-        entry = json.loads(lines[0])
-        assert entry["type"] == "query"
-        assert entry["query"] == "check disk"
-        assert "timestamp" in entry
+            entries = [json.loads(line) for line in f]
+        assert entries[0]["type"] == "query"
+        assert entries[0]["query"] == "check disk"
+        request = next(e for e in entries if e["type"] == "llm_request")
+        # Incremental logging: the first request logs the system prompt
+        # and the query message.
+        assert request["total_messages"] == 2
+        assert len(request["new_messages"]) == 2
 
     def test_no_log_when_log_file_none(self) -> None:
         client = LLMClient(_make_config())
-        client.build_initial_messages(query="test", screen_text="$ ")
+        client._log({"type": "query", "query": "test"})
+
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])

@@ -16,7 +16,6 @@ from expecto.pty_manager import NESTING_ENV_VAR, PTYManager
 from expecto.query_ui import QueryModeUI
 from expecto.screen_buffer import ScreenBuffer
 from expecto.tty_controller import TTYController
-from expecto.working_summary import WorkingSummaryManager
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -55,18 +54,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=int,
         default=None,
         help="Scrollback buffer capacity in lines (default: 5000)",
-    )
-    parser.add_argument(
-        "--summary-trigger-lines",
-        type=int,
-        default=None,
-        help="Scrolled lines that trigger a working summary update (default: 500)",
-    )
-    parser.add_argument(
-        "--summary-max-input-lines",
-        type=int,
-        default=None,
-        help="Maximum lines fed into one working summary update (default: 2000)",
     )
     parser.add_argument(
         "--confirm-level",
@@ -135,10 +122,6 @@ def main(argv: list[str] | None = None) -> None:
         config.history_lines = args.history_lines
     if args.scrollback_lines is not None:
         config.scrollback_lines = args.scrollback_lines
-    if args.summary_trigger_lines is not None:
-        config.summary_trigger_lines = args.summary_trigger_lines
-    if args.summary_max_input_lines is not None:
-        config.summary_max_input_lines = args.summary_max_input_lines
     if args.confirm_level is not None:
         config.confirm_level = args.confirm_level
     if args.dangerous_patterns_file is not None:
@@ -171,13 +154,6 @@ def main(argv: list[str] | None = None) -> None:
     for error in pattern_errors:
         print(f"expecto: warning: {error}", file=sys.stderr)
 
-    working_summary = WorkingSummaryManager(
-        llm_client=llm_client,
-        screen_buffer=screen_buffer,
-        trigger_lines=config.summary_trigger_lines,
-        max_input_lines=config.summary_max_input_lines,
-    )
-
     def write_to_pty(data: bytes) -> None:
         assert pty_mgr.master_fd is not None
         os.write(pty_mgr.master_fd, data)
@@ -203,7 +179,6 @@ def main(argv: list[str] | None = None) -> None:
         input_router=input_router,
         screen_buffer=screen_buffer,
         log_file=raw_io_log_fh,
-        working_summary=working_summary,
     )
 
     executor = Executor(
@@ -216,9 +191,9 @@ def main(argv: list[str] | None = None) -> None:
         threshold_ms=config.threshold_ms,
         max_steps=config.max_steps,
         history_lines=config.history_lines,
-        working_summary=working_summary,
         confirm_level=config.confirm_level,
         dangerous_matcher=dangerous_matcher,
+        new_output_max_chars=config.new_output_max_chars,
     )
 
     async def run_session() -> int:
