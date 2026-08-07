@@ -234,7 +234,7 @@ class LLMClient:
     The message history starts at the system prompt and accumulates
     queries, tool calls/outputs, and final responses across the whole
     session. It is append-only (for prompt-cache hits) and compacted
-    transparently when it grows past compact_thresh (§DESIGN-Conversation)."""
+    transparently when it grows past compact_thresh (design/Conversation.md)."""
 
     def __init__(self, config: ExpectoConfig) -> None:
         self._config = config

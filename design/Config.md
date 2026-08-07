@@ -22,7 +22,7 @@
 ```
 
 - パス解決は `config.config_dir()` に一元化: `$XDG_CONFIG_HOME/expecto` → 未設定なら `~/.config/expecto`。
-- `.env` の探索順(実装済み・変更なし): カレントディレクトリから親方向 → 見つからなければ `<config_dir>/.env`。設定済み環境変数はファイル値より常に優先。
+- `.env` の探索順: カレントディレクトリから親方向 → 見つからなければ `<config_dir>/.env`。設定済み環境変数はファイル値より常に優先。
 - `OPENAI_API_KEY` が未設定(環境変数にも `.env` にも無い)の場合は起動時にエラーメッセージを出して終了する。
 
 ## 3. config.toml スキーマ
@@ -89,7 +89,7 @@ new_output_max_chars = 20000      # query 間の新規出力差分の最大文�
 
 ## 8. 設計判断の記録
 
-1. **環境変数層の廃止**: 旧実装は `OPENAI_MODEL` / `OPENAI_BASE_URL` / `OPENAI_REASONING_EFFORT` / `SUMMARY_OPENAI_*` を環境変数から読んでいた。設定の置き場所が env / CLI に分散して見通しが悪いため、シークレット(`OPENAI_API_KEY`)以外を config.toml に一本化した。優先順位も 3 段(既定 < ファイル < CLI)に単純化。旧環境変数への移行警告は設けない。
+1. **設定は config.toml に一本化**: 設定の置き場所が環境変数 / CLI に分散すると見通しが悪いため、シークレット(`OPENAI_API_KEY`)以外の環境変数は設けない。優先順位は 3 段(既定 < ファイル < CLI)のみ。
 2. **blacklist を config.toml に統合しない**: 正規表現を TOML のエスケープ越しに書くのはミスを誘うため、`dangerous_patterns.txt` の 1 行 1 正規表現を維持。機構を二重に持たない。
 3. **warn-and-continue**: expecto はターミナルラッパーであり、設定の typo で起動不能になるより、警告して安全側の既定値で動く方がよい。フォールバック先(既定値)が常に安全側であることが前提。
 4. **tomllib (stdlib)**: Python 3.11+ が前提のため依存追加なしで TOML を読める。書き込みはしないので tomli-w 等も不要。

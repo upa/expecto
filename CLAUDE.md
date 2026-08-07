@@ -10,7 +10,7 @@ Key differentiator: wraps the **tty itself**, not a specific shell — works ove
 
 ## Status
 
-Core loop complete (LLMClient with Chat Completions function calling — `run_command` / `send_control` tools, Executor tool-call loop, idle-timer settle detection). The final response is plain text streamed to the terminal as it arrives (`chat.completions.stream()`, shown gray in `[...]`). A former one-shot "completion mode" has been removed; the command-execute-observe loop is expecto's sole behavior. The LLMClient owns the message history, which spans the whole session (append-only for prompt-cache hits) and is compacted transparently into a handoff summary past a token threshold (see `design/DESIGN-Conversation.md`). Concurrency is a single-threaded asyncio event loop — one always-on relay pump, executions as cancellable tasks, no threads/locks (see `design/DESIGN-Async.md`). `design/DESIGN.md` is the authoritative specification.
+Core loop complete (LLMClient with Chat Completions function calling — `run_command` / `send_control` tools, Executor tool-call loop, idle-timer settle detection). The final response is plain text streamed to the terminal as it arrives (`chat.completions.stream()`, shown gray in `[...]`). A former one-shot "completion mode" has been removed; the command-execute-observe loop is expecto's sole behavior. The LLMClient owns the message history, which spans the whole session (append-only for prompt-cache hits) and is compacted transparently into a handoff summary past a token threshold (see `design/Conversation.md`). Concurrency is a single-threaded asyncio event loop — one always-on relay pump, executions as cancellable tasks, no threads/locks (see `design/Async.md`). `design/DESIGN.md` is the authoritative specification.
 
 ### TODO
 
@@ -24,7 +24,7 @@ Core loop complete (LLMClient with Chat Completions function calling — `run_co
 - Key dependencies: `pyte` (terminal emulation), `openai` (LLM SDK, AsyncOpenAI with Structured Outputs)
 - Heavy use of stdlib: `asyncio`, `pty`, `termios`, `tty`, `os`, `signal`, `fcntl`
 - Build/packaging: `pyproject.toml` (hatchling, `expecto` script entry point)
-- Config: `~/.config/expecto/config.toml` (TOML, warn-and-continue; see `design/DESIGN-Config.md`), overridden by CLI flags. `OPENAI_API_KEY` is the only env var (required — startup error when missing; `.env` from cwd, falling back to `~/.config/expecto/.env`)
+- Config: `~/.config/expecto/config.toml` (TOML, warn-and-continue; see `design/Config.md`), overridden by CLI flags. `OPENAI_API_KEY` is the only env var (required — startup error when missing; `.env` from cwd, falling back to `~/.config/expecto/.env`)
 
 ## Architecture
 
@@ -42,7 +42,7 @@ Core components (each a separate module under `src/expecto/`):
 - `executor` — the command-execute-observe loop (async, cancellation-based interrupts)
 - `settle` — idle-timer output settle detection (`wait_settle` coroutine, no PS1 dependency)
 - `dangerous` — regex backstop for unmistakably catastrophic commands
-- `config` — config.toml loading (defaults < file < CLI flags), hotkey parsing, startup warnings (see `design/DESIGN-Config.md`)
+- `config` — config.toml loading (defaults < file < CLI flags), hotkey parsing, startup warnings (see `design/Config.md`)
 - `cli` — entry point, argparse, asyncio.run
 
 ## Build & Test
