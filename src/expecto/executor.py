@@ -105,7 +105,6 @@ class Executor:
         settle_ms: int = 500,
         threshold_ms: int = 30000,
         max_steps: int = 15,
-        history_lines: int = 500,
         confirm_level: ConfirmLevel = "destructive",
         dangerous_matcher: DangerousCommandMatcher | None = None,
         new_output_max_chars: int = 20000,
@@ -118,7 +117,6 @@ class Executor:
         self._settle_ms = settle_ms
         self._threshold_ms = threshold_ms
         self._max_steps = max_steps
-        self._history_lines = history_lines
         self._confirm_level = confirm_level
         self._dangerous_matcher = dangerous_matcher
         self._new_output_max_chars = new_output_max_chars
@@ -171,7 +169,7 @@ class Executor:
                     # output since the previous task otherwise.
                     coro = self._llm.start_query(
                         query,
-                        screen_text=self._screen.get_text(last_n=self._history_lines),
+                        screen_text=self._cap_tail(self._screen.get_text()),
                         new_output=self._new_output_since_last(),
                         on_delta=stream.on_delta,
                     )
@@ -240,8 +238,13 @@ class Executor:
         text = self._screen.get_text_since(self._last_mark)
         if not text.strip():
             return None
+        return self._cap_tail(text)
+
+    def _cap_tail(self, text: str) -> str:
+        """Cap terminal context at new_output_max_chars, keeping the tail
+        (the most recent output, closest to the query)."""
         if len(text) > self._new_output_max_chars:
-            text = (
+            return (
                 "[... earlier output truncated ...]\n"
                 + text[len(text) - self._new_output_max_chars:]
             )

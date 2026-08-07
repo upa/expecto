@@ -233,7 +233,6 @@ async def make_harness() -> AsyncIterator[MakeHarness]:
         settle_ms: int = 10,
         threshold_ms: int = 5000,
         max_steps: int = 50,
-        history_lines: int = 500,
         confirm_level: ConfirmLevel = "destructive",
         dangerous_matcher: DangerousCommandMatcher | None = None,
         screen: ScreenBuffer | None = None,
@@ -267,7 +266,6 @@ async def make_harness() -> AsyncIterator[MakeHarness]:
             settle_ms=settle_ms,
             threshold_ms=threshold_ms,
             max_steps=max_steps,
-            history_lines=history_lines,
             confirm_level=confirm_level,
             dangerous_matcher=dangerous_matcher,
             new_output_max_chars=new_output_max_chars,
@@ -604,20 +602,43 @@ class TestExecution:
         assert "Terminal Output" in output
         assert "[Note] Output did not settle" in output
 
-    async def test_screen_text_limited_to_history_lines(self, make_harness: MakeHarness) -> None:
-        """The screen text passed to the LLM is capped at history_lines."""
+    async def test_screen_text_capped_at_new_output_max_chars(
+        self, make_harness: MakeHarness,
+    ) -> None:
+        """The screen text passed to the LLM is tail-capped at
+        new_output_max_chars, with a truncation note."""
         screen = ScreenBuffer(rows=3, cols=40, scrollback_lines=50)
         for i in range(20):
             screen.feed(f"line {i}\r\n".encode())
         fake_llm = FakeLLMClient(results=[_final_result("done")])
-        harness = await make_harness(fake_llm, history_lines=5, screen=screen)
+        harness = await make_harness(
+            fake_llm, new_output_max_chars=30, screen=screen,
+        )
         harness.start("where am i")
         await harness.wait_done()
 
         assert fake_llm.last_screen_text is not None
-        lines = fake_llm.last_screen_text.split("\n")
-        assert len(lines) == 5
-        assert "line 0" not in fake_llm.last_screen_text
+        assert fake_llm.last_screen_text.startswith(
+            "[... earlier output truncated ...]\n",
+        )
+        head, _, tail = fake_llm.last_screen_text.partition("\n")
+        assert len(tail) == 30
+        assert tail.endswith("line 19")
+        assert "line 0\n" not in fake_llm.last_screen_text
+
+    async def test_short_screen_text_not_truncated(
+        self, make_harness: MakeHarness,
+    ) -> None:
+        screen = ScreenBuffer(rows=3, cols=40, scrollback_lines=50)
+        screen.feed(b"hello\r\n$ ")
+        fake_llm = FakeLLMClient(results=[_final_result("done")])
+        harness = await make_harness(fake_llm, screen=screen)
+        harness.start("where am i")
+        await harness.wait_done()
+
+        assert fake_llm.last_screen_text is not None
+        assert "hello" in fake_llm.last_screen_text
+        assert "truncated" not in fake_llm.last_screen_text
 
 
 class TestStreamingFinalDisplay:

@@ -49,7 +49,7 @@ class ScreenBuffer:
         line = self._screen.buffer[row]
         return "".join(line[col].data for col in range(self._screen.columns)).rstrip()
 
-    def get_text(self, last_n: int | None = None) -> str:
+    def get_text(self) -> str:
         history_lines: list[str] = []
         for line in self._screen.history.top:
             history_lines.append(self._render_history_line(line))
@@ -61,10 +61,7 @@ class ScreenBuffer:
         while screen_lines and screen_lines[-1] == "":
             screen_lines.pop()
 
-        all_lines = history_lines + screen_lines
-        if last_n is not None and len(all_lines) > last_n:
-            all_lines = all_lines[len(all_lines) - last_n:]
-        return "\n".join(all_lines)
+        return "\n".join(history_lines + screen_lines)
 
     def mark(self) -> ScreenMark:
         """Record the current screen state and reset change tracking.

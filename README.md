@@ -62,7 +62,6 @@ settle_ms = 500                 # idle time to regard command output as settled
 threshold_ms = 30000            # report unsettled output to the LLM after this long
 
 # Context for the LLM
-history_lines = 500             # recent screen lines sent to the LLM
 scrollback_lines = 5000         # scrollback buffer capacity
 compact_thresh = 100000         # prompt tokens that trigger conversation compaction
 new_output_max_chars = 20000    # max chars of between-query output sent to the LLM

@@ -150,7 +150,6 @@ class ExpectoConfig:
     openai_api_key: str = ""
     openai_base_url: str | None = None
     openai_reasoning_effort: ReasoningEffortLevel | None = None
-    history_lines: int = 500
     settle_ms: int = 500
     threshold_ms: int = 30000
     max_steps: int = 15
@@ -212,8 +211,6 @@ def _apply_toml(
             warnings.append(f"{path}: hotkey: {exc}; using the default")
     if (confirm := table.take_choice("confirm_level", CONFIRM_LEVELS)) is not None:
         config.confirm_level = cast("ConfirmLevel", confirm)
-    if (v := table.take_int("history_lines")) is not None:
-        config.history_lines = v
     if (v := table.take_int("scrollback_lines")) is not None:
         config.scrollback_lines = v
     if (v := table.take_int("settle_ms")) is not None:

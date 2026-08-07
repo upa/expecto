@@ -60,10 +60,10 @@ class LLMStepper(Protocol):
     def finish_query() -> None    # notifies end of query execution (synchronous; triggers compaction)
 ```
 
-- On every query the Executor passes **both** `screen_text` (the full screen
-  via `get_text(history_lines)`) and `new_output` (the delta since the
-  `mark()` at the end of the previous execution). The LLMClient decides which
-  to use:
+- On every query the Executor passes **both** `screen_text` (the screen plus
+  scrollback via `get_text()`, tail-capped at `new_output_max_chars`) and
+  `new_output` (the delta since the `mark()` at the end of the previous
+  execution, capped the same way). The LLMClient decides which to use:
   - **New conversation** (first in the session / right after compaction):
     "(Session Summary +) Current Terminal Screen + Goal" — full-screen context
     is not lost even after compaction
@@ -140,9 +140,9 @@ discounts), so it cannot grow without bound.
 1. Manual output that flows between queries in excess of
    `new_output_max_chars` is not passed to the LLM. A truncation note merely
    signals the omission.
-2. Likewise, interaction history scrolled beyond `history_lines` before the
-   first query is not passed. Having `history_lines` lines of screen at the
-   first query is judged sufficient in practice.
+2. Likewise, screen content beyond the `new_output_max_chars` tail cap at the
+   start of a fresh conversation is not passed. Having that much of the most
+   recent screen at the first query is judged sufficient in practice.
 3. Thinking tokens of reasoning models are not carried across turns
    (a Chat Completions limitation).
 4. What compaction loses is only the LLM's own intermediate thoughts and

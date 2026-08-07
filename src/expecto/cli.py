@@ -44,12 +44,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Log file for queries and LLM requests/responses (JSONL format)",
     )
     parser.add_argument(
-        "--history-lines",
-        type=int,
-        default=None,
-        help="Number of screen history lines sent to the LLM (default: 500)",
-    )
-    parser.add_argument(
         "--scrollback-lines",
         type=int,
         default=None,
@@ -118,8 +112,6 @@ def main(argv: list[str] | None = None) -> None:
         config.raw_io_log_file = args.raw_io_log_file
     if args.log_file:
         config.log_file = args.log_file
-    if args.history_lines is not None:
-        config.history_lines = args.history_lines
     if args.scrollback_lines is not None:
         config.scrollback_lines = args.scrollback_lines
     if args.confirm_level is not None:
@@ -190,7 +182,6 @@ def main(argv: list[str] | None = None) -> None:
         settle_ms=config.settle_ms,
         threshold_ms=config.threshold_ms,
         max_steps=config.max_steps,
-        history_lines=config.history_lines,
         confirm_level=config.confirm_level,
         dangerous_matcher=dangerous_matcher,
         new_output_max_chars=config.new_output_max_chars,

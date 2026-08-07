@@ -166,7 +166,7 @@ locks). See **`Async.md`** for details.
 ### 5.5 ScreenBuffer (history management)
 
 - Uses [`pyte`](https://pypi.org/project/pyte/)'s `pyte.HistoryScreen` + `pyte.Stream` to keep the "current screen contents" with ANSI escape sequences interpreted, plus the recent scrollback lines (capacity `scrollback_lines`, default 5000), as clean text. This is what is passed to the LLM. Raw byte streams are not retained (a raw I/O log for debugging is written to a file by IORelay when `--raw-io-log-file` is specified).
-- To limit token volume, only the most recent `history_lines` (default 500) lines are sent to the LLM (`get_text(last_n=...)`).
+- To limit token volume, the screen text sent when starting a fresh conversation is tail-capped at `new_output_max_chars` characters by the Executor (the same cap as the between-query delta; see Conversation.md).
 - **New-output extraction (for tool results)**: the tool result in the execution loop carries "only the new output produced by that command" (the full history is not re-sent every time).
   - `mark()`: records the current state and returns a `ScreenMark`. What is recorded: the "cumulative number of lines pushed into scrollback (a monotonic counter unaffected by deque maxlen overflow or clear)" and the "cursor row". At the same time, pyte's `screen.dirty` (the set of changed lines; pyte only adds to it — clearing is the consumer's responsibility) is cleared.
   - `get_text_since(mark)`: returns the concatenation of "lines pushed into history since the mark (excluding pre-existing lines that were above the cursor at mark time and got pushed out by scrolling)" + "the range of visible lines changed since the mark". If scrolling occurred, the visible portion is taken from the new location of the mark-time cursor row downward (because scrolling marks all lines dirty).
@@ -278,7 +278,6 @@ OPTIONS (implemented):
   --shell PATH               Command to launch as the child process (default: $SHELL)
   --config PATH              Path to the config file
                              (default: ~/.config/expecto/config.toml)
-  --history-lines N          Number of screen-history lines passed to the LLM (default: 500)
   --scrollback-lines N       pyte scrollback capacity (default: 5000)
   --confirm-level LEVEL      Minimum risk level that requires confirmation
                              (destructive|mutating|none, default: destructive)

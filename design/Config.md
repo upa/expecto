@@ -33,7 +33,6 @@ All keys are optional. Only the keys that are written override the defaults. For
 shell = "/usr/bin/fish"           # default: $SHELL (falls back to /bin/bash)
 hotkey = "ctrl-/"                 # "ctrl-" + one character (§5)
 confirm_level = "destructive"     # destructive | mutating | none
-history_lines = 500
 scrollback_lines = 5000
 settle_ms = 500
 threshold_ms = 30000

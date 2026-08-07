@@ -59,7 +59,6 @@ class TestDefaults:
         assert config.openai_reasoning_effort is None
         assert config.hotkey == DEFAULT_HOTKEY
         assert config.confirm_level == "destructive"
-        assert config.history_lines == 500
         assert config.scrollback_lines == 5000
         assert config.settle_ms == 500
         assert config.threshold_ms == 30000
@@ -92,7 +91,6 @@ class TestConfigFile:
 shell = "/usr/bin/fish"
 hotkey = "ctrl-]"
 confirm_level = "mutating"
-history_lines = 100
 scrollback_lines = 1000
 settle_ms = 300
 threshold_ms = 10000
@@ -110,7 +108,6 @@ new_output_max_chars = 5000
         assert config.shell == "/usr/bin/fish"
         assert config.hotkey == 0x1D
         assert config.confirm_level == "mutating"
-        assert config.history_lines == 100
         assert config.scrollback_lines == 1000
         assert config.settle_ms == 300
         assert config.threshold_ms == 10000
@@ -137,24 +134,24 @@ reasoning_effort = ""
 
     def test_unknown_keys_warn(self, isolated_home: Path, tmp_path: Path) -> None:
         config, warnings = _load_toml(tmp_path, """
-histori_lines = 100
+scrollbak_lines = 100
 modle = "typo"
 """)
-        assert config.history_lines == 500
+        assert config.scrollback_lines == 5000
         assert config.model == DEFAULT_MODEL
-        assert any("histori_lines" in w and "unknown key" in w for w in warnings)
+        assert any("scrollbak_lines" in w and "unknown key" in w for w in warnings)
         assert any("modle" in w and "unknown key" in w for w in warnings)
 
     def test_wrong_types_warn_and_keep_defaults(
         self, isolated_home: Path, tmp_path: Path,
     ) -> None:
         config, warnings = _load_toml(tmp_path, """
-history_lines = "many"
+scrollback_lines = "many"
 settle_ms = true
 max_steps = -1
 shell = 3
 """)
-        assert config.history_lines == 500
+        assert config.scrollback_lines == 5000
         assert config.settle_ms == 500
         assert config.max_steps == 15
         assert config.shell == "/bin/testsh"

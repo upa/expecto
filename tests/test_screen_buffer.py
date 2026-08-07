@@ -61,28 +61,6 @@ class TestScreenBuffer:
         assert buf.get_cursor_col() == 13
 
 
-class TestGetTextLastN:
-    def test_returns_only_tail_lines(self) -> None:
-        buf = ScreenBuffer(rows=3, cols=40, scrollback_lines=100)
-        for i in range(10):
-            buf.feed(f"line {i}\r\n".encode())
-        text = buf.get_text(last_n=3)
-        lines = text.split("\n")
-        assert len(lines) == 3
-        assert "line 0" not in text
-
-    def test_no_limit_when_none(self) -> None:
-        buf = ScreenBuffer(rows=3, cols=40, scrollback_lines=100)
-        for i in range(10):
-            buf.feed(f"line {i}\r\n".encode())
-        assert buf.get_text(last_n=None) == buf.get_text()
-
-    def test_limit_larger_than_content(self) -> None:
-        buf = ScreenBuffer(rows=24, cols=80)
-        buf.feed(b"only line")
-        assert buf.get_text(last_n=100) == "only line"
-
-
 class TestGetTextSince:
     def test_only_new_output(self) -> None:
         """Output fed before mark() is excluded; the echo and output after are included."""
