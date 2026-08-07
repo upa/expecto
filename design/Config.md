@@ -1,95 +1,95 @@
-# 設定 (config.toml / ~/.config/expecto) 設計ドキュメント
+# Configuration (config.toml / ~/.config/expecto) Design Document
 
-- ステータス: 実装済み
-- 親ドキュメント: `DESIGN.md` (§7)
-- 本ドキュメントは `~/.config/expecto/` 配下のファイルと設定の読み込み・優先順位の詳細設計。
+- Status: implemented
+- Parent document: `DESIGN.md` (§7)
+- This document is the detailed design of the files under `~/.config/expecto/` and of configuration loading and precedence.
 
 ---
 
-## 1. 方針
+## 1. Policy
 
-- **`.env` はシークレット、`config.toml` は挙動設定**という役割分離。expecto が環境変数から読むのは `OPENAI_API_KEY` ただ 1 つで、それ以外の設定はすべて `config.toml`(と CLI フラグ)で行う。
-- OpenAI API / SDK 側にデフォルトが存在するもの(`base_url`、`reasoning_effort`)は、未指定なら**パラメータ自体を渡さず SDK / API のデフォルトに委ねる**。`model` は API 側にデフォルトが無いため expecto が既定値(`gpt-5.4`)を持つ。
-- expecto がこのディレクトリに書き込むことはない(読み取り専用。ファイルの自動生成もしない)。
+- **`.env` holds secrets; `config.toml` holds behavior settings** — a strict separation of roles. The only environment variable expecto reads is `OPENAI_API_KEY`; every other setting is made via `config.toml` (and CLI flags).
+- For settings that have defaults on the OpenAI API / SDK side (`base_url`, `reasoning_effort`), when unset expecto **omits the parameter entirely and defers to the SDK / API default**. `model` has no API-side default, so expecto carries its own default (`gpt-5.4`).
+- expecto never writes to this directory (read-only; it does not auto-generate files either).
 
-## 2. ディレクトリ構成
+## 2. Directory Layout
 
 ```
-~/.config/expecto/            # $XDG_CONFIG_HOME/expecto があればそちら
-├── .env                      # OPENAI_API_KEY のみ (シークレット)
-├── config.toml               # 挙動設定 (本ドキュメント)
-└── dangerous_patterns.txt    # 危険コマンド正規表現の追加 (DESIGN.md §5.8)
+~/.config/expecto/            # $XDG_CONFIG_HOME/expecto if set
+├── .env                      # OPENAI_API_KEY only (secret)
+├── config.toml               # behavior settings (this document)
+└── dangerous_patterns.txt    # additional dangerous-command regexes (DESIGN.md §5.8)
 ```
 
-- パス解決は `config.config_dir()` に一元化: `$XDG_CONFIG_HOME/expecto` → 未設定なら `~/.config/expecto`。
-- `.env` の探索順: カレントディレクトリから親方向 → 見つからなければ `<config_dir>/.env`。設定済み環境変数はファイル値より常に優先。
-- `OPENAI_API_KEY` が未設定(環境変数にも `.env` にも無い)の場合は起動時にエラーメッセージを出して終了する。
+- Path resolution is centralized in `config.config_dir()`: `$XDG_CONFIG_HOME/expecto` → `~/.config/expecto` if unset.
+- `.env` search order: from the current directory upward through parents → if not found, `<config_dir>/.env`. An already-set environment variable always takes precedence over the file value.
+- If `OPENAI_API_KEY` is unset (neither in the environment nor in `.env`), expecto prints an error message at startup and exits.
 
-## 3. config.toml スキーマ
+## 3. config.toml Schema
 
-すべて任意。書かれたキーだけが既定値を上書きする。文字列キーの空文字 `""` は「未指定」と同義。パス系(`log_file` / `raw_io_log_file` / `dangerous_patterns_file`)は `~` を展開する。
+All keys are optional. Only the keys that are written override the defaults. For string keys, the empty string `""` is equivalent to "unset". Path keys (`log_file` / `raw_io_log_file` / `dangerous_patterns_file`) expand `~`.
 
 ```toml
-shell = "/usr/bin/fish"           # 既定: $SHELL (無ければ /bin/bash)
-hotkey = "ctrl-/"                 # "ctrl-" + 1文字 (§5)
+shell = "/usr/bin/fish"           # default: $SHELL (falls back to /bin/bash)
+hotkey = "ctrl-/"                 # "ctrl-" + one character (§5)
 confirm_level = "destructive"     # destructive | mutating | none
 history_lines = 500
 scrollback_lines = 5000
 settle_ms = 500
 threshold_ms = 30000
 max_steps = 15
-log_file = ""                     # JSONL ログ。既定: 無効
-raw_io_log_file = ""              # デバッグ用 raw I/O ログ。既定: 無効
-dangerous_patterns_file = ""      # 既定: <config_dir>/dangerous_patterns.txt
+log_file = ""                     # JSONL log. default: disabled
+raw_io_log_file = ""              # raw I/O log for debugging. default: disabled
+dangerous_patterns_file = ""      # default: <config_dir>/dangerous_patterns.txt
 
-model = "gpt-5.4"                 # expecto 側の既定
-base_url = ""                     # 未指定なら SDK 既定 (api.openai.com)
+model = "gpt-5.4"                 # expecto's own default
+base_url = ""                     # if unset, SDK default (api.openai.com)
 reasoning_effort = ""             # none|minimal|low|medium|high|xhigh|max
-                                  # 未指定ならリクエストに reasoning を含めない
+                                  # if unset, reasoning is omitted from the request
 
-compact_thresh = 100000           # 会話履歴の compaction 閾値 (prompt_tokens)
-new_output_max_chars = 20000      # query 間の新規出力差分の最大文字数
+compact_thresh = 100000           # conversation-history compaction threshold (prompt_tokens)
+new_output_max_chars = 20000      # max characters of new output diff between queries
 ```
 
-- テーブル(セクション)は使わずフラットなキーのみ。
-- **API キーは受け付けない**: `api_key` が書かれていた場合は「環境変数 `OPENAI_API_KEY` を使え」と警告して無視する。ローカル LLM 等はキーを検証しないため base_url の変更だけで足りる。
+- No tables (sections) — flat keys only.
+- **API keys are not accepted**: if `api_key` is present, warn "use the `OPENAI_API_KEY` environment variable" and ignore it. Local LLMs and the like do not validate keys, so changing `base_url` alone suffices.
 
-## 4. 優先順位
+## 4. Precedence
 
 ```
-組み込み既定値 < config.toml < CLI フラグ
+built-in defaults < config.toml < CLI flags
 ```
 
-- 実装は `ExpectoConfig.load(config_file) -> (config, warnings)`: 既定値で `ExpectoConfig` を作り、TOML を適用し、`OPENAI_API_KEY` を環境から解決する。CLI フラグの上書きは従来どおり `cli.main()` が行う。
-- `--config PATH` で設定ファイルの場所を変更できる(既定: `<config_dir>/config.toml`)。
+- Implementation: `ExpectoConfig.load(config_file) -> (config, warnings)` — build an `ExpectoConfig` from the defaults, apply the TOML, and resolve `OPENAI_API_KEY` from the environment. CLI flag overrides are applied by `cli.main()` as before.
+- `--config PATH` changes the location of the config file (default: `<config_dir>/config.toml`).
 
-## 5. hotkey の表記
+## 5. hotkey Notation
 
-- `"ctrl-" + 1文字`(大文字小文字・前後空白は無視): `ctrl-a`〜`ctrl-z` と `ctrl-/`(0x1F、既定)、`ctrl-]`、`ctrl-\`、`ctrl-^`、`ctrl-@`、`ctrl-_`。
-- `ctrl-c`(実行中断)/ `ctrl-m`(Enter)/ Esc と衝突するものは拒否し、警告して既定値に戻す。
-- パースは `config.parse_hotkey()`(不正時 ValueError)。
+- `"ctrl-" + one character` (case and surrounding whitespace ignored): `ctrl-a` through `ctrl-z`, plus `ctrl-/` (0x1F, the default), `ctrl-]`, `ctrl-\`, `ctrl-^`, `ctrl-@`, `ctrl-_`.
+- Values that collide with `ctrl-c` (execution interrupt) / `ctrl-m` (Enter) / Esc are rejected: warn and revert to the default.
+- Parsing is done by `config.parse_hotkey()` (raises ValueError on invalid input).
 
-## 6. エラーハンドリング (warn-and-continue)
+## 6. Error Handling (warn-and-continue)
 
-`dangerous_patterns.txt` の既存方針(不正な行は警告してスキップ、起動は続行)に合わせる。警告は起動時に stderr へ `expecto: warning: <path>: <key>: ...` の形式で出す。
+Follows the existing policy of `dangerous_patterns.txt` (invalid lines are warned about and skipped; startup continues). Warnings are printed to stderr at startup in the form `expecto: warning: <path>: <key>: ...`.
 
-| 状況 | 挙動 |
+| Situation | Behavior |
 |------|------|
-| 既定パスの config.toml が存在しない | 正常(全て既定値) |
-| `--config` で明示指定したファイルが存在しない | **エラー終了**(指定ミスに気づけるように) |
-| TOML 構文エラー | ファイル全体を無視して警告 |
-| 未知のキー | 警告(typo 検出)、無視 |
-| 型・値の不正(負の整数、enum 外の値等) | 該当キーのみ警告して既定値を維持(`confirm_level` の既定は最も安全側の `destructive` なので、フォールバックは安全方向に働く) |
-| `api_key` キー | 警告して無視(§3) |
-| `OPENAI_API_KEY` 未設定 | **エラー終了**(設定先を案内) |
+| config.toml at the default path does not exist | Normal (all defaults) |
+| File explicitly specified via `--config` does not exist | **Exit with error** (so a mistyped path is noticed) |
+| TOML syntax error | Ignore the entire file with a warning |
+| Unknown key | Warn (typo detection), ignore |
+| Invalid type or value (negative integer, value outside the enum, etc.) | Warn for that key only and keep the default (the default for `confirm_level` is the safest option, `destructive`, so the fallback errs on the safe side) |
+| `api_key` key | Warn and ignore (§3) |
+| `OPENAI_API_KEY` unset | **Exit with error** (pointing to where to set it) |
 
-## 7. dangerous_patterns.txt (変更なし)
+## 7. dangerous_patterns.txt (unchanged)
 
-フォーマット(1 行 1 正規表現・`#` コメント・大文字小文字無視)、「組み込みパターンへの追加、destructive への昇格専用」というセマンティクスは DESIGN.md §5.8 のまま。本設計での変更は既定パスの解決が `config_dir()` 経由(XDG 対応)になったことと、パスを config.toml の `dangerous_patterns_file` でも指定できるようになったことのみ。
+The format (one regex per line, `#` comments, case-insensitive) and the semantics — "additions to the built-in patterns, escalation to destructive only" — remain as in DESIGN.md §5.8. The only changes in this design are that the default path is now resolved via `config_dir()` (XDG support) and that the path can also be specified via `dangerous_patterns_file` in config.toml.
 
-## 8. 設計判断の記録
+## 8. Design-Decision Record
 
-1. **設定は config.toml に一本化**: 設定の置き場所が環境変数 / CLI に分散すると見通しが悪いため、シークレット(`OPENAI_API_KEY`)以外の環境変数は設けない。優先順位は 3 段(既定 < ファイル < CLI)のみ。
-2. **blacklist を config.toml に統合しない**: 正規表現を TOML のエスケープ越しに書くのはミスを誘うため、`dangerous_patterns.txt` の 1 行 1 正規表現を維持。機構を二重に持たない。
-3. **warn-and-continue**: expecto はターミナルラッパーであり、設定の typo で起動不能になるより、警告して安全側の既定値で動く方がよい。フォールバック先(既定値)が常に安全側であることが前提。
-4. **tomllib (stdlib)**: Python 3.11+ が前提のため依存追加なしで TOML を読める。書き込みはしないので tomli-w 等も不要。
+1. **Configuration is consolidated into config.toml**: scattering settings across environment variables / CLI hurts clarity, so no environment variables are introduced other than the secret (`OPENAI_API_KEY`). Precedence has exactly three levels (defaults < file < CLI).
+2. **The blacklist is not merged into config.toml**: writing regexes through TOML escaping invites mistakes, so the one-regex-per-line format of `dangerous_patterns.txt` is kept. The mechanism is not duplicated.
+3. **warn-and-continue**: expecto is a terminal wrapper; warning and running with safe defaults is better than failing to start over a config typo. This presumes the fallback (the default value) is always on the safe side.
+4. **tomllib (stdlib)**: Python 3.11+ is assumed, so TOML can be read without adding a dependency. No writing is done, so tomli-w and the like are unnecessary.
