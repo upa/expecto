@@ -18,16 +18,18 @@
 ~/.config/expecto/            # $XDG_CONFIG_HOME/expecto if set
 ├── .env                      # OPENAI_API_KEY only (secret)
 ├── config.toml               # behavior settings (this document)
+├── AGENTS.md                 # user instructions appended to the system prompt (DESIGN.md §8)
 └── dangerous_patterns.txt    # additional dangerous-command regexes (DESIGN.md §5.8)
 ```
 
 - Path resolution is centralized in `config.config_dir()`: `$XDG_CONFIG_HOME/expecto` → `~/.config/expecto` if unset.
-- `.env` search order: from the current directory upward through parents → if not found, `<config_dir>/.env`. An already-set environment variable always takes precedence over the file value.
+- `.env` loading: the file given by `--env PATH` → without that flag, `<config_dir>/.env` if it exists. The current directory is not searched, so an installed expecto behaves the same wherever it is launched from. An already-set environment variable always takes precedence over the file value.
+- `--env` cannot be set in config.toml: the `.env` file is loaded before the config file is read.
 - If `OPENAI_API_KEY` is unset (neither in the environment nor in `.env`), expecto prints an error message at startup and exits.
 
 ## 3. config.toml Schema
 
-All keys are optional. Only the keys that are written override the defaults. For string keys, the empty string `""` is equivalent to "unset". Path keys (`log_file` / `raw_io_log_file` / `dangerous_patterns_file`) expand `~`.
+All keys are optional. Only the keys that are written override the defaults. For string keys, the empty string `""` is equivalent to "unset". Path keys (`log_file` / `raw_io_log_file` / `dangerous_patterns_file` / `agents_md_file`) expand `~`.
 
 ```toml
 shell = "/usr/bin/fish"           # default: $SHELL (falls back to /bin/bash)
@@ -40,6 +42,7 @@ max_steps = 15
 log_file = ""                     # JSONL log. default: disabled
 raw_io_log_file = ""              # raw I/O log for debugging. default: disabled
 dangerous_patterns_file = ""      # default: <config_dir>/dangerous_patterns.txt
+agents_md_file = ""               # default: <config_dir>/AGENTS.md
 
 model = "gpt-5.4"                 # expecto's own default
 base_url = ""                     # if unset, SDK default (api.openai.com)
@@ -76,6 +79,10 @@ Follows the existing policy of `dangerous_patterns.txt` (invalid lines are warne
 |------|------|
 | config.toml at the default path does not exist | Normal (all defaults) |
 | File explicitly specified via `--config` does not exist | **Exit with error** (so a mistyped path is noticed) |
+| `.env` at the default path does not exist | Normal (the key comes from the environment) |
+| File explicitly specified via `--env` does not exist | **Exit with error** (same policy as `--config`) |
+| AGENTS.md at the default path (or the `agents_md_file` path) does not exist | Normal (no user instructions are added) |
+| File explicitly specified via `-a` / `--agents-md` does not exist | **Exit with error** (same policy as `--config`) |
 | TOML syntax error | Ignore the entire file with a warning |
 | Unknown key | Warn (typo detection), ignore |
 | Invalid type or value (negative integer, value outside the enum, etc.) | Warn for that key only and keep the default (the default for `confirm_level` is the safest option, `destructive`, so the fallback errs on the safe side) |

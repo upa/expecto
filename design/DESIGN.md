@@ -276,14 +276,18 @@ expecto [OPTIONS] [-- COMMAND ...]
 
 OPTIONS (implemented):
   --shell PATH               Command to launch as the child process (default: $SHELL)
-  --config PATH              Path to the config file
+  -c, --config PATH          Path to the config file
                              (default: ~/.config/expecto/config.toml)
+  -e, --env PATH             Path to the .env file to load
+                             (default: ~/.config/expecto/.env)
+  -a, --agents-md PATH       Path to the AGENTS.md appended to the system prompt
+                             (default: ~/.config/expecto/AGENTS.md)
   --scrollback-lines N       pyte scrollback capacity (default: 5000)
   --confirm-level LEVEL      Minimum risk level that requires confirmation
                              (destructive|mutating|none, default: destructive)
   --dangerous-patterns-file PATH  Additional file of dangerous-command regexes
                              (default: ~/.config/expecto/dangerous_patterns.txt)
-  --log-file PATH            Destination for the JSONL log of queries and LLM requests/responses (disabled by default)
+  -l, --log-file PATH        Destination for the JSONL log of queries and LLM requests/responses (disabled by default)
   --raw-io-log-file PATH     Destination for the raw I/O log (for debugging, disabled by default)
 ```
 
@@ -294,7 +298,7 @@ else — model, base_url, reasoning effort, hotkey, compaction threshold, etc. �
 is specified in config.toml. See **`Config.md`** for the schema, error
 handling, and hotkey notation details.
 
-`.env` file search order: the current directory (also searching upward toward parents, following python-dotenv convention) → if not found, `~/.config/expecto/.env`. Environment variables that are already set always take precedence over values from the file. This mechanism exists so the API key can be read no matter where the installed command is launched from.
+`.env` file loading: the file given by `--env PATH` (startup error if it does not exist) → without that flag, `~/.config/expecto/.env` if it exists. The current directory is not searched — as an installed command, expecto must behave the same no matter where it is launched from. Environment variables that are already set always take precedence over values from the file.
 
 Not implemented (future work): the `--hotkey` / `--model` / `--max-steps` / `--settle-ms` CLI flags (all low priority now that they are configurable via config.toml).
 
@@ -320,6 +324,14 @@ You are an assistant that operates the terminal the user is working in
   If a command has been running for a long time, decide whether to
   interrupt it with Ctrl-C or keep waiting.
 ```
+
+### AGENTS.md (user instructions)
+
+When an AGENTS.md exists (`-a` / `--agents-md`, the `agents_md_file` config key, or `<config_dir>/AGENTS.md` by default), its contents are appended verbatim to the base system prompt as a trailing `# User Instructions` section. This is where the user records site-specific knowledge the model cannot derive from the screen: hosts and device conventions, preferred commands, output style.
+
+- The section states where the instructions come from and that they are additive: they **do not override** the tool protocol or the risk-classification and confirmation rules (§5.8). A file the user writes must not be able to talk the model out of classifying a command honestly.
+- The file is read once at startup and the system prompt stays byte-identical for the whole session — including compaction requests — so the prompt-cache invariant (Conversation.md §2) holds.
+- A missing file is normal (nothing is appended); a file given explicitly with `-a` that does not exist is a startup error (Config.md §6).
 
 The user message at query start includes the following (the Goal comes last):
 - First query of the session / immediately after compaction: the recent clean-text screen (§5.5) + the user's query string (immediately after compaction, the Session Summary comes first)

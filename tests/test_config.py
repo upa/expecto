@@ -10,6 +10,7 @@ from expecto.config import (
     ExpectoConfig,
     config_dir,
     default_config_file,
+    default_agents_md_file,
     default_dangerous_patterns_file,
     parse_hotkey,
 )
@@ -66,6 +67,7 @@ class TestDefaults:
         assert config.log_file is None
         assert config.raw_io_log_file is None
         assert config.dangerous_patterns_file == default_dangerous_patterns_file()
+        assert config.agents_md_file == default_agents_md_file()
         assert config.compact_thresh == 100000
         assert config.new_output_max_chars == 20000
 
@@ -98,6 +100,7 @@ max_steps = 5
 log_file = "~/expecto.jsonl"
 raw_io_log_file = "~/raw.log"
 dangerous_patterns_file = "~/patterns.txt"
+agents_md_file = "~/AGENTS.md"
 model = "main-model"
 base_url = "https://main.api/v1"
 reasoning_effort = "high"
@@ -115,6 +118,7 @@ new_output_max_chars = 5000
         assert config.log_file == str(isolated_home / "expecto.jsonl")
         assert config.raw_io_log_file == str(isolated_home / "raw.log")
         assert config.dangerous_patterns_file == str(isolated_home / "patterns.txt")
+        assert config.agents_md_file == str(isolated_home / "AGENTS.md")
         assert config.model == "main-model"
         assert config.openai_base_url == "https://main.api/v1"
         assert config.openai_reasoning_effort == "high"

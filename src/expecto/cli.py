@@ -4,14 +4,14 @@ import os
 import signal
 import sys
 
-from dotenv import find_dotenv, load_dotenv
+from dotenv import load_dotenv
 
 from expecto.config import ExpectoConfig, default_env_file
 from expecto.dangerous import DangerousCommandMatcher
 from expecto.executor import Executor
 from expecto.input_router import InputRouter
 from expecto.io_relay import IORelay
-from expecto.llm_client import LLMClient
+from expecto.llm_client import LLMClient, load_agents_md
 from expecto.pty_manager import NESTING_ENV_VAR, PTYManager
 from expecto.query_ui import QueryModeUI
 from expecto.screen_buffer import ScreenBuffer
@@ -29,9 +29,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Child process command (default: $SHELL)",
     )
     parser.add_argument(
+        "-c",
         "--config",
         default=None,
         help="Config file path (default: ~/.config/expecto/config.toml)",
+    )
+    parser.add_argument(
+        "-e",
+        "--env",
+        default=None,
+        help="Env file to load (default: ~/.config/expecto/.env)",
     )
     parser.add_argument(
         "--raw-io-log-file",
@@ -39,6 +46,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Raw I/O log output path (for debugging)",
     )
     parser.add_argument(
+        "-l",
         "--log-file",
         default=None,
         help="Log file for queries and LLM requests/responses (JSONL format)",
@@ -57,6 +65,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "(default: destructive)",
     )
     parser.add_argument(
+        "-a",
+        "--agents-md",
+        default=None,
+        help="AGENTS.md with user instructions for the system prompt "
+        "(default: ~/.config/expecto/AGENTS.md)",
+    )
+    parser.add_argument(
         "--dangerous-patterns-file",
         default=None,
         help="File with additional dangerous command regex patterns "
@@ -70,13 +85,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def load_env() -> None:
-    """Load .env from the current directory (searching upwards, dotenv's
-    convention); fall back to ~/.config/expecto/.env. Existing environment
-    variables always take precedence over file values."""
-    found = find_dotenv(usecwd=True)
-    if found:
-        load_dotenv(found)
+def load_env(env_file: str | None = None) -> None:
+    """Load the env file given with --env, or ~/.config/expecto/.env when it
+    exists. Existing environment variables always take precedence over file
+    values.
+
+    An explicitly given env_file that does not exist raises
+    FileNotFoundError; the default path is optional."""
+    if env_file is not None:
+        if not os.path.exists(env_file):
+            raise FileNotFoundError(env_file)
+        load_dotenv(env_file)
         return
     load_dotenv(default_env_file())
 
@@ -90,7 +109,12 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(1)
 
     args = parse_args(argv)
-    load_env()
+
+    try:
+        load_env(args.env)
+    except FileNotFoundError:
+        print(f"expecto: error: env file not found: {args.env}", file=sys.stderr)
+        sys.exit(1)
 
     try:
         config, config_warnings = ExpectoConfig.load(args.config)
@@ -118,6 +142,14 @@ def main(argv: list[str] | None = None) -> None:
         config.confirm_level = args.confirm_level
     if args.dangerous_patterns_file is not None:
         config.dangerous_patterns_file = args.dangerous_patterns_file
+    if args.agents_md is not None:
+        if not os.path.exists(args.agents_md):
+            print(
+                f"expecto: error: AGENTS.md not found: {args.agents_md}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        config.agents_md_file = args.agents_md
 
     command: str | list[str]
     if args.command:
@@ -138,7 +170,7 @@ def main(argv: list[str] | None = None) -> None:
     )
     query_ui = QueryModeUI(stdout_fd, get_cursor_col=screen_buffer.get_cursor_col)
 
-    llm_client = LLMClient(config)
+    llm_client = LLMClient(config, agents_md=load_agents_md(config.agents_md_file))
 
     dangerous_matcher, pattern_errors = DangerousCommandMatcher.load(
         config.dangerous_patterns_file or None,

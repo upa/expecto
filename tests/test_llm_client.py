@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import tempfile
+from pathlib import Path
 from typing import cast
 
 import pytest
@@ -23,6 +24,8 @@ from expecto.llm_client import (
     SendControlParams,
     SYSTEM_PROMPT,
     TOOLS,
+    build_system_prompt,
+    load_agents_md,
 )
 
 
@@ -488,6 +491,39 @@ class TestLLMClient:
     def test_no_log_when_log_file_none(self) -> None:
         client = LLMClient(_make_config())
         client._log({"type": "query", "query": "test"})
+
+
+class TestAgentsMd:
+    def test_no_agents_md_keeps_base_prompt(self) -> None:
+        assert build_system_prompt(None) == SYSTEM_PROMPT
+
+    def test_agents_md_is_appended_verbatim(self) -> None:
+        prompt = build_system_prompt("Always use `show` commands on rtr1.")
+        assert prompt.startswith(SYSTEM_PROMPT)
+        assert "Always use `show` commands on rtr1." in prompt
+        # The section states where the instructions come from and that they
+        # do not override the risk rules.
+        assert "AGENTS.md" in prompt
+        assert "do not override the tool protocol" in prompt
+
+    def test_client_uses_agents_md_as_system_message(self) -> None:
+        client = LLMClient(_make_config(), agents_md="Prefer ip over ifconfig.")
+        system = _msg(client._messages[0])
+        assert system["role"] == "system"
+        assert "Prefer ip over ifconfig." in cast("str", system["content"])
+
+    def test_load_reads_file(self, tmp_path: Path) -> None:
+        path = tmp_path / "AGENTS.md"
+        path.write_text("# Site notes\nrtr1 is a Junos device.\n")
+        assert load_agents_md(str(path)) == "# Site notes\nrtr1 is a Junos device."
+
+    def test_load_missing_file_is_none(self, tmp_path: Path) -> None:
+        assert load_agents_md(str(tmp_path / "nonexistent.md")) is None
+
+    def test_load_whitespace_only_file_is_none(self, tmp_path: Path) -> None:
+        path = tmp_path / "AGENTS.md"
+        path.write_text("\n\n  \n")
+        assert load_agents_md(str(path)) is None
 
 
 if __name__ == "__main__":
