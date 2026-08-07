@@ -47,7 +47,7 @@ base_url = ""                     # 未指定なら SDK 既定 (api.openai.com)
 reasoning_effort = ""             # none|minimal|low|medium|high|xhigh|max
                                   # 未指定ならリクエストに reasoning を含めない
 
-chain_compact_thresh = 100000     # 会話チェーンの compaction 閾値 (input_tokens)
+compact_thresh = 100000           # 会話履歴の compaction 閾値 (prompt_tokens)
 new_output_max_chars = 20000      # query 間の新規出力差分の最大文字数
 ```
 

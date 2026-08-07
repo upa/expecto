@@ -71,12 +71,12 @@
        settle せず閾値時間を超えた場合は「settle しなかった」
        旨の注記を結果に付ける
     4. その時点の画面テキストを tool の実行結果
-       (function_call_output) として LLM に返す
+       (tool メッセージ) として LLM に返す
     5. LLM は次の tool を呼ぶ(継続)か、最終応答(プレーンテキスト)を返す
        (最終応答は streaming で届いた文字から画面に表示する)
   ゴール達成 or ユーザーのCtrl-C割込みで終了。
   一定ステップ数(チェックポイント、既定15)ごとにユーザーへ
-  継続確認(y/n)を行い、n なら終了(会話チェーンは y の間維持)
+  継続確認(y/n)を行い、n なら終了(会話履歴は維持される)
   → passthrough mode に戻る
 ```
 
@@ -178,7 +178,7 @@
 
 ### 5.7 LLMClient
 
-- OpenAI **Responses API** を利用する。実行ループの各ステップは `AsyncOpenAI` の `client.responses.stream()`(streaming)、compaction の引き継ぎ要約 (§5.10) は `client.responses.parse()`(Structured Outputs)。モデルは設定可能(既定は現行世代の高速モデル)。
+- OpenAI **Chat Completions API** を利用する(Responses API は OpenAI 以外の互換バックエンドの対応が不十分なため不採用)。実行ループの各ステップは `AsyncOpenAI` の `client.chat.completions.stream()`(streaming)、compaction の引き継ぎ要約 (§5.10) は `client.chat.completions.parse()`(Structured Outputs)。モデルは設定可能(既定は現行世代の高速モデル)。
 - 入力: `instructions=` でシステムプロンプト、`input=` でユーザーメッセージ。
 - システムプロンプトは英語で記述し、「コマンド以外の出力はユーザーのクエリの言語に合わせる」旨を指示する。
 - 実行ループの**最終応答はプレーンテキスト**(スキーマ強制なし)。ゴール達成の要約、または達成不能な場合はその理由をテキストで返すようシステムプロンプトで指示する。done/fail の status フィールドは持たない(区別に実質的な意味がなく、プレーンテキスト化により streaming 表示が単純になるため)。
@@ -187,7 +187,7 @@
 
 #### Function calling
 
-「コマンドを実行し結果を受け取る」1ステップは、Responses API の function calling による **tool** として LLM に公開する:
+「コマンドを実行し結果を受け取る」1ステップは、Chat Completions の function calling による **tool** として LLM に公開する:
 
 | tool           | 引数                                   | 動作                                                                                       |
 |----------------|----------------------------------------|--------------------------------------------------------------------------------------------|
@@ -197,7 +197,7 @@
 - tool 定義は `strict: true` の JSON Schema で渡し、引数は Pydantic モデル (`RunCommandParams` / `SendControlParams`) で検証する。検証に失敗した場合(strict のため通常発生しない)は、該当 `call_id` にエラーテキストを output として返す。
 - `parallel_tool_calls=False` を指定し、1応答1 tool call を API レベルで保証する(防御的に複数返った場合も順次実行する)。
 - LLM は tool call を返す(継続)か、最終応答(プレーンテキスト)を返すかを選ぶ。**tool call を含まない応答をループ終了とみなす。** Structured Outputs を使わないため、モデルが tool call の前に前置きテキストを出すことが構造上は可能になる(プロンプトで抑止し、出た場合はそのまま streaming 表示して継続する)。
-- tool の実行結果 (`function_call_output`) の形式(画面全体ではなく、そのコマンドが生んだ新規出力のみを渡す。抽出方法は §5.5 参照):
+- tool の実行結果 (`tool` メッセージ) の形式(画面全体ではなく、そのコマンドが生んだ新規出力のみを渡す。抽出方法は §5.5 参照):
 
       ## Terminal Output
       ```
@@ -208,44 +208,32 @@
 
       [Note] Output did not settle within 30s. The command may still be running.
 
-#### 会話チェーン (`previous_response_id`)
+#### 会話履歴 (クライアント保持) とプロンプトキャッシュ
 
-Responses API は `previous_response_id` パラメータで会話の継続をサポートする。サーバー側に過去のやり取りが保持されるため、クライアントは新しいメッセージだけを `input=` に渡せばよい。
-
-- `store=True` で各レスポンスをサーバー側に保存する。
-- 次のリクエストで `previous_response_id=response.id` を渡すと、API 側が過去の会話コンテキストを自動的に前置きする。
-- `instructions=` は毎回送る必要がある（`previous_response_id` では引き継がれない）。expecto では **instructions は完全静的**（`SYSTEM_PROMPT` 定数のみ）とし、プロンプトキャッシュの prefix 一致を session 全体で維持する。
-- 課金上の差異はない（過去の入力トークンは毎回カウントされる。プロンプトキャッシュの割引は効く）。
-
-チェーンは **query 単位ではなく session 全体で 1 本**を継続する（詳細は **`DESIGN-Chain.md`**）。メッセージ構築:
+メッセージ履歴は `LLMClient` が保持し、**session 全体で 1 つの会話**として継続する（詳細は **`DESIGN-Conversation.md`**）:
 
 ```
-query の開始 (新規チェーン: session 初回 / compaction 直後):
-  input = [{ role: "user", content: "## Current Terminal Screen ... ## Goal\n{query}" }]
-          (compaction 直後は先頭に ## Session Summary を付ける)
-  previous_response_id = なし
-
-query の開始 (継続チェーン):
-  input = [<未送信の function_call_output があればそれ>,
-           { role: "user", content: "## New Terminal Output (前回実行以降の差分) ... ## Goal\n{query}" }]
-  previous_response_id = 前回 query の最終 response_id
-
-Step N (ループ内フォローアップ):
-  input = [{ type: "function_call_output", call_id: {前回の tool call の call_id},
-             output: "## Terminal Output\n```\n{new_screen}\n```" }]
-  previous_response_id = 前回の response_id
+[system: SYSTEM_PROMPT]                  ← 完全静的
+[user: query 1 (全画面 + Goal)]
+[assistant: tool_calls=...]
+[tool: 実行結果] ...
+[assistant: 最終 explanation]
+[user: query 2 (query 間の新規出力の差分 + Goal)]
+...
 ```
 
-function_call 本体はサーバー側に保存されているため、クライアントは `function_call_output` だけを送ればよい。継続チェーンの query では全画面も再送しない（過去の画面はチェーンにあるため、query 間の新規出力の差分のみを送る。`new_output_max_chars` で cap）。中断や checkpoint 停止で未回答のまま残った function_call は、次のリクエストの先頭で必ず清算する（DESIGN-Chain.md §4）。
+- 履歴は **append-only** で、system プロンプト・tools 定義は完全固定。毎リクエストが前リクエストの完全な延長になるため、プロンプトの prefix キャッシュが session を通じて効く（compaction 直後を除く）。
+- 継続 query では全画面を再送しない（過去の画面は履歴にある）。query 間のユーザーの手動操作は新規出力の差分（`new_output_max_chars` で cap）として渡す。
+- assistant の `tool_calls` には対応する `tool` メッセージが必ず続くよう、中断・checkpoint 停止・拒否を含む全経路で tool 結果を記録する（DESIGN-Conversation.md §4）。
 
 ### 5.8 Executor
 
 - クエリ確定後の実行ループ(コマンド実行→出力確認→次のアクション)を制御する。
 - 開始時(クエリ確定直後)にまず改行 1 つを pty に送り、シェルの新しいプロンプトを表示・settle 待ちで画面に反映してから、最初の LLM 呼び出しに進む。クエリ行が直前のプロンプト行を消費しているため、これを行わないと最初のコマンドがプロンプトのない行に注入されたように見える。
-- LLM が function calling で `run_command` / `send_control` を呼び出すループとして実装する(§5.7)。tool call の実行(pty master への書き込み + settle 待ち + 新規出力の回収(§5.5 の mark / get_text_since)と `function_call_output` の構築)は Executor が担う。
-- **危険コマンドの確認ゲート(3層)**: (1) LLM が `run_command` の必須フィールド `risk`(`read_only` / `mutating` / `destructive`)+ `risk_reason` で毎コマンドのリスクを自己申告する(環境適応の主判定。ベンダー CLI の知識は LLM 側にあり、チェーンに蓄積された session 文脈が精度を支える)。(2) 決定論的バックストップ: 組み込み + ユーザー定義(`~/.config/expecto/dangerous_patterns.txt`、1行1正規表現・`#`コメント・大文字小文字無視)の正規表現にマッチしたコマンドは LLM の申告に関係なく `destructive` に**昇格**する(昇格専用 — 確認を免除する方向には働かない)。(3) `--confirm-level`(既定 `destructive`)以上のリスクのコマンドは実行前にユーザーへ y/n 確認。**拒否は abort ではなく** `function_call_output` で「ユーザーが拒否した」を LLM に返し、代替アプローチを取らせる。非対話環境では確認できないため拒否扱い。この機構は保証ではなくプロンプト削減であり(LLM 自己申告は prompt injection・自己評価バイアスに対し堅牢でない)、最終的な安全装置は「全コマンドと出力が常にユーザーの画面に見える」構造 + ユーザー在席 + Ctrl-C + チェックポイントである。
+- LLM が function calling で `run_command` / `send_control` を呼び出すループとして実装する(§5.7)。tool call の実行(pty master への書き込み + settle 待ち + 新規出力の回収(§5.5 の mark / get_text_since)と tool 結果の記録)は Executor が担う。
+- **危険コマンドの確認ゲート(3層)**: (1) LLM が `run_command` の必須フィールド `risk`(`read_only` / `mutating` / `destructive`)+ `risk_reason` で毎コマンドのリスクを自己申告する(環境適応の主判定。ベンダー CLI の知識は LLM 側にあり、会話履歴に蓄積された session 文脈が精度を支える)。(2) 決定論的バックストップ: 組み込み + ユーザー定義(`~/.config/expecto/dangerous_patterns.txt`、1行1正規表現・`#`コメント・大文字小文字無視)の正規表現にマッチしたコマンドは LLM の申告に関係なく `destructive` に**昇格**する(昇格専用 — 確認を免除する方向には働かない)。(3) `--confirm-level`(既定 `destructive`)以上のリスクのコマンドは実行前にユーザーへ y/n 確認。**拒否は abort ではなく** tool 結果で「ユーザーが拒否した」を LLM に返し、代替アプローチを取らせる。非対話環境では確認できないため拒否扱い。この機構は保証ではなくプロンプト削減であり(LLM 自己申告は prompt injection・自己評価バイアスに対し堅牢でない)、最終的な安全装置は「全コマンドと出力が常にユーザーの画面に見える」構造 + ユーザー在席 + Ctrl-C + チェックポイントである。
 - `run_command` のコマンドエコーは、expecto のステータス表示と同じグレーで表示する。コマンド注入直前に outer tty へ SGR(グレー)を書き、IORelay に予約 (`arm_sgr_reset_at_newline()`) しておくと、ポンプがエコーの最初の改行(Enter のエコー)の直後にリセットを挿入する。改行が来ないまま settle・中断・EOF となった場合も `flush_sgr_reset()`(冪等)で必ずリセットする。SGR は outer tty にのみ書き、ScreenBuffer には入らないため LLM へ渡すテキストには影響しない(シェル自身がエコーに色を付ける場合はそちらが優先されうる、ベストエフォート)。
-- ループ処理は下記 settle 検知 (§5.9) を利用する。`max_steps`(既定 15、LLM 呼び出し回数でカウント)ステップごとに**チェックポイント**としてユーザーに継続確認(`continue? (y/n)`)を行う。y なら `previous_response_id` チェーンを維持したまま続行、n / Esc / Ctrl-C なら終了。hard-abort ではなく確認にすることで、上限が「タスク失敗」ではなく「人間の目を挟む機会」として機能する(対話型ツールとして、ユーザー在席が第一の安全装置)。確認待ちの間も pty 出力の中継は継続する(常時ポンプが担う)。stdin が失われた場合(EOF)はセッション終了として実行タスクがキャンセルされる。
+- ループ処理は下記 settle 検知 (§5.9) を利用する。`max_steps`(既定 15、LLM 呼び出し回数でカウント)ステップごとに**チェックポイント**としてユーザーに継続確認(`continue? (y/n)`)を行う。y なら会話履歴を維持したまま続行、n / Esc / Ctrl-C なら終了。hard-abort ではなく確認にすることで、上限が「タスク失敗」ではなく「人間の目を挟む機会」として機能する(対話型ツールとして、ユーザー在席が第一の安全装置)。確認待ちの間も pty 出力の中継は継続する(常時ポンプが担う)。stdin が失われた場合(EOF)はセッション終了として実行タスクがキャンセルされる。
 - LLMは `send_control` tool で制御文字（Ctrl-C等）を送信できる。これにより、長時間実行中のコマンドの中断などをLLM自身が判断できる。
 - **最終応答の streaming 表示**: 最終応答テキストは `output_text.delta` が届き始めた時点で `[thinking...]` オーバーレイを消去し、グレーの `[` に続けて届いた文字から順次表示、応答完了で `]` + SGR リセットで閉じる。オーバーレイの消去はストリーミング開始時に一度だけ行い、以降は巻き戻さない(複数行の応答で画面がスクロールすると DECSC の保存位置が信頼できないため)。ストリーミング途中で Ctrl-C 中断された場合は、表示済みの部分テキストを画面に残したまま改行して `[expecto interrupted]` を表示する。delta が一度も届かなかった場合(空応答等)は従来どおり完了後に一括表示する。streaming 中も pty の読み取りは pause されたままであり、子プロセス出力との混線は起きない。
 - ユーザーはいつでも `Ctrl-C` で実行を中断できるようにする(中断検知は InputRouter が実行中の入力を優先的にハンドルする形にする)。
@@ -259,11 +247,11 @@ function_call 本体はサーバー側に保存されているため、クライ
   - settle せずに閾値時間(既定 30秒、設定可能)を超えた場合: タイムアウトエラーとはせず、その時点までの出力を tool の実行結果として LLM に送る。このとき「出力が settle しなかった(コマンドはまだ実行中の可能性がある)」旨の注記を結果に含め、LLM が次のアクションを判断する（例: `send_control` で Ctrl-C を送信してコマンドを中断する、さらに待つ、別のアプローチに切り替える等）。30秒以上継続するコマンド（ダウンロード、ビルド等）は日常的にあるため、一律でタイムアウト扱いにはしない。
 - シェル固有のプロンプトマーカー注入(PS1書き換え)には**依存しない**。これは ssh 越しやルーターCLIでは使えないため、汎用性を優先してアイドル検知のみで v0.1 を組む。将来的に「対応シェルではPS1マーカーも併用してより正確に検知する」拡張は可能(§11参照)。
 
-### 5.10 セッションチェーンと Compaction (セッションコンテキスト)
+### 5.10 会話履歴と Compaction (セッションコンテキスト)
 
-session の文脈は `previous_response_id` チェーンそのもの（過去の query・コマンド・出力がサーバー側に残る）が担う。チェーンが閾値 (`chain_compact_thresh`) を超えて伸びたら、次の query 開始時にチェーン自身へ引き継ぎ要約 (`HandoffSummary`: environment / activities / notes) を要求し、要約 + 全画面を先頭にした新チェーンへ移行する (compaction)。query と query の間のユーザーの手動操作は、次の query に添える新規出力の差分 (`new_output_max_chars` で cap) が伝える。
+session の文脈はクライアント保持のメッセージ履歴そのもの（過去の query・コマンド・出力が全部残る）が担う。履歴が閾値 (`compact_thresh`、prompt_tokens 基準) を超えて伸びたら、query の実行終了後（explanation 表示・ユーザーへの操作返却の後）に LLMClient が内部で（Executor からはほぼ透過的に）バックグラウンドで履歴へ引き継ぎ要約 (`HandoffSummary`: environment / activities / notes) を要求し、次の query を要約 + 全画面を先頭にした新しい会話として始める (compaction)。query と query の間のユーザーの手動操作は、次の query に添える新規出力の差分 (`new_output_max_chars` で cap) が伝える。
 
-詳細設計は **`DESIGN-Chain.md`** を参照。旧 working summary 機構（バックグラウンド常時要約）は同設計への移行で廃止した（経緯は同 §7）。
+詳細設計は **`DESIGN-Conversation.md`** を参照。旧 working summary 機構（バックグラウンド常時要約）は同設計への移行で廃止した（経緯は同 §7）。
 
 ---
 
@@ -332,7 +320,7 @@ reasoning effort・hotkey・compaction 閾値などその他すべては config.
 ユーザーメッセージには以下を含める:
 - 直近のクリーンテキスト画面/スクロールバック(§5.5)
 - ユーザーのクエリ文字列
-- (ループ中は) 各ステップの履歴は「LLMの tool call (function_call)」と「その実行結果 (function_call_output)」のペアとして会話に蓄積される。履歴の保持は `previous_response_id` によるサーバー側チェーンに委ねるため、クライアントは毎ステップ最新の `function_call_output` だけを送る(§5.7)。これにより、LLMは過去に何を試して何が起きたかを踏まえて次のアクションを判断できる。
+- (ループ中は) 各ステップの履歴は「LLMの tool call」と「その実行結果 (tool メッセージ)」のペアとして会話履歴に蓄積される(§5.7)。これにより、LLMは過去に何を試して何が起きたかを踏まえて次のアクションを判断できる。
 
 ---
 
@@ -340,7 +328,7 @@ reasoning effort・hotkey・compaction 閾値などその他すべては config.
 
 - **危険コマンドの排除**: expecto は pty ラッパーであり、実行先が ssh 先や NW 装置の場合ローカル OS のサンドボックスは届かないため、使える手段は実行前ゲートのみ。§5.8 の 3 層ゲート(LLM リスク自己申告 / 決定論的バックストップによる昇格 / ユーザー確認)で対応する。コマンド体系が UNIX に限らないため静的ブロックリストだけでは覆えず、環境適応の主判定は LLM が担い、静的パターンは「明白に破滅級」の下限保証に限定する。本格的なサンドボックスや権限制御は範囲外。
 - **シークレットの扱い**: raw ログ・LLMへの送信内容にパスワードやAPIキーが混入しうる。v0.1では簡易マスキング(例: `password`, `token`, `secret` を含む行の値部分を伏字にする)を検討するが、完全性は保証しない旨をドキュメントに明記する。
-- **実行ループの暴走対策**: ステップ数チェックポイントでの継続確認(既定 15 ステップごと、非対話環境では終了)と、ユーザーによる即時中断(Ctrl-C)を必須実装とする。`previous_response_id` は過去入力を毎回再課金するため、コストはステップ数に対し超線形に伸びる — 将来的にトークン/コスト予算上限(SWE-agent 型)の併設を検討する。
+- **実行ループの暴走対策**: ステップ数チェックポイントでの継続確認(既定 15 ステップごと、非対話環境では終了)と、ユーザーによる即時中断(Ctrl-C)を必須実装とする。会話履歴は毎リクエスト全量課金される(キャッシュ割引あり)ため、コストはステップ数に対し超線形に伸びる — compaction (§5.10) が上限を抑えるが、将来的にトークン/コスト予算上限(SWE-agent 型)の併設を検討する。
 - **ホットキーの衝突**: 子プロセス側(vim, tmux, ルーターCLI等)が同じキーを使っている場合に奪い合いが発生する。設定で変更可能にしておくことが必須。
 
 ---

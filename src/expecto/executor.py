@@ -8,16 +8,11 @@ from typing import TYPE_CHECKING, Literal, Protocol, TypeVar
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
-    from openai.types.responses import ResponseInputParam
-    from openai.types.responses.response_input_param import FunctionCallOutput
-
     from expecto.dangerous import DangerousCommandMatcher
     from expecto.io_relay import IORelay
     from expecto.screen_buffer import ScreenBuffer, ScreenMark
 
 from expecto.llm_client import (
-    ChainLostError,
-    HandoffSummary,
     ParsedToolCall,
     RiskLevel,
     RunCommandParams,
@@ -46,36 +41,29 @@ CONTROL_CHAR_MAP: dict[str, bytes] = {
 }
 
 
-def _tool_output_item(call_id: str, output: str) -> FunctionCallOutput:
-    return {
-        "type": "function_call_output",
-        "call_id": call_id,
-        "output": output,
-    }
-
-
 class LLMStepper(Protocol):
-    async def step(
-        self,
-        input_items: ResponseInputParam,
-        previous_response_id: str | None = None,
-        on_delta: Callable[[str], None] | None = None,
-    ) -> StepResult: ...
+    """The conversation-owning LLM client, as seen by the Executor.
 
-    def build_query_message(
+    The client keeps the whole message history (queries, tool calls and
+    outputs, final responses) and compacts it transparently; the Executor
+    only starts queries, records tool outputs, and steps."""
+
+    async def start_query(
         self,
         query: str,
         *,
-        screen_text: str | None = None,
+        screen_text: str,
         new_output: str | None = None,
-        summary: HandoffSummary | None = None,
-    ) -> ResponseInputParam: ...
+        on_delta: Callable[[str], None] | None = None,
+    ) -> StepResult: ...
 
-    async def compact(
-        self,
-        previous_response_id: str,
-        pending_items: ResponseInputParam | None = None,
-    ) -> HandoffSummary: ...
+    def add_tool_output(self, call_id: str, output: str) -> None: ...
+
+    async def step(
+        self, on_delta: Callable[[str], None] | None = None,
+    ) -> StepResult: ...
+
+    def finish_query(self) -> None: ...
 
 
 class _StreamingFinal:
@@ -120,7 +108,6 @@ class Executor:
         history_lines: int = 500,
         confirm_level: ConfirmLevel = "destructive",
         dangerous_matcher: DangerousCommandMatcher | None = None,
-        chain_compact_thresh: int = 100000,
         new_output_max_chars: int = 20000,
     ) -> None:
         self._llm = llm_client
@@ -134,14 +121,10 @@ class Executor:
         self._history_lines = history_lines
         self._confirm_level = confirm_level
         self._dangerous_matcher = dangerous_matcher
-        self._chain_compact_thresh = chain_compact_thresh
         self._new_output_max_chars = new_output_max_chars
 
-        # Session-wide response chain state. One chain spans queries; it
-        # is replaced on compaction (see _compact_chain).
-        self._chain_id: str | None = None
-        self._chain_input_tokens: int = 0
-        self._pending_items: ResponseInputParam = []
+        # Where the previous execution ended: the next query sends only
+        # the terminal output produced after this point.
         self._last_mark: ScreenMark | None = None
 
     async def _thinking(
@@ -165,8 +148,8 @@ class Executor:
 
     async def execute(self, query: str) -> None:
         """Run one execution (the LLM command-execute-observe loop) on the
-        session-wide response chain. Runs as the relay's execution task;
-        user Ctrl-C arrives as task cancellation."""
+        session-long conversation held by the LLM client. Runs as the
+        relay's execution task; user Ctrl-C arrives as task cancellation."""
         stream: _StreamingFinal | None = None
         try:
             # The finalized query line took over the prompt line on the
@@ -175,54 +158,26 @@ class Executor:
             self._write_to_pty(b"\n")
             await self._relay.wait_settle(self._settle_ms, self._threshold_ms)
 
-            summary: HandoffSummary | None = None
-            if (
-                self._chain_id is not None
-                and self._chain_input_tokens >= self._chain_compact_thresh
-            ):
-                summary = await self._thinking(
-                    self._compact_chain(), label=b"[compacting...]",
-                )
-
-            input_items: ResponseInputParam = [
-                *self._pending_items,
-                *self._build_query_message(query, summary),
-            ]
-            prev_response_id = self._chain_id
-            chain_lost_retried = False
-
+            result: StepResult | None = None
             step = 0
             checkpoint = self._max_steps
             while True:
                 step += 1
                 stream = _StreamingFinal(self._stdout_fd)
-                try:
-                    result = await self._thinking(
-                        self._llm.step(
-                            input_items,
-                            previous_response_id=prev_response_id,
-                            on_delta=stream.on_delta,
-                        ),
-                        stream=stream,
+                if result is None:
+                    # First step of the query. The client picks the
+                    # context: the full screen on a fresh conversation
+                    # (session start / right after a compaction), the new
+                    # output since the previous task otherwise.
+                    coro = self._llm.start_query(
+                        query,
+                        screen_text=self._screen.get_text(last_n=self._history_lines),
+                        new_output=self._new_output_since_last(),
+                        on_delta=stream.on_delta,
                     )
-                except ChainLostError:
-                    if chain_lost_retried or prev_response_id is None:
-                        raise
-                    # The stored chain is gone (e.g. expired server-side);
-                    # restart this query on a fresh chain. The old chain
-                    # cannot be summarized anymore, so context is the full
-                    # screen only.
-                    chain_lost_retried = True
-                    self._reset_chain()
-                    input_items = self._build_query_message(query, None)
-                    prev_response_id = None
-                    step -= 1
-                    continue
-                prev_response_id = result.response_id
-                self._chain_id = result.response_id
-                if result.input_tokens is not None:
-                    self._chain_input_tokens = result.input_tokens
-                self._pending_items = []
+                else:
+                    coro = self._llm.step(on_delta=stream.on_delta)
+                result = await self._thinking(coro, stream=stream)
 
                 if not result.tool_calls:
                     if stream.started:
@@ -236,26 +191,19 @@ class Executor:
                 # call) has already been streamed; end the open message.
                 stream.close()
 
-                # Build the outputs directly into _pending_items: whatever
-                # is not delivered by a later step in this execution (stop
-                # at a checkpoint, interrupt) must go out with the next
-                # query, or the chain would be left with an unanswered
-                # function_call.
-                outputs: ResponseInputParam = []
-                self._pending_items = outputs
+                index = 0
                 try:
-                    for call in result.tool_calls:
-                        output_text = await self._run_tool_call(call)
-                        outputs.append(_tool_output_item(call.call_id, output_text))
+                    for index, call in enumerate(result.tool_calls):
+                        await self._run_tool_call(call)
                 except asyncio.CancelledError:
-                    # _run_tool_call answers the in-flight call itself;
-                    # cover calls that never started.
-                    for missed in result.tool_calls[len(outputs):]:
-                        outputs.append(
-                            _tool_output_item(missed.call_id, INTERRUPTED_TOOL_OUTPUT),
+                    # _run_tool_call records its own call on every exit
+                    # path; record the calls that never started so the
+                    # conversation is not left with an unanswered call.
+                    for missed in result.tool_calls[index + 1:]:
+                        self._llm.add_tool_output(
+                            missed.call_id, INTERRUPTED_TOOL_OUTPUT,
                         )
                     raise
-                input_items = outputs
 
                 if step == checkpoint:
                     if not await self._confirm_continue(step):
@@ -279,19 +227,9 @@ class Executor:
             # Track where this execution ended so the next query can send
             # only the terminal output produced in between.
             self._last_mark = self._screen.mark()
-
-    def _build_query_message(
-        self, query: str, summary: HandoffSummary | None,
-    ) -> ResponseInputParam:
-        if self._chain_id is None:
-            return self._llm.build_query_message(
-                query,
-                screen_text=self._screen.get_text(last_n=self._history_lines),
-                summary=summary,
-            )
-        return self._llm.build_query_message(
-            query, new_output=self._new_output_since_last(),
-        )
+            # The query is over (done, stopped, or interrupted); let the
+            # client compact the conversation in the background if needed.
+            self._llm.finish_query()
 
     def _new_output_since_last(self) -> str | None:
         """Terminal output produced since the previous execution ended
@@ -309,31 +247,14 @@ class Executor:
             )
         return text
 
-    async def _compact_chain(self) -> HandoffSummary | None:
-        """Compact the chain into a handoff summary and reset it. On
-        failure the old chain is kept and compaction is retried at the
-        next query (the LLM client logs the error)."""
-        assert self._chain_id is not None
-        try:
-            summary = await self._llm.compact(
-                self._chain_id, self._pending_items or None,
-            )
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            return None
-        self._reset_chain()
-        return summary
-
-    def _reset_chain(self) -> None:
-        self._chain_id = None
-        self._chain_input_tokens = 0
-        self._pending_items = []
-
-    async def _run_tool_call(self, call: ParsedToolCall) -> str:
-        """Execute one tool call and build its function_call_output text."""
+    async def _run_tool_call(self, call: ParsedToolCall) -> None:
+        """Execute one tool call and record its output on the
+        conversation. Every exit path — normal, declined, error, and
+        cancellation — records exactly one output for the call, so the
+        conversation never carries an unanswered tool call."""
         if call.params is None:
-            return f"Error: {call.error}"
+            self._llm.add_tool_output(call.call_id, f"Error: {call.error}")
+            return
 
         if isinstance(call.params, RunCommandParams):
             risk, matched = self._effective_risk(call.params)
@@ -343,8 +264,16 @@ class Executor:
                     if matched is not None
                     else call.params.risk_reason
                 )
-                if not await self._confirm_command(call.params.command, risk, detail):
-                    return DECLINED_TOOL_OUTPUT
+                try:
+                    confirmed = await self._confirm_command(
+                        call.params.command, risk, detail,
+                    )
+                except asyncio.CancelledError:
+                    self._llm.add_tool_output(call.call_id, INTERRUPTED_TOOL_OUTPUT)
+                    raise
+                if not confirmed:
+                    self._llm.add_tool_output(call.call_id, DECLINED_TOOL_OUTPUT)
+                    return
 
         mark = self._screen.mark()
 
@@ -359,7 +288,11 @@ class Executor:
         else:
             ctrl_bytes = CONTROL_CHAR_MAP.get(call.params.key)
             if ctrl_bytes is None:
-                return f"Error: unknown control key: {call.params.key}"
+                self._llm.add_tool_output(
+                    call.call_id, f"Error: unknown control key: {call.params.key}",
+                )
+                return
+
             self._write_to_pty(ctrl_bytes)
 
         try:
@@ -367,15 +300,14 @@ class Executor:
                 self._settle_ms, self._threshold_ms,
             )
         except asyncio.CancelledError:
-            # The command was already sent; answer its function_call with
-            # whatever output arrived so far, to be delivered on the next
-            # request of the chain.
-            self._pending_items.append(_tool_output_item(
+            # The command was already sent; answer its call with whatever
+            # output arrived so far.
+            self._llm.add_tool_output(
                 call.call_id,
                 f"## Terminal Output\n```\n{self._screen.get_text_since(mark)}\n```\n"
                 "[Note] The task was interrupted by the user; the command "
                 "may still be running.",
-            ))
+            )
             raise
         finally:
             self._relay.flush_sgr_reset()
@@ -387,7 +319,7 @@ class Executor:
                 f"\n[Note] Output did not settle within {threshold_s:g}s. "
                 "The command may still be running."
             )
-        return output_text
+        self._llm.add_tool_output(call.call_id, output_text)
 
     async def _confirm_continue(self, step: int) -> bool:
         """Ask the user whether to continue past the step checkpoint."""

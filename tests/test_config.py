@@ -67,7 +67,7 @@ class TestDefaults:
         assert config.log_file is None
         assert config.raw_io_log_file is None
         assert config.dangerous_patterns_file == default_dangerous_patterns_file()
-        assert config.chain_compact_thresh == 100000
+        assert config.compact_thresh == 100000
         assert config.new_output_max_chars == 20000
 
     def test_api_key_from_env(
@@ -103,7 +103,7 @@ dangerous_patterns_file = "~/patterns.txt"
 model = "main-model"
 base_url = "https://main.api/v1"
 reasoning_effort = "high"
-chain_compact_thresh = 50000
+compact_thresh = 50000
 new_output_max_chars = 5000
 """)
         assert warnings == []
@@ -121,7 +121,7 @@ new_output_max_chars = 5000
         assert config.model == "main-model"
         assert config.openai_base_url == "https://main.api/v1"
         assert config.openai_reasoning_effort == "high"
-        assert config.chain_compact_thresh == 50000
+        assert config.compact_thresh == 50000
         assert config.new_output_max_chars == 5000
 
     def test_empty_string_means_unset(self, isolated_home: Path, tmp_path: Path) -> None:

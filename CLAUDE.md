@@ -10,7 +10,7 @@ Key differentiator: wraps the **tty itself**, not a specific shell — works ove
 
 ## Status
 
-Core loop complete (LLMClient with Responses API function calling — `run_command` / `send_control` tools, Executor tool-call loop, idle-timer settle detection). The final response is plain text streamed to the terminal as it arrives (`responses.stream()`, shown gray in `[...]`). A former one-shot "completion mode" has been removed; the command-execute-observe loop is expecto's sole behavior. The response chain spans the whole session and is compacted into a handoff summary past a token threshold (see `design/DESIGN-Chain.md`). Concurrency is a single-threaded asyncio event loop — one always-on relay pump, executions as cancellable tasks, no threads/locks (see `design/DESIGN-Async.md`). `design/DESIGN.md` is the authoritative specification.
+Core loop complete (LLMClient with Chat Completions function calling — `run_command` / `send_control` tools, Executor tool-call loop, idle-timer settle detection). The final response is plain text streamed to the terminal as it arrives (`chat.completions.stream()`, shown gray in `[...]`). A former one-shot "completion mode" has been removed; the command-execute-observe loop is expecto's sole behavior. The LLMClient owns the message history, which spans the whole session (append-only for prompt-cache hits) and is compacted transparently into a handoff summary past a token threshold (see `design/DESIGN-Conversation.md`). Concurrency is a single-threaded asyncio event loop — one always-on relay pump, executions as cancellable tasks, no threads/locks (see `design/DESIGN-Async.md`). `design/DESIGN.md` is the authoritative specification.
 
 ### TODO
 
@@ -38,7 +38,7 @@ Core components (each a separate module under `src/expecto/`):
 - `response_filter` — recognizes terminal→application response sequences (CPR/DA/OSC/DCS replies) in stdin so they reach the child while stdin is withheld in query/executing states (fish 4.x blocks on them at every prompt)
 - `screen_buffer` — pyte-based screen capture + scrollback ring buffer for LLM context
 - `query_ui` — gray inline miniprompt (`? `) drawn at the cursor position
-- `llm_client` — OpenAI Responses API via AsyncOpenAI, Structured Outputs
+- `llm_client` — Chat Completions via AsyncOpenAI; owns the session-long message history and its compaction
 - `executor` — the command-execute-observe loop (async, cancellation-based interrupts)
 - `settle` — idle-timer output settle detection (`wait_settle` coroutine, no PS1 dependency)
 - `dangerous` — regex backstop for unmistakably catastrophic commands

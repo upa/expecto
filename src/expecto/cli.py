@@ -193,7 +193,6 @@ def main(argv: list[str] | None = None) -> None:
         history_lines=config.history_lines,
         confirm_level=config.confirm_level,
         dangerous_matcher=dangerous_matcher,
-        chain_compact_thresh=config.chain_compact_thresh,
         new_output_max_chars=config.new_output_max_chars,
     )
 

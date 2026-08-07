@@ -158,7 +158,7 @@ class ExpectoConfig:
     raw_io_log_file: str | None = None
     log_file: str | None = None
     scrollback_lines: int = 5000
-    chain_compact_thresh: int = 100000
+    compact_thresh: int = 100000
     new_output_max_chars: int = 20000
     confirm_level: ConfirmLevel = "destructive"
     dangerous_patterns_file: str = ""
@@ -235,8 +235,8 @@ def _apply_toml(
         config.openai_base_url = base_url
     if (effort := table.take_choice("reasoning_effort", REASONING_EFFORT_LEVELS)) is not None:
         config.openai_reasoning_effort = cast("ReasoningEffortLevel", effort)
-    if (v := table.take_int("chain_compact_thresh")) is not None:
-        config.chain_compact_thresh = v
+    if (v := table.take_int("compact_thresh")) is not None:
+        config.compact_thresh = v
     if (v := table.take_int("new_output_max_chars")) is not None:
         config.new_output_max_chars = v
 

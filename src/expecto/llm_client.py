@@ -1,22 +1,27 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
 import openai
-from openai.lib.streaming.responses import ResponseTextDeltaEvent
-from openai.types.responses import (
-    FunctionToolParam,
-    ResponseFunctionToolCall,
-    ResponseInputParam,
+from openai.lib.streaming.chat import ContentDeltaEvent
+from openai.types.chat import (
+    ChatCompletionAssistantMessageParam,
+    ChatCompletionFunctionToolParam,
+    ChatCompletionMessage,
+    ChatCompletionMessageParam,
 )
-from openai.types.shared_params import Reasoning
 from pydantic import BaseModel, ValidationError
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+
+    from openai.types.chat.chat_completion_message import (
+        ChatCompletionMessageToolCallUnion,
+    )
 
     from expecto.config import ExpectoConfig
 
@@ -69,15 +74,11 @@ facts the next conversation must know. Do not invent information.
 
 
 class HandoffSummary(BaseModel):
-    """Session summary that carries context across a chain compaction."""
+    """Session summary that carries context across a compaction."""
 
     environment: str
     activities: str
     notes: str
-
-
-class ChainLostError(Exception):
-    """The server no longer has the previous response of the chain."""
 
 
 RiskLevel = Literal["read_only", "mutating", "destructive"]
@@ -93,65 +94,69 @@ class SendControlParams(BaseModel):
     key: Literal["ctrl-c", "ctrl-d", "ctrl-z"]
 
 
-TOOLS: list[FunctionToolParam] = [
+TOOLS: list[ChatCompletionFunctionToolParam] = [
     {
         "type": "function",
-        "name": "run_command",
-        "description": (
-            "Execute a command in the user's terminal (the command followed by "
-            "Enter is written to the terminal), wait until the output settles, "
-            "and return the terminal screen text."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "command": {
-                    "type": "string",
-                    "description": "The command to execute, in the syntax of the target system.",
+        "function": {
+            "name": "run_command",
+            "description": (
+                "Execute a command in the user's terminal (the command followed by "
+                "Enter is written to the terminal), wait until the output settles, "
+                "and return the terminal screen text."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {
+                        "type": "string",
+                        "description": "The command to execute, in the syntax of the target system.",
+                    },
+                    "risk": {
+                        "type": "string",
+                        "enum": ["read_only", "mutating", "destructive"],
+                        "description": (
+                            "Risk classification of this command on the target "
+                            "system: read_only = no state change; mutating = "
+                            "changes state but recoverable and limited in scope; "
+                            "destructive = irreversible or high blast radius "
+                            "(data deletion, device reload/erase, changes that "
+                            "may cut connectivity)."
+                        ),
+                    },
+                    "risk_reason": {
+                        "type": "string",
+                        "description": "Short justification for the risk classification.",
+                    },
                 },
-                "risk": {
-                    "type": "string",
-                    "enum": ["read_only", "mutating", "destructive"],
-                    "description": (
-                        "Risk classification of this command on the target "
-                        "system: read_only = no state change; mutating = "
-                        "changes state but recoverable and limited in scope; "
-                        "destructive = irreversible or high blast radius "
-                        "(data deletion, device reload/erase, changes that "
-                        "may cut connectivity)."
-                    ),
-                },
-                "risk_reason": {
-                    "type": "string",
-                    "description": "Short justification for the risk classification.",
-                },
+                "required": ["command", "risk", "risk_reason"],
+                "additionalProperties": False,
             },
-            "required": ["command", "risk", "risk_reason"],
-            "additionalProperties": False,
+            "strict": True,
         },
-        "strict": True,
     },
     {
         "type": "function",
-        "name": "send_control",
-        "description": (
-            "Send a control character to the user's terminal (e.g. to interrupt "
-            "a long-running command), wait until the output settles, and return "
-            "the terminal screen text."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "key": {
-                    "type": "string",
-                    "enum": ["ctrl-c", "ctrl-d", "ctrl-z"],
-                    "description": "The control character to send.",
+        "function": {
+            "name": "send_control",
+            "description": (
+                "Send a control character to the user's terminal (e.g. to interrupt "
+                "a long-running command), wait until the output settles, and return "
+                "the terminal screen text."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "key": {
+                        "type": "string",
+                        "enum": ["ctrl-c", "ctrl-d", "ctrl-z"],
+                        "description": "The control character to send.",
+                    },
                 },
+                "required": ["key"],
+                "additionalProperties": False,
             },
-            "required": ["key"],
-            "additionalProperties": False,
+            "strict": True,
         },
-        "strict": True,
     },
 ]
 
@@ -170,11 +175,67 @@ class StepResult:
 
     tool_calls: list[ParsedToolCall]
     final_text: str | None
-    response_id: str
-    input_tokens: int | None = None
+
+
+def _query_content(
+    query: str,
+    *,
+    screen_text: str | None = None,
+    new_output: str | None = None,
+    summary: HandoffSummary | None = None,
+) -> str:
+    sections: list[str] = []
+    if summary is not None:
+        sections.append(
+            "## Session Summary (compacted from the earlier conversation)\n"
+            f"Environment: {summary.environment}\n"
+            f"Activities: {summary.activities}\n"
+            f"Notes: {summary.notes}"
+        )
+    if screen_text is not None:
+        sections.append(f"## Current Terminal Screen\n```\n{screen_text}\n```")
+    if new_output is not None:
+        sections.append(
+            "## New Terminal Output (since the previous task)\n"
+            f"```\n{new_output}\n```"
+        )
+    sections.append(f"## Goal\n{query}")
+    return "\n\n".join(sections)
+
+
+def _assistant_param(message: ChatCompletionMessage) -> ChatCompletionAssistantMessageParam:
+    """Convert a response message into the exact history entry to replay.
+
+    The conversation is append-only and replayed verbatim on every request,
+    so the prompt prefix stays cached; tool call arguments are kept as the
+    raw strings the model produced."""
+    param: ChatCompletionAssistantMessageParam = {"role": "assistant"}
+    if message.content is not None:
+        param["content"] = message.content
+    if message.tool_calls:
+        param["tool_calls"] = [
+            {
+                "id": call.id,
+                "type": "function",
+                "function": {
+                    "name": call.function.name,
+                    "arguments": call.function.arguments,
+                },
+            }
+            for call in message.tool_calls
+            if call.type == "function"
+        ]
+    return param
 
 
 class LLMClient:
+    """Chat Completions client that owns the running conversation.
+
+    The message history starts at the system prompt and accumulates
+    queries, tool calls/outputs, and final responses across the whole
+    session. It is append-only (for prompt-cache hits) and compacted
+    transparently when it grows past compact_thresh (§DESIGN-Conversation)."""
+
     def __init__(self, config: ExpectoConfig) -> None:
         self._config = config
         self._client: openai.AsyncOpenAI = openai.AsyncOpenAI(
@@ -182,6 +243,14 @@ class LLMClient:
             base_url=config.openai_base_url,
         )
         self._log_file = config.log_file
+        self._compact_thresh = config.compact_thresh
+        self._messages: list[ChatCompletionMessageParam] = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+        ]
+        self._last_prompt_tokens: int = 0
+        self._logged_messages: int = 0
+        self._compact_task: asyncio.Task[None] | None = None
+        self._pending_summary: HandoffSummary | None = None
 
     def _log(self, entry: dict[str, Any]) -> None:
         if self._log_file is None:
@@ -190,58 +259,108 @@ class LLMClient:
         with open(self._log_file, "a") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
-    async def step(
+    # --- conversation API (used by Executor) ---
+
+    async def start_query(
         self,
-        input_items: ResponseInputParam,
-        previous_response_id: str | None = None,
+        query: str,
+        *,
+        screen_text: str,
+        new_output: str | None = None,
         on_delta: Callable[[str], None] | None = None,
     ) -> StepResult:
-        reasoning: Reasoning | None = (
-            Reasoning(effort=self._config.openai_reasoning_effort)
-            if self._config.openai_reasoning_effort is not None
-            else None
-        )
+        """Begin one query on the running conversation and run its first
+        step. Waits for a background compaction started by finish_query()
+        if one is still in flight. A fresh conversation (session start or
+        right after a compaction) gets the full screen; a continuing one
+        gets only the new output produced since the previous task."""
+        self._log({"type": "query", "query": query})
 
-        self._log({
-            "type": "llm_request",
-            "model": self._config.model,
-            "input": list(input_items),
-            "previous_response_id": previous_response_id,
+        if self._compact_task is not None:
+            # Never raises: _compact() swallows its own errors. Awaiting a
+            # task does not cancel it if this query is interrupted; the
+            # compaction finishes on its own and the next query picks it up.
+            await self._compact_task
+            self._compact_task = None
+        summary = self._pending_summary
+        self._pending_summary = None
+
+        if len(self._messages) == 1:
+            content = _query_content(query, screen_text=screen_text, summary=summary)
+        else:
+            content = _query_content(query, new_output=new_output)
+        self._messages.append({"role": "user", "content": content})
+        return await self._request(on_delta)
+
+    def add_tool_output(self, call_id: str, output: str) -> None:
+        """Record one tool call's result on the conversation."""
+        self._messages.append({
+            "role": "tool",
+            "tool_call_id": call_id,
+            "content": output,
         })
 
-        try:
-            async with self._client.responses.stream(
-                model=self._config.model,
-                instructions=SYSTEM_PROMPT,
-                input=input_items,
-                tools=TOOLS,
-                parallel_tool_calls=False,
-                reasoning=reasoning,
-                store=True,
-                previous_response_id=previous_response_id,
-            ) as stream:
-                async for event in stream:
-                    if isinstance(event, ResponseTextDeltaEvent) and on_delta is not None:
-                        on_delta(event.delta)
-                response = await stream.get_final_response()
-        except openai.BadRequestError as exc:
-            if (
-                previous_response_id is not None
-                and "previous response" in str(exc).lower()
-            ):
-                raise ChainLostError(str(exc)) from exc
-            raise
+    async def step(
+        self, on_delta: Callable[[str], None] | None = None,
+    ) -> StepResult:
+        """Run one follow-up step (after tool outputs were recorded)."""
+        return await self._request(on_delta)
+
+    def finish_query(self) -> None:
+        """Called when a query's execution ends (final response shown,
+        stopped, or interrupted). Starts a background compaction if the
+        conversation has grown past the threshold; it runs after control
+        has returned to the user, and the next start_query() waits for it."""
+        if self._compact_task is not None and not self._compact_task.done():
+            return
+        if len(self._messages) == 1 or self._prompt_size() < self._compact_thresh:
+            return
+        self._compact_task = asyncio.get_running_loop().create_task(
+            self._compact_background(),
+        )
+
+    async def _compact_background(self) -> None:
+        summary = await self._compact()
+        if summary is not None:
+            self._pending_summary = summary
+
+    # --- request plumbing ---
+
+    async def _request(
+        self, on_delta: Callable[[str], None] | None,
+    ) -> StepResult:
+        self._log_request()
+
+        async with self._client.chat.completions.stream(
+            model=self._config.model,
+            messages=self._messages,
+            tools=TOOLS,
+            parallel_tool_calls=False,
+            reasoning_effort=(
+                self._config.openai_reasoning_effort
+                if self._config.openai_reasoning_effort is not None
+                else openai.omit
+            ),
+            stream_options={"include_usage": True},
+        ) as stream:
+            async for event in stream:
+                if isinstance(event, ContentDeltaEvent) and on_delta is not None:
+                    on_delta(event.delta)
+            completion = await stream.get_final_completion()
+
+        message = completion.choices[0].message
+        self._messages.append(_assistant_param(message))
 
         tool_calls: list[ParsedToolCall] = []
-        for item in response.output:
-            if isinstance(item, ResponseFunctionToolCall):
-                tool_calls.append(self._parse_tool_call(item))
+        for item in message.tool_calls or []:
+            tool_calls.append(self._parse_tool_call(item))
 
         final_text: str | None = None
         if not tool_calls:
-            final_text = response.output_text
+            final_text = message.content
 
-        input_tokens = response.usage.input_tokens if response.usage is not None else None
+        if completion.usage is not None:
+            self._last_prompt_tokens = completion.usage.prompt_tokens
 
         self._log({
             "type": "llm_response",
@@ -251,124 +370,107 @@ class LLMClient:
                 for c in tool_calls
             ],
             "final_text": final_text,
-            "response_id": response.id,
-            "input_tokens": input_tokens,
+            "prompt_tokens": (
+                completion.usage.prompt_tokens if completion.usage is not None else None
+            ),
         })
 
-        return StepResult(
-            tool_calls=tool_calls,
-            final_text=final_text,
-            response_id=response.id,
-            input_tokens=input_tokens,
-        )
+        return StepResult(tool_calls=tool_calls, final_text=final_text)
 
-    def _parse_tool_call(self, item: ResponseFunctionToolCall) -> ParsedToolCall:
-        call_id = item.call_id
+    def _log_request(self) -> None:
+        """Log one request incrementally: the history is append-only, so
+        only the messages added since the previous request are new."""
+        self._log({
+            "type": "llm_request",
+            "model": self._config.model,
+            "new_messages": list(self._messages[self._logged_messages:]),
+            "total_messages": len(self._messages),
+        })
+        self._logged_messages = len(self._messages)
+
+    def _prompt_size(self) -> int:
+        """Prompt size in tokens for the compaction check: the last
+        request's reported usage, or a chars/4 estimate when the backend
+        reports no usage."""
+        if self._last_prompt_tokens > 0:
+            return self._last_prompt_tokens
+        chars = sum(
+            len(json.dumps(message, ensure_ascii=False))
+            for message in self._messages
+        )
+        return chars // 4
+
+    def _parse_tool_call(
+        self, item: ChatCompletionMessageToolCallUnion,
+    ) -> ParsedToolCall:
+        if item.type != "function":
+            return ParsedToolCall(
+                call_id=item.id,
+                name=item.type,
+                params=None,
+                error=f"unsupported tool call type: {item.type}",
+            )
+        name = item.function.name
         params: RunCommandParams | SendControlParams
         try:
-            if item.name == "run_command":
-                params = RunCommandParams.model_validate_json(item.arguments)
-            elif item.name == "send_control":
-                params = SendControlParams.model_validate_json(item.arguments)
+            if name == "run_command":
+                params = RunCommandParams.model_validate_json(item.function.arguments)
+            elif name == "send_control":
+                params = SendControlParams.model_validate_json(item.function.arguments)
             else:
                 return ParsedToolCall(
-                    call_id=call_id,
-                    name=item.name,
+                    call_id=item.id,
+                    name=name,
                     params=None,
-                    error=f"unknown tool: {item.name}",
+                    error=f"unknown tool: {name}",
                 )
         except ValidationError as exc:
             return ParsedToolCall(
-                call_id=call_id,
-                name=item.name,
+                call_id=item.id,
+                name=name,
                 params=None,
                 error=f"invalid arguments: {exc}",
             )
-        return ParsedToolCall(call_id=call_id, name=item.name, params=params)
+        return ParsedToolCall(call_id=item.id, name=name, params=params)
 
-    async def compact(
-        self,
-        previous_response_id: str,
-        pending_items: ResponseInputParam | None = None,
-    ) -> HandoffSummary:
-        """Ask the current chain for a handoff summary that seeds a fresh
-        chain. instructions and tools stay identical to step() so the
-        chain's prompt prefix stays cached; the compaction directive is
-        carried by the user message and tool_choice="none"."""
-        input_items: ResponseInputParam = list(pending_items) if pending_items else []
-        input_items.append({"role": "user", "content": COMPACT_REQUEST})
-        reasoning: Reasoning | None = (
-            Reasoning(effort=self._config.openai_reasoning_effort)
-            if self._config.openai_reasoning_effort is not None
-            else None
-        )
+    # --- compaction ---
 
-        self._log({
-            "type": "compact_request",
-            "model": self._config.model,
-            "input": list(input_items),
-            "previous_response_id": previous_response_id,
-        })
+    async def _compact(self) -> HandoffSummary | None:
+        """Compact the conversation into a handoff summary and reset the
+        history to the system prompt. On failure the history is kept and
+        compaction is retried at the next query."""
+        request: list[ChatCompletionMessageParam] = [
+            *self._messages,
+            {"role": "user", "content": COMPACT_REQUEST},
+        ]
+        self._log({"type": "compact_request", "total_messages": len(request)})
 
         try:
-            response = await self._client.responses.parse(
+            # instructions (system) and tools stay identical to _request()
+            # so the history's prompt prefix stays cached; only tool use is
+            # disabled for this one call.
+            response = await self._client.chat.completions.parse(
                 model=self._config.model,
-                instructions=SYSTEM_PROMPT,
-                input=input_items,
-                text_format=HandoffSummary,
+                messages=request,
+                response_format=HandoffSummary,
                 tools=TOOLS,
                 parallel_tool_calls=False,
                 tool_choice="none",
-                reasoning=reasoning,
-                store=False,
-                previous_response_id=previous_response_id,
+                reasoning_effort=(
+                    self._config.openai_reasoning_effort
+                    if self._config.openai_reasoning_effort is not None
+                    else openai.omit
+                ),
             )
+            parsed = response.choices[0].message.parsed
+            if parsed is None:
+                raise ValueError("compaction LLM returned empty response")
         except Exception as exc:
             self._log({"type": "compact_error", "error": str(exc)})
-            raise
+            return None
 
-        parsed = response.output_parsed
-        if parsed is None:
-            self._log({"type": "compact_error", "error": "LLM returned empty response"})
-            raise ValueError("compaction LLM returned empty response")
-
-        self._log({
-            "type": "compact_response",
-            "response": parsed.model_dump(),
-        })
-
+        self._messages = [self._messages[0]]
+        self._last_prompt_tokens = 0
+        self._logged_messages = 0
+        self._log({"type": "compact_response", "response": parsed.model_dump()})
         return parsed
-
-    def build_query_message(
-        self,
-        query: str,
-        *,
-        screen_text: str | None = None,
-        new_output: str | None = None,
-        summary: HandoffSummary | None = None,
-    ) -> ResponseInputParam:
-        """Build the user message that starts one query. A fresh chain
-        gets the full screen (plus the handoff summary right after a
-        compaction); a continuing chain gets only the terminal output
-        produced since the previous task."""
-        self._log({
-            "type": "query",
-            "query": query,
-        })
-        sections: list[str] = []
-        if summary is not None:
-            sections.append(
-                "## Session Summary (compacted from the earlier conversation)\n"
-                f"Environment: {summary.environment}\n"
-                f"Activities: {summary.activities}\n"
-                f"Notes: {summary.notes}"
-            )
-        if screen_text is not None:
-            sections.append(f"## Current Terminal Screen\n```\n{screen_text}\n```")
-        if new_output is not None:
-            sections.append(
-                "## New Terminal Output (since the previous task)\n"
-                f"```\n{new_output}\n```"
-            )
-        sections.append(f"## Goal\n{query}")
-        return [{"role": "user", "content": "\n\n".join(sections)}]
