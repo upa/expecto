@@ -276,9 +276,9 @@ expecto [OPTIONS] [-- COMMAND ...]
 
 OPTIONS (implemented):
   --shell PATH               Command to launch as the child process (default: $SHELL)
-  --config PATH              Path to the config file
+  -c, --config PATH          Path to the config file
                              (default: ~/.config/expecto/config.toml)
-  --env PATH                 Path to the .env file to load
+  -e, --env PATH             Path to the .env file to load
                              (default: ~/.config/expecto/.env)
   --history-lines N          Number of screen-history lines passed to the LLM (default: 500)
   --scrollback-lines N       pyte scrollback capacity (default: 5000)
@@ -286,7 +286,7 @@ OPTIONS (implemented):
                              (destructive|mutating|none, default: destructive)
   --dangerous-patterns-file PATH  Additional file of dangerous-command regexes
                              (default: ~/.config/expecto/dangerous_patterns.txt)
-  --log-file PATH            Destination for the JSONL log of queries and LLM requests/responses (disabled by default)
+  -l, --log-file PATH        Destination for the JSONL log of queries and LLM requests/responses (disabled by default)
   --raw-io-log-file PATH     Destination for the raw I/O log (for debugging, disabled by default)
 ```
 

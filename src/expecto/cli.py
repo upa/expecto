@@ -29,11 +29,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Child process command (default: $SHELL)",
     )
     parser.add_argument(
+        "-c",
         "--config",
         default=None,
         help="Config file path (default: ~/.config/expecto/config.toml)",
     )
     parser.add_argument(
+        "-e",
         "--env",
         default=None,
         help="Env file to load (default: ~/.config/expecto/.env)",
@@ -44,6 +46,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Raw I/O log output path (for debugging)",
     )
     parser.add_argument(
+        "-l",
         "--log-file",
         default=None,
         help="Log file for queries and LLM requests/responses (JSONL format)",
