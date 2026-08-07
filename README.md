@@ -113,15 +113,5 @@ agents_md_file = ""             # AGENTS.md (default: ~/.config/expecto/AGENTS.m
 If `~/.config/expecto/AGENTS.md` exists (or a file given by `-a` /
 `--agents-md`), its contents are appended to the system prompt. Use it for
 what the agent cannot see on the screen — your hosts and their quirks,
-device conventions, commands you prefer:
-
-```markdown
-- rtr1 and rtr2 are Junos devices; rtr3 runs Cisco IOS.
-- Never commit a candidate config without showing me `show | compare` first.
-- Answer in Japanese.
-```
-
-These instructions are additive: they cannot override the risk
-classification and confirmation rules.
-
+device conventions, commands you prefer.
 
