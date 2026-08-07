@@ -278,6 +278,8 @@ OPTIONS (implemented):
   --shell PATH               Command to launch as the child process (default: $SHELL)
   --config PATH              Path to the config file
                              (default: ~/.config/expecto/config.toml)
+  --env PATH                 Path to the .env file to load
+                             (default: ~/.config/expecto/.env)
   --history-lines N          Number of screen-history lines passed to the LLM (default: 500)
   --scrollback-lines N       pyte scrollback capacity (default: 5000)
   --confirm-level LEVEL      Minimum risk level that requires confirmation
@@ -295,7 +297,7 @@ else — model, base_url, reasoning effort, hotkey, compaction threshold, etc. �
 is specified in config.toml. See **`Config.md`** for the schema, error
 handling, and hotkey notation details.
 
-`.env` file search order: the current directory (also searching upward toward parents, following python-dotenv convention) → if not found, `~/.config/expecto/.env`. Environment variables that are already set always take precedence over values from the file. This mechanism exists so the API key can be read no matter where the installed command is launched from.
+`.env` file loading: the file given by `--env PATH` (startup error if it does not exist) → without that flag, `~/.config/expecto/.env` if it exists. The current directory is not searched — as an installed command, expecto must behave the same no matter where it is launched from. Environment variables that are already set always take precedence over values from the file.
 
 Not implemented (future work): the `--hotkey` / `--model` / `--max-steps` / `--settle-ms` CLI flags (all low priority now that they are configurable via config.toml).
 

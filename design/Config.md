@@ -22,7 +22,8 @@
 ```
 
 - Path resolution is centralized in `config.config_dir()`: `$XDG_CONFIG_HOME/expecto` → `~/.config/expecto` if unset.
-- `.env` search order: from the current directory upward through parents → if not found, `<config_dir>/.env`. An already-set environment variable always takes precedence over the file value.
+- `.env` loading: the file given by `--env PATH` → without that flag, `<config_dir>/.env` if it exists. The current directory is not searched, so an installed expecto behaves the same wherever it is launched from. An already-set environment variable always takes precedence over the file value.
+- `--env` cannot be set in config.toml: the `.env` file is loaded before the config file is read.
 - If `OPENAI_API_KEY` is unset (neither in the environment nor in `.env`), expecto prints an error message at startup and exits.
 
 ## 3. config.toml Schema
@@ -77,6 +78,8 @@ Follows the existing policy of `dangerous_patterns.txt` (invalid lines are warne
 |------|------|
 | config.toml at the default path does not exist | Normal (all defaults) |
 | File explicitly specified via `--config` does not exist | **Exit with error** (so a mistyped path is noticed) |
+| `.env` at the default path does not exist | Normal (the key comes from the environment) |
+| File explicitly specified via `--env` does not exist | **Exit with error** (same policy as `--config`) |
 | TOML syntax error | Ignore the entire file with a warning |
 | Unknown key | Warn (typo detection), ignore |
 | Invalid type or value (negative integer, value outside the enum, etc.) | Warn for that key only and keep the default (the default for `confirm_level` is the safest option, `destructive`, so the fallback errs on the safe side) |
