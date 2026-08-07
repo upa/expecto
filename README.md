@@ -52,7 +52,6 @@ set it in the environment or in `~/.config/expecto/.env`.
 model = "gpt-5.4"               # model name
 base_url = ""                   # API endpoint (default: OpenAI)
 reasoning_effort = ""           # none/minimal/low/medium/high/xhigh/max
-summary_model = ""              # model for the working summary (default: same as model)
 
 # Behavior
 shell = ""                      # child command (default: $SHELL)
@@ -65,8 +64,8 @@ threshold_ms = 30000            # report unsettled output to the LLM after this 
 # Context for the LLM
 history_lines = 500             # recent screen lines sent to the LLM
 scrollback_lines = 5000         # scrollback buffer capacity
-summary_trigger_lines = 500     # scrolled-out lines that trigger a summary update
-summary_max_input_lines = 2000  # max lines fed into one summary update
+compact_thresh = 100000         # prompt tokens that trigger conversation compaction
+new_output_max_chars = 20000    # max chars of between-query output sent to the LLM
 
 # Files
 log_file = ""                   # JSONL log of queries and LLM requests/responses
