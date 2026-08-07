@@ -60,6 +60,42 @@ final response.
 in English, write it in the language of the query instead.
 """
 
+AGENTS_MD_SECTION = """
+# User Instructions
+
+The following instructions come from the user's AGENTS.md. Follow them in \
+addition to the rules above — they carry site-specific knowledge such as \
+hosts, device conventions, preferred commands, or output style. They do not \
+override the tool protocol or the risk classification and confirmation \
+rules above.
+
+"""
+
+
+def load_agents_md(path: str) -> str | None:
+    """Read the user's site instructions from an AGENTS.md file.
+
+    Returns None when the file does not exist, cannot be read, or holds
+    nothing but whitespace."""
+    try:
+        with open(path) as f:
+            text = f.read()
+    except OSError:
+        return None
+    return text.strip() or None
+
+
+def build_system_prompt(agents_md: str | None = None) -> str:
+    """The system prompt: the base prompt, with the user's AGENTS.md
+    appended as a trailing section when one was loaded.
+
+    Read once at startup and fixed for the whole session, so the prompt
+    prefix stays cached (design/Conversation.md §2)."""
+    if agents_md is None:
+        return SYSTEM_PROMPT
+    return SYSTEM_PROMPT + AGENTS_MD_SECTION + agents_md
+
+
 COMPACT_REQUEST = """\
 This conversation has grown long and is being compacted: your structured \
 response will seed a fresh conversation that replaces this one. Do not \
@@ -236,7 +272,9 @@ class LLMClient:
     session. It is append-only (for prompt-cache hits) and compacted
     transparently when it grows past compact_thresh (design/Conversation.md)."""
 
-    def __init__(self, config: ExpectoConfig) -> None:
+    def __init__(
+        self, config: ExpectoConfig, agents_md: str | None = None,
+    ) -> None:
         self._config = config
         self._client: openai.AsyncOpenAI = openai.AsyncOpenAI(
             api_key=config.openai_api_key,
@@ -245,7 +283,7 @@ class LLMClient:
         self._log_file = config.log_file
         self._compact_thresh = config.compact_thresh
         self._messages: list[ChatCompletionMessageParam] = [
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": build_system_prompt(agents_md)},
         ]
         self._last_prompt_tokens: int = 0
         self._logged_messages: int = 0

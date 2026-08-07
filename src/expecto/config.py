@@ -38,6 +38,10 @@ def default_dangerous_patterns_file() -> str:
     return os.path.join(config_dir(), "dangerous_patterns.txt")
 
 
+def default_agents_md_file() -> str:
+    return os.path.join(config_dir(), "AGENTS.md")
+
+
 _HOTKEY_SPECIAL_CODES: dict[str, int] = {
     "@": 0x00,
     "\\": 0x1C,
@@ -162,6 +166,7 @@ class ExpectoConfig:
     new_output_max_chars: int = 20000
     confirm_level: ConfirmLevel = "destructive"
     dangerous_patterns_file: str = ""
+    agents_md_file: str = ""
 
     @classmethod
     def load(cls, config_file: str | None = None) -> tuple[ExpectoConfig, list[str]]:
@@ -176,6 +181,7 @@ class ExpectoConfig:
             shell=os.environ.get("SHELL", "/bin/bash"),
             openai_api_key=os.environ.get("OPENAI_API_KEY", ""),
             dangerous_patterns_file=default_dangerous_patterns_file(),
+            agents_md_file=default_agents_md_file(),
         )
         warnings: list[str] = []
         path = config_file if config_file is not None else default_config_file()
@@ -228,6 +234,8 @@ def _apply_toml(
         config.raw_io_log_file = os.path.expanduser(raw_log)
     if (patterns := table.take_str("dangerous_patterns_file")) is not None:
         config.dangerous_patterns_file = os.path.expanduser(patterns)
+    if (agents_md := table.take_str("agents_md_file")) is not None:
+        config.agents_md_file = os.path.expanduser(agents_md)
 
     if (model := table.take_str("model")) is not None:
         config.model = model

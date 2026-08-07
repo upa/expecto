@@ -11,7 +11,7 @@ from expecto.dangerous import DangerousCommandMatcher
 from expecto.executor import Executor
 from expecto.input_router import InputRouter
 from expecto.io_relay import IORelay
-from expecto.llm_client import LLMClient
+from expecto.llm_client import LLMClient, load_agents_md
 from expecto.pty_manager import NESTING_ENV_VAR, PTYManager
 from expecto.query_ui import QueryModeUI
 from expecto.screen_buffer import ScreenBuffer
@@ -69,6 +69,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help="Minimum command risk that requires user confirmation "
         "(default: destructive)",
+    )
+    parser.add_argument(
+        "-a",
+        "--agents-md",
+        default=None,
+        help="AGENTS.md with user instructions for the system prompt "
+        "(default: ~/.config/expecto/AGENTS.md)",
     )
     parser.add_argument(
         "--dangerous-patterns-file",
@@ -143,6 +150,14 @@ def main(argv: list[str] | None = None) -> None:
         config.confirm_level = args.confirm_level
     if args.dangerous_patterns_file is not None:
         config.dangerous_patterns_file = args.dangerous_patterns_file
+    if args.agents_md is not None:
+        if not os.path.exists(args.agents_md):
+            print(
+                f"expecto: error: AGENTS.md not found: {args.agents_md}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        config.agents_md_file = args.agents_md
 
     command: str | list[str]
     if args.command:
@@ -163,7 +178,7 @@ def main(argv: list[str] | None = None) -> None:
     )
     query_ui = QueryModeUI(stdout_fd, get_cursor_col=screen_buffer.get_cursor_col)
 
-    llm_client = LLMClient(config)
+    llm_client = LLMClient(config, agents_md=load_agents_md(config.agents_md_file))
 
     dangerous_matcher, pattern_errors = DangerousCommandMatcher.load(
         config.dangerous_patterns_file or None,

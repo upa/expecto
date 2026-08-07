@@ -155,6 +155,22 @@ class TestStartupErrors:
         assert exc_info.value.code == 1
         assert "env file not found" in capsys.readouterr().err
 
+    def test_missing_explicit_agents_md_exits(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        self._isolate(monkeypatch, tmp_path)
+        # The API key is checked first; give it one so the run reaches the
+        # AGENTS.md path check.
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        missing = tmp_path / "nonexistent.md"
+        with pytest.raises(SystemExit) as exc_info:
+            main(["--agents-md", str(missing)])
+        assert exc_info.value.code == 1
+        assert "AGENTS.md not found" in capsys.readouterr().err
+
     def test_config_warnings_are_printed(
         self,
         monkeypatch: pytest.MonkeyPatch,

@@ -280,6 +280,8 @@ OPTIONS (implemented):
                              (default: ~/.config/expecto/config.toml)
   -e, --env PATH             Path to the .env file to load
                              (default: ~/.config/expecto/.env)
+  -a, --agents-md PATH       Path to the AGENTS.md appended to the system prompt
+                             (default: ~/.config/expecto/AGENTS.md)
   --history-lines N          Number of screen-history lines passed to the LLM (default: 500)
   --scrollback-lines N       pyte scrollback capacity (default: 5000)
   --confirm-level LEVEL      Minimum risk level that requires confirmation
@@ -323,6 +325,14 @@ You are an assistant that operates the terminal the user is working in
   If a command has been running for a long time, decide whether to
   interrupt it with Ctrl-C or keep waiting.
 ```
+
+### AGENTS.md (user instructions)
+
+When an AGENTS.md exists (`-a` / `--agents-md`, the `agents_md_file` config key, or `<config_dir>/AGENTS.md` by default), its contents are appended verbatim to the base system prompt as a trailing `# User Instructions` section. This is where the user records site-specific knowledge the model cannot derive from the screen: hosts and device conventions, preferred commands, output style.
+
+- The section states where the instructions come from and that they are additive: they **do not override** the tool protocol or the risk-classification and confirmation rules (§5.8). A file the user writes must not be able to talk the model out of classifying a command honestly.
+- The file is read once at startup and the system prompt stays byte-identical for the whole session — including compaction requests — so the prompt-cache invariant (Conversation.md §2) holds.
+- A missing file is normal (nothing is appended); a file given explicitly with `-a` that does not exist is a startup error (Config.md §6).
 
 The user message at query start includes the following (the Goal comes last):
 - First query of the session / immediately after compaction: the recent clean-text screen (§5.5) + the user's query string (immediately after compaction, the Session Summary comes first)
