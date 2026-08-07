@@ -54,6 +54,25 @@ base_url = "[YOUR API ENDPOINT URL]"
 See [Configuration](#configuration) for all available options.
 
 
+## Architecture
+
+`expecto` is implemented as a transparent `pty` wrapper, so it
+captures all terminal I/O below it. This is what makes it
+shell-agnostic. Also, `expecto` can control remote machines through
+SSH. Remote machines are not only Linux machines but also anything
+with a CLI, such as network devices.
+
+`expecto` keeps a single LLM conversation for the whole pty session:
+the context window lasts from launching `expecto` until you exit.
+When you send a query, the terminal output produced since the previous
+query is sent along with it (the amount is capped, configurable via
+`new_output_max_chars`), so the agent also knows what you did by hand
+in between. When the conversation grows past a threshold
+(`compact_thresh`), it is compacted: summarized so the session can
+keep going without exhausting the context window.
+
+
+
 ## Configuration
 
 `expecto` reads `~/.config/expecto/config.toml` (or a file given by
@@ -105,12 +124,4 @@ device conventions, commands you prefer:
 These instructions are additive: they cannot override the risk
 classification and confirmation rules.
 
-
-## Architecture
-
-`expecto` is implemented as a transparent `pty` wrapper, so it
-captures all terminal I/O below it. This is what makes it
-shell-agnostic. Also, `expecto` can control remote machines through
-SSH. Remote machines are not only Linux machines but also anything
-with a CLI, such as network devices.
 
