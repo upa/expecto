@@ -33,18 +33,40 @@ class TestLoadEnv:
         monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
         return home
 
-    def test_cwd_env_takes_precedence(
+    def test_explicit_env_file_takes_precedence(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
     ) -> None:
         home = self._isolate(monkeypatch, tmp_path)
         config_dir = home / ".config" / "expecto"
         config_dir.mkdir(parents=True)
         (config_dir / ".env").write_text("EXPECTO_TEST_VAR=from_config\n")
+        explicit = tmp_path / "explicit.env"
+        explicit.write_text("EXPECTO_TEST_VAR=from_explicit\n")
+        monkeypatch.delenv("EXPECTO_TEST_VAR", raising=False)
+        try:
+            load_env(str(explicit))
+            assert os.environ.get("EXPECTO_TEST_VAR") == "from_explicit"
+        finally:
+            os.environ.pop("EXPECTO_TEST_VAR", None)
+
+    def test_missing_explicit_env_file_raises(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    ) -> None:
+        self._isolate(monkeypatch, tmp_path)
+        with pytest.raises(FileNotFoundError):
+            load_env(str(tmp_path / "nonexistent.env"))
+
+    def test_cwd_env_is_ignored(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    ) -> None:
+        """Only --env and the config dir are searched; a .env that happens
+        to sit in the working directory is not picked up."""
+        self._isolate(monkeypatch, tmp_path)
         Path(".env").write_text("EXPECTO_TEST_VAR=from_cwd\n")
         monkeypatch.delenv("EXPECTO_TEST_VAR", raising=False)
         try:
             load_env()
-            assert os.environ.get("EXPECTO_TEST_VAR") == "from_cwd"
+            assert "EXPECTO_TEST_VAR" not in os.environ
         finally:
             os.environ.pop("EXPECTO_TEST_VAR", None)
 
@@ -73,8 +95,10 @@ class TestLoadEnv:
     def test_existing_env_var_wins_over_file(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
     ) -> None:
-        self._isolate(monkeypatch, tmp_path)
-        Path(".env").write_text("EXPECTO_TEST_VAR=from_file\n")
+        home = self._isolate(monkeypatch, tmp_path)
+        config_dir = home / ".config" / "expecto"
+        config_dir.mkdir(parents=True)
+        (config_dir / ".env").write_text("EXPECTO_TEST_VAR=from_file\n")
         monkeypatch.setenv("EXPECTO_TEST_VAR", "from_shell")
         load_env()
         assert os.environ["EXPECTO_TEST_VAR"] == "from_shell"
@@ -117,6 +141,19 @@ class TestStartupErrors:
             main(["--config", str(missing)])
         assert exc_info.value.code == 1
         assert "config file not found" in capsys.readouterr().err
+
+    def test_missing_explicit_env_file_exits(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        self._isolate(monkeypatch, tmp_path)
+        missing = tmp_path / "nonexistent.env"
+        with pytest.raises(SystemExit) as exc_info:
+            main(["--env", str(missing)])
+        assert exc_info.value.code == 1
+        assert "env file not found" in capsys.readouterr().err
 
     def test_config_warnings_are_printed(
         self,

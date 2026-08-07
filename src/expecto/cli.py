@@ -4,7 +4,7 @@ import os
 import signal
 import sys
 
-from dotenv import find_dotenv, load_dotenv
+from dotenv import load_dotenv
 
 from expecto.config import ExpectoConfig, default_env_file
 from expecto.dangerous import DangerousCommandMatcher
@@ -32,6 +32,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--config",
         default=None,
         help="Config file path (default: ~/.config/expecto/config.toml)",
+    )
+    parser.add_argument(
+        "--env",
+        default=None,
+        help="Env file to load (default: ~/.config/expecto/.env)",
     )
     parser.add_argument(
         "--raw-io-log-file",
@@ -76,13 +81,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def load_env() -> None:
-    """Load .env from the current directory (searching upwards, dotenv's
-    convention); fall back to ~/.config/expecto/.env. Existing environment
-    variables always take precedence over file values."""
-    found = find_dotenv(usecwd=True)
-    if found:
-        load_dotenv(found)
+def load_env(env_file: str | None = None) -> None:
+    """Load the env file given with --env, or ~/.config/expecto/.env when it
+    exists. Existing environment variables always take precedence over file
+    values.
+
+    An explicitly given env_file that does not exist raises
+    FileNotFoundError; the default path is optional."""
+    if env_file is not None:
+        if not os.path.exists(env_file):
+            raise FileNotFoundError(env_file)
+        load_dotenv(env_file)
         return
     load_dotenv(default_env_file())
 
@@ -96,7 +105,12 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(1)
 
     args = parse_args(argv)
-    load_env()
+
+    try:
+        load_env(args.env)
+    except FileNotFoundError:
+        print(f"expecto: error: env file not found: {args.env}", file=sys.stderr)
+        sys.exit(1)
 
     try:
         config, config_warnings = ExpectoConfig.load(args.config)

@@ -20,11 +20,21 @@ cd expecto && uv tool install .
 
 * Set API key:
 
-```
+`OPENAI_API_KEY` is the only environment variable `expecto` reads. Set it
+in your environment:
+
+```console
 export OPENAI_API_KEY="[API KEY HERE]"
 ```
 
-`expecto` loads `~/.config/expecto/.env` by default.
+or write it to `~/.config/expecto/.env`, which `expecto` loads at startup:
+
+```
+OPENAI_API_KEY=[API KEY HERE]
+```
+
+Use `--env PATH` to load a different env file. Values already set in the
+environment always win over the file.
 
 
 * Run
@@ -34,6 +44,15 @@ expecto
 ```
 
 Press `Ctrl-/` (the default hotkey) to query your AI agent.
+
+Everything else — model, `base_url`, hotkey, confirmation level, and so on
+— is configured in `~/.config/expecto/config.toml`:
+
+```toml
+model = "gpt-5.4"
+hotkey = "ctrl-/"
+confirm_level = "destructive"
+```
 
 
 
