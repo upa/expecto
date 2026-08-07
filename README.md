@@ -81,7 +81,7 @@ new_output_max_chars = 20000    # max chars of between-query output sent to the 
 log_file = ""                   # JSONL log of queries and LLM requests/responses
 raw_io_log_file = ""            # raw terminal I/O log (for debugging)
 dangerous_patterns_file = ""    # extra dangerous-command regex file
-agents_md_file = ""             # AGENTS.md with your own instructions
+agents_md_file = ""             # AGENTS.md (default: ~/.config/expecto/AGENTS.md)
 ```
 
 
