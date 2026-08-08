@@ -101,10 +101,3 @@ agents_md_file = ""             # AGENTS.md (default: ~/.expecto/AGENTS.md)
 ```
 
 
-## AGENTS.md
-
-If `~/.expecto/AGENTS.md` exists (or a file given by `-a` /
-`--agents-md`), its contents are appended to the system prompt. Use it for
-what the agent cannot see on the screen — your hosts and their quirks,
-device conventions, commands you prefer.
-
