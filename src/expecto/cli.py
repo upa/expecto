@@ -16,6 +16,7 @@ from expecto.mcp_client import MCPManager
 from expecto.pty_manager import NESTING_ENV_VAR, PTYManager
 from expecto.query_ui import QueryModeUI
 from expecto.screen_buffer import ScreenBuffer
+from expecto.skills import load_skills
 from expecto.tty_controller import TTYController
 
 
@@ -201,7 +202,15 @@ def main(argv: list[str] | None = None) -> None:
     )
     query_ui = QueryModeUI(stdout_fd, get_cursor_col=screen_buffer.get_cursor_col)
 
-    llm_client = LLMClient(config, agents_md=load_agents_md(config.agents_md_file))
+    skills, skill_warnings = load_skills(config.skills_dir)
+    for warning in skill_warnings:
+        print(f"expecto: warning: {warning}", file=sys.stderr)
+
+    llm_client = LLMClient(
+        config,
+        agents_md=load_agents_md(config.agents_md_file),
+        skills=skills,
+    )
 
     dangerous_matcher, pattern_errors = DangerousCommandMatcher.load(
         config.dangerous_patterns_file or None,
@@ -255,6 +264,7 @@ def main(argv: list[str] | None = None) -> None:
         dangerous_matcher=dangerous_matcher,
         new_output_max_chars=config.new_output_max_chars,
         mcp=mcp_manager,
+        skills=skills,
     )
 
     async def run_session() -> int:

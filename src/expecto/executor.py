@@ -11,8 +11,10 @@ if TYPE_CHECKING:
     from expecto.dangerous import DangerousCommandMatcher
     from expecto.io_relay import IORelay
     from expecto.screen_buffer import ScreenBuffer, ScreenMark
+    from expecto.skills import Skill
 
 from expecto.llm_client import (
+    LoadSkillParams,
     MCPToolParams,
     ParsedToolCall,
     RiskLevel,
@@ -20,6 +22,7 @@ from expecto.llm_client import (
     StepResult,
 )
 from expecto.mcp_client import TOOL_NAME_PREFIX
+from expecto.skills import render_skill, render_skill_file
 from expecto.settle import SettleResult
 
 T = TypeVar("T")
@@ -125,6 +128,7 @@ class Executor:
         dangerous_matcher: DangerousCommandMatcher | None = None,
         new_output_max_chars: int = 20000,
         mcp: MCPCaller | None = None,
+        skills: list[Skill] | None = None,
     ) -> None:
         self._llm = llm_client
         self._screen = screen_buffer
@@ -138,6 +142,7 @@ class Executor:
         self._dangerous_matcher = dangerous_matcher
         self._new_output_max_chars = new_output_max_chars
         self._mcp = mcp
+        self._skills: dict[str, Skill] = {s.name: s for s in skills or []}
 
         # Where the previous execution ended: the next query sends only
         # the terminal output produced after this point.
@@ -277,6 +282,10 @@ class Executor:
             self._llm.add_tool_output(call.call_id, f"Error: {call.error}")
             return
 
+        if isinstance(call.params, LoadSkillParams):
+            self._run_load_skill(call.call_id, call.params)
+            return
+
         if isinstance(call.params, MCPToolParams):
             await self._run_mcp_call(call.call_id, call.params)
             return
@@ -345,6 +354,38 @@ class Executor:
                 "The command may still be running."
             )
         self._llm.add_tool_output(call.call_id, output_text)
+
+    def _run_load_skill(self, call_id: str, params: LoadSkillParams) -> None:
+        """Hand the LLM one of the user's skills, or a file bundled with
+        it (design/Skills.md).
+
+        Synchronous, and read here rather than through run_command: the
+        skills live on the machine expecto runs on, which is not
+        necessarily where the terminal is connected."""
+        skill = self._skills.get(params.name)
+        if skill is None:
+            available = ", ".join(sorted(self._skills)) or "(none)"
+            self._llm.add_tool_output(
+                call_id,
+                f"Error: unknown skill: {params.name}. Available skills: {available}",
+            )
+            return
+
+        label = f"{skill.name}/{params.file}" if params.file else skill.name
+        self._write_gray(f"\r\n[expecto: skill {label}]\r\n")
+
+        if not params.file:
+            self._llm.add_tool_output(call_id, render_skill(skill))
+            return
+        try:
+            output = render_skill_file(skill, params.file)
+        except (OSError, ValueError) as exc:
+            bundled = ", ".join(skill.files) or "(none)"
+            output = (
+                f"Error: cannot read {params.file!r} from skill {skill.name}: {exc}. "
+                f"Files bundled with this skill: {bundled}"
+            )
+        self._llm.add_tool_output(call_id, output)
 
     async def _run_mcp_call(self, call_id: str, params: MCPToolParams) -> None:
         """Call an MCP tool and record its result (design/MCP.md §5).

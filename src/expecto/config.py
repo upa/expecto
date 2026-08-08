@@ -49,6 +49,10 @@ def default_agents_md_file(base: str | None = None) -> str:
     return os.path.join(config_dir(base), "AGENTS.md")
 
 
+def default_skills_dir(base: str | None = None) -> str:
+    return os.path.join(config_dir(base), "skills")
+
+
 _HOTKEY_SPECIAL_CODES: dict[str, int] = {
     "@": 0x00,
     "\\": 0x1C,
@@ -297,6 +301,7 @@ class ExpectoConfig:
     confirm_level: ConfirmLevel = "destructive"
     dangerous_patterns_file: str = ""
     agents_md_file: str = ""
+    skills_dir: str = ""
     mcp_servers: list[MCPServerConfig] = field(default_factory=list)
     mcp_connect_timeout_ms: int = 10000
 
@@ -319,6 +324,7 @@ class ExpectoConfig:
             openai_api_key=os.environ.get("OPENAI_API_KEY", ""),
             dangerous_patterns_file=default_dangerous_patterns_file(config_dir),
             agents_md_file=default_agents_md_file(config_dir),
+            skills_dir=default_skills_dir(config_dir),
         )
         warnings: list[str] = []
         path = (
@@ -373,6 +379,8 @@ def _apply_toml(
         config.dangerous_patterns_file = os.path.expanduser(patterns)
     if (agents_md := table.take_str("agents_md_file")) is not None:
         config.agents_md_file = os.path.expanduser(agents_md)
+    if (skills := table.take_str("skills_dir")) is not None:
+        config.skills_dir = os.path.expanduser(skills)
 
     if (model := table.take_str("model")) is not None:
         config.model = model

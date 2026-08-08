@@ -29,6 +29,8 @@ from expecto.llm_client import (
     COMPACT_REQUEST,
     HandoffSummary,
     LLMClient,
+    LOAD_SKILL_TOOL,
+    LoadSkillParams,
     MCPToolParams,
     RunCommandParams,
     SendControlParams,
@@ -37,6 +39,7 @@ from expecto.llm_client import (
     build_system_prompt,
     load_agents_md,
 )
+from expecto.skills import Skill
 
 
 def _make_config(**overrides: object) -> ExpectoConfig:
@@ -542,6 +545,65 @@ MCP_TOOL_DEF: ChatCompletionFunctionToolParam = {
         "parameters": {"type": "object", "properties": {"q": {"type": "string"}}},
     },
 }
+
+
+def _skill(name: str, description: str = "does a thing") -> Skill:
+    return Skill(
+        name=name, description=description, path=f"/skills/{name}", body="steps",
+    )
+
+
+class TestSkills:
+    def test_no_skills_means_no_tool_and_no_section(self) -> None:
+        client = LLMClient(_make_config())
+        assert [t["function"]["name"] for t in client._tools] == [
+            "run_command", "send_control",
+        ]
+        assert _msg(client._messages[0])["content"] == SYSTEM_PROMPT
+
+    def test_skills_add_the_tool_and_the_catalog(self) -> None:
+        client = LLMClient(
+            _make_config(), skills=[_skill("bgp", "Fix BGP"), _skill("upgrade")],
+        )
+        assert [t["function"]["name"] for t in client._tools] == [
+            "run_command", "send_control", "load_skill",
+        ]
+        system = cast("str", _msg(client._messages[0])["content"])
+        assert system.startswith(SYSTEM_PROMPT)
+        assert "load_skill" in system
+        # The catalog carries what the model selects on: name + description.
+        assert "- bgp: Fix BGP" in system
+        assert "- upgrade: does a thing" in system
+
+    def test_load_skill_tool_is_strict(self) -> None:
+        function = LOAD_SKILL_TOOL["function"]
+        assert function["strict"] is True
+        assert function["parameters"]["additionalProperties"] is False
+
+    def test_load_skill_call_is_parsed(self) -> None:
+        client = LLMClient(_make_config(), skills=[_skill("bgp")])
+        parsed = client._parse_tool_call(
+            _function_call("call_1", "load_skill", '{"name": "bgp"}'),
+        )
+        assert parsed.params == LoadSkillParams(name="bgp")
+
+    def test_load_skill_is_unknown_without_skills(self) -> None:
+        client = LLMClient(_make_config())
+        parsed = client._parse_tool_call(
+            _function_call("call_1", "load_skill", '{"name": "bgp"}'),
+        )
+        assert parsed.params is None
+        assert parsed.error == "unknown tool: load_skill"
+
+    def test_mcp_tools_are_added_without_dropping_load_skill(self) -> None:
+        client = LLMClient(_make_config(), skills=[_skill("bgp")])
+        client.set_mcp_tools([MCP_TOOL_DEF])
+        assert [t["function"]["name"] for t in client._tools] == [
+            "run_command", "send_control", "load_skill", "mcp__DOCS__search",
+        ]
+        system = cast("str", _msg(client._messages[0])["content"])
+        assert "- bgp: does a thing" in system
+        assert "mcp__" in system
 
 
 class TestMCPTools:

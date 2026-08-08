@@ -196,6 +196,7 @@ The single step of "execute a command and receive its result" is exposed to the 
 |----------------|----------------------------------------|-------------------------------------------------------------------------------------------------------|
 | `run_command`  | `command: string`                      | Writes the command + Enter to the pty master, waits for the output to settle, and returns the screen text |
 | `send_control` | `key: "ctrl-c" \| "ctrl-d" \| "ctrl-z"` | Writes a control character to the pty master, likewise waits for settle, and returns the screen text     |
+| `load_skill`   | `name: string`, `file: string`         | Returns the body of one of the user's skills, or a file bundled with it. Read by expecto itself, since skills live on the local machine while the terminal may not. Only offered when skills exist; see **`Skills.md`** |
 | `mcp__<server>__<tool>` | the server's own schema | Calls a tool on one of the MCP servers configured in config.toml and returns its result text. Discovered at session start; see **`MCP.md`** |
 
 - Tool definitions are passed as JSON Schema with `strict: true`, and arguments are validated with Pydantic models (`RunCommandParams` / `SendControlParams`). If validation fails (which normally cannot happen due to strict mode), error text is returned as the output for the corresponding `call_id`.
@@ -235,6 +236,7 @@ The message history is held by `LLMClient` and continues as **a single conversat
 - Controls the execution loop after query submission (command execution → output inspection → next action).
 - At the start (immediately after query submission), it first sends a single newline to the pty to display the shell's new prompt and reflect it on screen via a settle wait, before proceeding to the first LLM call. Since the query line has consumed the previous prompt line, without this the first command would appear to be injected into a line with no prompt.
 - Implemented as a loop in which the LLM calls `run_command` / `send_control` via function calling (§5.7). Executing the tool call (writing to the pty master + waiting for settle + collecting the new output (mark / get_text_since from §5.5) and recording the tool result) is the Executor's responsibility.
+- A `load_skill` call (§5.7) is handled synchronously from the skills read at startup: nothing is written to the pty and nothing is waited for; the load is shown on screen and the skill's body is recorded as the tool result. See **`Skills.md`** §4.
 - A call to an MCP tool (§5.7) takes a third branch: the call is shown on the outer tty in gray and dispatched to `MCPManager`, with no command injection and no settle wait (nothing reaches the terminal). Its result text — including a server-reported failure — is recorded as the tool result. See **`MCP.md`** §5.
 - **Dangerous-command confirmation gate (3 layers)**: (1) the LLM self-declares each command's risk via the required `run_command` fields `risk` (`read_only` / `mutating` / `destructive`) + `risk_reason` (the primary, environment-adaptive judgment; knowledge of vendor CLIs lives in the LLM, and session context accumulated in the conversation history supports accuracy). (2) A deterministic backstop: commands matching the built-in + user-defined (`~/.expecto/dangerous_patterns.txt`, one regex per line, `#` comments, case-insensitive) regexes are **escalated** to `destructive` regardless of the LLM's declaration (escalate-only — it never works in the direction of waiving confirmation). (3) Commands at or above `--confirm-level` (default `destructive`) require y/n confirmation from the user before execution. **A refusal is not an abort**: "the user refused" is returned to the LLM as the tool result, prompting it to take an alternative approach. If stdin is lost while waiting for confirmation (EOF), the execution is aborted as session termination (interrupted). This mechanism is a prompt-volume reduction, not a guarantee (LLM self-declaration is not robust against prompt injection or self-evaluation bias); the ultimate safety device is the structure in which "every command and its output is always visible on the user's screen" + user presence + Ctrl-C + checkpoints.
 - The command echo of `run_command` is displayed in the same gray as expecto's status displays. Immediately before command injection, SGR (gray) is written to the outer tty and a reservation is placed with IORelay (`arm_sgr_reset_at_newline()`); the pump then inserts a reset right after the first newline of the echo (the echo of Enter). If settle, interruption, or EOF occurs before a newline arrives, the reset is still guaranteed via `flush_sgr_reset()` (idempotent). SGR is written only to the outer tty and never enters ScreenBuffer, so the text passed to the LLM is unaffected (if the shell itself colors its echo, that may take precedence — best effort).
@@ -337,6 +339,10 @@ You are an assistant that operates the terminal the user is working in
   interrupt it with Ctrl-C or keep waiting.
 ```
 
+### Skills
+
+Every skill under `<config_dir>/skills` contributes one line — its name and description — to a `# Skills` section of the system prompt, and the model pulls the full instructions in with `load_skill` when a goal matches. This keeps long, situational procedures out of the prompt until they are needed, which is what separates a skill from AGENTS.md (below), whose content is paid for on every request. See **`Skills.md`**.
+
 ### AGENTS.md (user instructions)
 
 When an AGENTS.md exists (`-a` / `--agents-md`, the `agents_md_file` config key, or `<config_dir>/AGENTS.md` by default), its contents are appended verbatim to the base system prompt as a trailing `# User Instructions` section. This is where the user records site-specific knowledge the model cannot derive from the screen: hosts and device conventions, preferred commands, output style.
@@ -415,6 +421,7 @@ expecto/
 │       ├── settle.py         # settle detection (wait_settle coroutine)
 │       ├── dangerous.py      # dangerous-command regex backstop
 │       ├── mcp_client.py     # MCP servers: connection and tool dispatch
+│       ├── skills.py         # Agent Skills: discovery and SKILL.md parsing
 │       └── config.py         # configuration loading
 └── tests/
 ```
