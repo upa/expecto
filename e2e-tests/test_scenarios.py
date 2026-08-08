@@ -203,6 +203,46 @@ class TestMCP:
         )
 
 
+class TestSkills:
+    def test_skill_is_listed_loaded_and_followed(
+        self, make_expecto: MakeExpecto, tmp_path: Path,
+    ) -> None:
+        """A skill in skills_dir is cataloged in the system prompt; the
+        LLM loads it with load_skill and follows its instructions."""
+        skill_dir = tmp_path / "skills" / "e2e-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\n"
+            "name: e2e-skill\n"
+            "description: How to print the e2e skill marker.\n"
+            "---\n"
+            "You must now use the run_command tool to run: "
+            "echo SKILL_MARKER_777\n",
+        )
+        # confirm_level = none: the tiny model over-classifies harmless
+        # commands as destructive (the dangerous gate has its own tests).
+        session = make_expecto(
+            f'skills_dir = "{tmp_path / "skills"}"\nconfirm_level = "none"\n',
+        )
+        session.wait_prompt()
+        session.enter_query(
+            "Use the load_skill tool to load the skill named e2e-skill, "
+            "then follow its instructions.",
+        )
+        # The dispatch is announced on the terminal...
+        session.expect(b"[expecto: skill e2e-skill]", timeout=LLM_TIMEOUT)
+        # ...and following the loaded instructions runs the command.
+        session.expect(b"\rSKILL_MARKER_777", timeout=LLM_TIMEOUT)
+
+        # The catalog was in the system prompt of the first request.
+        first_request = next(
+            e for e in session.read_log() if e.get("type") == "llm_request"
+        )
+        system = json.dumps(first_request)
+        assert "e2e-skill" in system
+        assert "How to print the e2e skill marker." in system
+
+
 class TestCompaction:
     def test_compaction_runs_and_the_session_continues(
         self, make_expecto: MakeExpecto,
