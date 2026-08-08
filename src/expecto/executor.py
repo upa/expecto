@@ -181,6 +181,8 @@ class Executor:
 
             result: StepResult | None = None
             step = 0
+            # max_steps < 1 disables the checkpoint: step (>= 1) never
+            # reaches it, so the loop runs without asking.
             checkpoint = self._max_steps
             while True:
                 step += 1

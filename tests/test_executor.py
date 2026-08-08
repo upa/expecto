@@ -454,6 +454,22 @@ class TestExecution:
         assert fake_llm.step_count == 1
         assert b"[expecto stopped at step 1]" in harness.output()
 
+    async def test_max_steps_zero_never_asks(self, make_harness: MakeHarness) -> None:
+        """max_steps < 1 disables the checkpoint: the loop runs to the
+        final response without ever asking for continuation."""
+        fake_llm = FakeLLMClient(results=[
+            *[_cmd_result(i, f"cmd{i}") for i in range(1, 5)],
+            _final_result("all done"),
+        ])
+        harness = await make_harness(fake_llm, max_steps=0)
+        harness.start("keep going")
+        await harness.wait_done()
+
+        assert fake_llm.step_count == 5
+        out = harness.output()
+        assert b"continue? (y/n)" not in out
+        assert b"[all done]" in out
+
     async def test_ctrl_c_interrupt_during_settle(self, make_harness: MakeHarness) -> None:
         """User Ctrl-C during the settle wait cancels the execution task."""
         fake_llm = FakeLLMClient(results=[_cmd_result(1, "sleep 100")])

@@ -82,7 +82,7 @@ reasoning_effort = ""           # none/minimal/low/medium/high/xhigh/max
 shell = ""                      # child command (default: $SHELL)
 hotkey = "ctrl-/"               # hotkey to enter query mode, "ctrl-<char>"
 confirm_level = "destructive"   # risk level that asks y/n: destructive/mutating/none
-max_steps = 15                  # steps between "continue?" checkpoints
+max_steps = 15                  # steps between "continue?" checkpoints (0 = never ask)
 settle_ms = 500                 # idle time to regard command output as settled
 threshold_ms = 30000            # report unsettled output to the LLM after this long
 

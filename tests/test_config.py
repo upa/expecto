@@ -190,6 +190,13 @@ shell = 3
         assert config.shell == "/bin/testsh"
         assert len(warnings) == 4
 
+    def test_max_steps_zero_disables_the_checkpoint(
+        self, isolated_home: Path, tmp_path: Path,
+    ) -> None:
+        config, warnings = _load_toml(tmp_path, "max_steps = 0\n")
+        assert warnings == []
+        assert config.max_steps == 0
+
     def test_invalid_confirm_level_warns(
         self, isolated_home: Path, tmp_path: Path,
     ) -> None:

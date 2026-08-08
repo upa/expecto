@@ -120,13 +120,18 @@ class _Table:
             return None
         return value or None
 
-    def take_int(self, key: str) -> int | None:
+    def take_int(self, key: str, minimum: int = 1) -> int | None:
         if key not in self._data:
             return None
         value = self._data.pop(key)
-        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+            expected = (
+                "a positive integer"
+                if minimum == 1
+                else f"an integer >= {minimum}"
+            )
             self._warn(
-                key, f"expected a positive integer, got {value!r}; using the default",
+                key, f"expected {expected}, got {value!r}; using the default",
             )
             return None
         return value
@@ -369,7 +374,8 @@ def _apply_toml(
         config.settle_ms = v
     if (v := table.take_int("threshold_ms")) is not None:
         config.threshold_ms = v
-    if (v := table.take_int("max_steps")) is not None:
+    # max_steps = 0 disables the continuation checkpoint (autonomous run).
+    if (v := table.take_int("max_steps", minimum=0)) is not None:
         config.max_steps = v
     if (log_file := table.take_str("log_file")) is not None:
         config.log_file = os.path.expanduser(log_file)
