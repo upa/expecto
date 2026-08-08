@@ -17,11 +17,10 @@ https://github.com/user-attachments/assets/a22e805b-6724-4a45-ac48-0c85f4221033
 * Install
 
 ```console
-git clone https://github.com/upa/expecto
-cd expecto && uv tool install .
+uv tool install git+https://github.com/upa/expecto
 ```
 
-* Set API key and run
+* Set an API key and run
 
 ```console
 export OPENAI_API_KEY="[API KEY HERE]"
