@@ -51,6 +51,12 @@ model = "gpt-5.6"
 base_url = "[YOUR API ENDPOINT URL]"
 ```
 
+`-u` / `--base-url` overrides the endpoint for a single run:
+
+```console
+expecto -u http://localhost:11434/v1
+```
+
 See [Configuration](#configuration) for all available options.
 
 

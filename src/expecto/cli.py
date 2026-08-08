@@ -47,6 +47,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Env file to load (default: <config-dir>/.env)",
     )
     parser.add_argument(
+        "-u",
+        "--base-url",
+        default=None,
+        help="OpenAI API endpoint URL (default: the config file's base_url, "
+        "or the SDK default)",
+    )
+    parser.add_argument(
         "--raw-io-log-file",
         default=None,
         help="Raw I/O log output path (for debugging)",
@@ -145,6 +152,8 @@ def main(argv: list[str] | None = None) -> None:
         )
         sys.exit(1)
 
+    if args.base_url is not None:
+        config.openai_base_url = args.base_url
     if args.raw_io_log_file:
         config.raw_io_log_file = args.raw_io_log_file
     if args.log_file:

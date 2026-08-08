@@ -284,6 +284,8 @@ OPTIONS (implemented):
                              (default: ~/.expecto/.env)
   -a, --agents-md PATH       Path to the AGENTS.md appended to the system prompt
                              (default: ~/.expecto/AGENTS.md)
+  -u, --base-url URL         OpenAI API endpoint (default: config.toml's
+                             base_url, or the SDK default)
   --scrollback-lines N       pyte scrollback capacity (default: 5000)
   --confirm-level LEVEL      Minimum risk level that requires confirmation
                              (destructive|mutating|none, default: destructive)
