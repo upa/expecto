@@ -96,6 +96,33 @@ log_file = ""                   # JSONL log of queries and LLM requests/response
 raw_io_log_file = ""            # raw terminal I/O log (for debugging)
 dangerous_patterns_file = ""    # extra dangerous-command regex file
 agents_md_file = ""             # AGENTS.md (default: ~/.expecto/AGENTS.md)
+
+# MCP
+mcp_connect_timeout_ms = 10000  # per-server connection timeout
 ```
+
+
+## MCP servers
+
+Declare MCP servers as `[mcp.<name>]` tables in `config.toml`, and
+`expecto` connects to them at startup and offers their tools to the agent
+alongside the terminal:
+
+```toml
+[mcp.docs]
+type = "stdio"
+command = "npx"
+args = ["-y", "@example/docs-mcp"]
+
+[mcp.inventory]
+type = "streamable-http"
+url = "http://localhost:9001/mcp"
+token = "$INVENTORY_TOKEN"       # "$NAME" reads the environment variable
+```
+
+`type` is `stdio`, `sse`, or `streamable-http`. Their tools appear to the
+agent as `mcp__<server>__<tool>`, and every call is printed on your
+screen as it happens. A server that fails to connect is reported and
+skipped — expecto still starts.
 
 

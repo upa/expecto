@@ -7,7 +7,7 @@ from typing import cast
 
 import pytest
 from openai.lib.streaming.chat import ContentDeltaEvent
-from openai.types.chat import ChatCompletionMessage
+from openai.types.chat import ChatCompletionFunctionToolParam, ChatCompletionMessage
 from openai.types.chat.chat_completion import ChatCompletion, Choice
 from openai.types.chat.chat_completion_message_function_tool_call import (
     ChatCompletionMessageFunctionToolCall,
@@ -20,6 +20,7 @@ from expecto.llm_client import (
     COMPACT_REQUEST,
     HandoffSummary,
     LLMClient,
+    MCPToolParams,
     RunCommandParams,
     SendControlParams,
     SYSTEM_PROMPT,
@@ -491,6 +492,92 @@ class TestLLMClient:
     def test_no_log_when_log_file_none(self) -> None:
         client = LLMClient(_make_config())
         client._log({"type": "query", "query": "test"})
+
+
+MCP_TOOL_DEF: ChatCompletionFunctionToolParam = {
+    "type": "function",
+    "function": {
+        "name": "mcp__DOCS__search",
+        "description": "[MCP server DOCS] Search the docs",
+        "parameters": {"type": "object", "properties": {"q": {"type": "string"}}},
+    },
+}
+
+
+class TestMCPTools:
+    def test_tools_include_mcp_and_prompt_mentions_them(self) -> None:
+        client = LLMClient(_make_config())
+        assert [t["function"]["name"] for t in client._tools] == [
+            "run_command", "send_control",
+        ]
+        assert "mcp__" not in cast("str", _msg(client._messages[0])["content"])
+
+        client.set_mcp_tools([MCP_TOOL_DEF])
+        assert [t["function"]["name"] for t in client._tools] == [
+            "run_command", "send_control", "mcp__DOCS__search",
+        ]
+        system = cast("str", _msg(client._messages[0])["content"])
+        assert system.startswith(SYSTEM_PROMPT)
+        assert "mcp__" in system
+
+    def test_no_mcp_tools_leaves_the_prompt_alone(self) -> None:
+        client = LLMClient(_make_config())
+        client.set_mcp_tools([])
+        assert _msg(client._messages[0])["content"] == SYSTEM_PROMPT
+
+    def test_mcp_call_is_parsed_with_raw_arguments(self) -> None:
+        client = LLMClient(_make_config())
+        client.set_mcp_tools([MCP_TOOL_DEF])
+        parsed = client._parse_tool_call(
+            _function_call("call_1", "mcp__DOCS__search", '{"q": "bgp", "n": 3}'),
+        )
+        assert parsed.error is None
+        assert parsed.params == MCPToolParams(
+            name="mcp__DOCS__search", arguments={"q": "bgp", "n": 3},
+        )
+
+    def test_mcp_call_without_arguments(self) -> None:
+        client = LLMClient(_make_config())
+        client.set_mcp_tools([MCP_TOOL_DEF])
+        parsed = client._parse_tool_call(
+            _function_call("call_1", "mcp__DOCS__search", ""),
+        )
+        assert parsed.params == MCPToolParams(
+            name="mcp__DOCS__search", arguments={},
+        )
+
+    def test_malformed_mcp_arguments_become_an_error(self) -> None:
+        client = LLMClient(_make_config())
+        client.set_mcp_tools([MCP_TOOL_DEF])
+        parsed = client._parse_tool_call(
+            _function_call("call_1", "mcp__DOCS__search", "[1, 2]"),
+        )
+        assert parsed.params is None
+        assert parsed.error is not None
+        assert "invalid arguments" in parsed.error
+
+    def test_unconfigured_mcp_name_is_unknown(self) -> None:
+        client = LLMClient(_make_config())
+        parsed = client._parse_tool_call(
+            _function_call("call_1", "mcp__DOCS__search", "{}"),
+        )
+        assert parsed.params is None
+        assert parsed.error == "unknown tool: mcp__DOCS__search"
+
+    async def test_mcp_tools_are_sent_with_every_request(self) -> None:
+        client, captured = _client_with_fake_stream([
+            ([], _completion(_final_message("ok"))),
+            ([], _completion(_final_message("ok again"))),
+        ])
+        client.set_mcp_tools([MCP_TOOL_DEF])
+        await client.start_query("first", screen_text="$ ")
+        await client.step()
+        for request in captured:
+            names = [
+                t["function"]["name"]
+                for t in cast("list[ChatCompletionFunctionToolParam]", request["tools"])
+            ]
+            assert names[-1] == "mcp__DOCS__search"
 
 
 class TestAgentsMd:

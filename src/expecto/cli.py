@@ -12,6 +12,7 @@ from expecto.executor import Executor
 from expecto.input_router import InputRouter
 from expecto.io_relay import IORelay
 from expecto.llm_client import LLMClient, load_agents_md
+from expecto.mcp_client import MCPManager
 from expecto.pty_manager import NESTING_ENV_VAR, PTYManager
 from expecto.query_ui import QueryModeUI
 from expecto.screen_buffer import ScreenBuffer
@@ -229,6 +230,12 @@ def main(argv: list[str] | None = None) -> None:
 
     raw_io_log_fh = open(config.raw_io_log_file, "a") if config.raw_io_log_file else None
 
+    mcp_manager = (
+        MCPManager(connect_timeout_ms=config.mcp_connect_timeout_ms)
+        if config.mcp_servers
+        else None
+    )
+
     relay = IORelay(
         input_router=input_router,
         screen_buffer=screen_buffer,
@@ -247,10 +254,24 @@ def main(argv: list[str] | None = None) -> None:
         confirm_level=config.confirm_level,
         dangerous_matcher=dangerous_matcher,
         new_output_max_chars=config.new_output_max_chars,
+        mcp=mcp_manager,
     )
 
     async def run_session() -> int:
         loop = asyncio.get_running_loop()
+        # MCP servers are connected before the child starts: their tools
+        # must be known before the first LLM request (design/MCP.md §3),
+        # and warnings still print with the tty in its normal mode.
+        if mcp_manager is not None:
+            print(
+                f"expecto: connecting to {len(config.mcp_servers)} MCP server(s)...",
+                file=sys.stderr,
+            )
+            for warning in await mcp_manager.connect(config.mcp_servers):
+                print(f"expecto: warning: {warning}", file=sys.stderr)
+            llm_client.set_mcp_tools(mcp_manager.tool_defs())
+
+        tty_ctrl.enter_raw()
         pty_mgr.spawn(command)
         assert pty_mgr.master_fd is not None
         master_fd = pty_mgr.master_fd
@@ -268,9 +289,11 @@ def main(argv: list[str] | None = None) -> None:
             await relay.run(master_fd, stdin_fd=stdin_fd, stdout_fd=stdout_fd)
         finally:
             loop.remove_signal_handler(signal.SIGWINCH)
+            # Same task that opened them, as the transports require.
+            if mcp_manager is not None:
+                await mcp_manager.aclose()
         return pty_mgr.wait()
 
-    tty_ctrl.enter_raw()
     try:
         exit_code = asyncio.run(run_session())
     finally:

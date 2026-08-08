@@ -1,19 +1,24 @@
 from __future__ import annotations
 
 import os
+import re
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal, cast
 
 ReasoningEffortLevel = Literal["none", "minimal", "low", "medium", "high", "xhigh", "max"]
 
 ConfirmLevel = Literal["destructive", "mutating", "none"]
 
+MCPServerType = Literal["stdio", "sse", "streamable-http"]
+
 REASONING_EFFORT_LEVELS: tuple[str, ...] = (
     "none", "minimal", "low", "medium", "high", "xhigh", "max",
 )
 
 CONFIRM_LEVELS: tuple[str, ...] = ("destructive", "mutating", "none")
+
+MCP_SERVER_TYPES: tuple[str, ...] = ("stdio", "sse", "streamable-http")
 
 DEFAULT_MODEL = "gpt-5.4"
 DEFAULT_HOTKEY = 0x1F  # Ctrl-/
@@ -122,6 +127,38 @@ class _Table:
             return None
         return value
 
+    def take_str_list(self, key: str) -> list[str] | None:
+        if key not in self._data:
+            return None
+        value = self._data.pop(key)
+        if not isinstance(value, list) or not all(
+            isinstance(item, str) for item in cast("list[object]", value)
+        ):
+            self._warn(key, f"expected a list of strings, got {value!r}; ignored")
+            return None
+        return cast("list[str]", value)
+
+    def take_str_dict(self, key: str) -> dict[str, str] | None:
+        if key not in self._data:
+            return None
+        value = self._data.pop(key)
+        if not isinstance(value, dict) or not all(
+            isinstance(item, str) for item in cast("dict[str, object]", value).values()
+        ):
+            self._warn(key, f"expected a table of strings, got {value!r}; ignored")
+            return None
+        return cast("dict[str, str]", value)
+
+    def take_table(self, key: str) -> dict[str, object] | None:
+        """Consume a table-valued key (the only one is [mcp.*])."""
+        if key not in self._data:
+            return None
+        value = self._data.pop(key)
+        if not isinstance(value, dict):
+            self._warn(key, f"expected a table, got {value!r}; ignored")
+            return None
+        return cast("dict[str, object]", value)
+
     def take_choice(self, key: str, choices: tuple[str, ...]) -> str | None:
         value = self.take_str(key)
         if value is None:
@@ -149,6 +186,98 @@ class _Table:
             self._warn(key, "unknown key (ignored)")
 
 
+_ENV_REF = re.compile(r"\A\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?\Z")
+
+
+@dataclass
+class MCPServerConfig:
+    """One MCP server from a [mcp.<name>] table (see design/MCP.md)."""
+
+    name: str
+    type: MCPServerType
+    command: str = ""                                        # stdio
+    args: list[str] = field(default_factory=list)            # stdio
+    env: dict[str, str] = field(default_factory=dict)        # stdio
+    url: str = ""                                            # sse / streamable-http
+    token: str = ""                                          # sse / streamable-http
+
+
+def _resolve_token(value: str) -> str:
+    """Resolve a token that may reference an environment variable.
+
+    A value that is exactly "$NAME" or "${NAME}" is replaced by that
+    variable, keeping the secret out of config.toml (Config.md §1).
+    Raises KeyError when the variable is unset; any other value is
+    returned as written."""
+    match = _ENV_REF.match(value)
+    if match is None:
+        return value
+    return os.environ[match.group(1)]
+
+
+def _parse_mcp_server(
+    name: str,
+    raw: object,
+    path: str,
+    warnings: list[str],
+) -> MCPServerConfig | None:
+    """Build one server config from its table. A server whose entry is
+    invalid is warned about and skipped (warn-and-continue): expecto keeps
+    starting, just without that server."""
+    prefix = f"{path}: mcp.{name}"
+    if not isinstance(raw, dict):
+        warnings.append(f"{prefix}: expected a table, got {raw!r}; server ignored")
+        return None
+
+    table = _Table(cast("dict[str, object]", raw), prefix, warnings)
+    type_ = table.take_choice("type", MCP_SERVER_TYPES)
+    if type_ is None:
+        warnings.append(
+            f"{prefix}: type must be one of {', '.join(MCP_SERVER_TYPES)}; "
+            "server ignored",
+        )
+        return None
+
+    server = MCPServerConfig(name=name, type=cast("MCPServerType", type_))
+    if type_ == "stdio":
+        command = table.take_str("command")
+        if command is None:
+            warnings.append(f"{prefix}: command is required for stdio; server ignored")
+            return None
+        server.command = command
+        server.args = table.take_str_list("args") or []
+        server.env = table.take_str_dict("env") or {}
+    else:
+        url = table.take_str("url")
+        if url is None:
+            warnings.append(f"{prefix}: url is required for {type_}; server ignored")
+            return None
+        server.url = url
+        if (token := table.take_str("token")) is not None:
+            try:
+                server.token = _resolve_token(token)
+            except KeyError as exc:
+                warnings.append(
+                    f"{prefix}: token: environment variable {exc.args[0]} is not set; "
+                    "server ignored",
+                )
+                return None
+
+    table.warn_unknown()
+    return server
+
+
+def _parse_mcp_servers(
+    data: dict[str, object], path: str, warnings: list[str],
+) -> list[MCPServerConfig]:
+    servers: list[MCPServerConfig] = []
+    for name, raw in data.items():
+        server = _parse_mcp_server(name, raw, path, warnings)
+        if server is not None:
+            servers.append(server)
+    return servers
+
+
 @dataclass
 class ExpectoConfig:
     shell: str = "/bin/bash"
@@ -168,6 +297,8 @@ class ExpectoConfig:
     confirm_level: ConfirmLevel = "destructive"
     dangerous_patterns_file: str = ""
     agents_md_file: str = ""
+    mcp_servers: list[MCPServerConfig] = field(default_factory=list)
+    mcp_connect_timeout_ms: int = 10000
 
     @classmethod
     def load(
@@ -253,5 +384,10 @@ def _apply_toml(
         config.compact_thresh = v
     if (v := table.take_int("new_output_max_chars")) is not None:
         config.new_output_max_chars = v
+
+    if (v := table.take_int("mcp_connect_timeout_ms")) is not None:
+        config.mcp_connect_timeout_ms = v
+    if (mcp := table.take_table("mcp")) is not None:
+        config.mcp_servers = _parse_mcp_servers(mcp, path, warnings)
 
     table.warn_unknown()

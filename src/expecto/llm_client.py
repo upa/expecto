@@ -4,7 +4,7 @@ import asyncio
 import json
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 import openai
 from openai.lib.streaming.chat import ContentDeltaEvent
@@ -85,15 +85,32 @@ def load_agents_md(path: str) -> str | None:
     return text.strip() or None
 
 
-def build_system_prompt(agents_md: str | None = None) -> str:
-    """The system prompt: the base prompt, with the user's AGENTS.md
-    appended as a trailing section when one was loaded.
+MCP_SECTION = """
+# MCP Tools
 
-    Read once at startup and fixed for the whole session, so the prompt
-    prefix stays cached (design/Conversation.md §2)."""
-    if agents_md is None:
-        return SYSTEM_PROMPT
-    return SYSTEM_PROMPT + AGENTS_MD_SECTION + agents_md
+Tools whose names begin with `mcp__` come from MCP servers the user \
+configured. They act outside the terminal (services, databases, \
+documentation, and the like); use one when it fits the goal better than \
+running a command, and keep using run_command for anything that belongs \
+on the terminal.
+"""
+
+
+def build_system_prompt(
+    agents_md: str | None = None, *, has_mcp_tools: bool = False,
+) -> str:
+    """The system prompt: the base prompt, with the user's AGENTS.md
+    appended as a trailing section when one was loaded, and a note about
+    MCP tools when any server provided some.
+
+    Both are settled at startup and fixed for the whole session, so the
+    prompt prefix stays cached (design/Conversation.md §2)."""
+    prompt = SYSTEM_PROMPT
+    if has_mcp_tools:
+        prompt += MCP_SECTION
+    if agents_md is not None:
+        prompt += AGENTS_MD_SECTION + agents_md
+    return prompt
 
 
 COMPACT_REQUEST = """\
@@ -198,10 +215,21 @@ TOOLS: list[ChatCompletionFunctionToolParam] = [
 
 
 @dataclass
+class MCPToolParams:
+    """A call to a tool provided by an MCP server (design/MCP.md §5)."""
+
+    name: str                          # the qualified mcp__server__tool name
+    arguments: dict[str, object]
+
+
+ToolParams = RunCommandParams | SendControlParams | MCPToolParams
+
+
+@dataclass
 class ParsedToolCall:
     call_id: str
     name: str
-    params: RunCommandParams | SendControlParams | None
+    params: ToolParams | None
     error: str | None = None
 
 
@@ -237,6 +265,20 @@ def _query_content(
         )
     sections.append(f"## Goal\n{query}")
     return "\n\n".join(sections)
+
+
+def _decode_arguments(arguments: str) -> dict[str, object]:
+    """Decode a tool call's raw argument string as a JSON object."""
+    decoded: object = json.loads(arguments or "{}")
+    if not isinstance(decoded, dict):
+        raise ValueError(f"expected a JSON object, got {type(decoded).__name__}")
+    return cast("dict[str, object]", decoded)
+
+
+def _params_dump(params: ToolParams) -> dict[str, object]:
+    if isinstance(params, MCPToolParams):
+        return {"name": params.name, "arguments": params.arguments}
+    return params.model_dump()
 
 
 def _assistant_param(message: ChatCompletionMessage) -> ChatCompletionAssistantMessageParam:
@@ -276,6 +318,9 @@ class LLMClient:
         self, config: ExpectoConfig, agents_md: str | None = None,
     ) -> None:
         self._config = config
+        self._agents_md = agents_md
+        self._tools: list[ChatCompletionFunctionToolParam] = list(TOOLS)
+        self._mcp_tool_names: frozenset[str] = frozenset()
         self._client: openai.AsyncOpenAI = openai.AsyncOpenAI(
             api_key=config.openai_api_key,
             base_url=config.openai_base_url,
@@ -296,6 +341,26 @@ class LLMClient:
         entry["timestamp"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
         with open(self._log_file, "a") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+    def set_mcp_tools(self, tools: list[ChatCompletionFunctionToolParam]) -> None:
+        """Publish the connected MCP servers' tools to the LLM.
+
+        Called once at startup, after the servers are connected and before
+        any request: the tools definition and the system prompt have to be
+        identical on every request of the session (design/Conversation.md
+        §2), so this rewrites the still-untouched system message and may
+        not be called once the conversation has started."""
+        assert len(self._messages) == 1, "MCP tools must be set before the first query"
+        if not tools:
+            return
+        self._tools = [*TOOLS, *tools]
+        self._mcp_tool_names = frozenset(
+            str(tool["function"]["name"]) for tool in tools
+        )
+        self._messages[0] = {
+            "role": "system",
+            "content": build_system_prompt(self._agents_md, has_mcp_tools=True),
+        }
 
     # --- conversation API (used by Executor) ---
 
@@ -372,7 +437,7 @@ class LLMClient:
         async with self._client.chat.completions.stream(
             model=self._config.model,
             messages=self._messages,
-            tools=TOOLS,
+            tools=self._tools,
             parallel_tool_calls=False,
             reasoning_effort=(
                 self._config.openai_reasoning_effort
@@ -404,7 +469,7 @@ class LLMClient:
             "type": "llm_response",
             "tool_calls": [
                 {"call_id": c.call_id, "name": c.name, "error": c.error}
-                | ({"params": c.params.model_dump()} if c.params is not None else {})
+                | ({"params": _params_dump(c.params)} if c.params is not None else {})
                 for c in tool_calls
             ],
             "final_text": final_text,
@@ -449,12 +514,18 @@ class LLMClient:
                 error=f"unsupported tool call type: {item.type}",
             )
         name = item.function.name
-        params: RunCommandParams | SendControlParams
+        params: ToolParams
         try:
             if name == "run_command":
                 params = RunCommandParams.model_validate_json(item.function.arguments)
             elif name == "send_control":
                 params = SendControlParams.model_validate_json(item.function.arguments)
+            elif name in self._mcp_tool_names:
+                # MCP schemas are the servers' own and are not validated
+                # here; the server itself rejects bad arguments.
+                params = MCPToolParams(
+                    name=name, arguments=_decode_arguments(item.function.arguments),
+                )
             else:
                 return ParsedToolCall(
                     call_id=item.id,
@@ -463,6 +534,13 @@ class LLMClient:
                     error=f"unknown tool: {name}",
                 )
         except ValidationError as exc:
+            return ParsedToolCall(
+                call_id=item.id,
+                name=name,
+                params=None,
+                error=f"invalid arguments: {exc}",
+            )
+        except ValueError as exc:
             return ParsedToolCall(
                 call_id=item.id,
                 name=name,
@@ -491,7 +569,7 @@ class LLMClient:
                 model=self._config.model,
                 messages=request,
                 response_format=HandoffSummary,
-                tools=TOOLS,
+                tools=self._tools,
                 parallel_tool_calls=False,
                 tool_choice="none",
                 reasoning_effort=(

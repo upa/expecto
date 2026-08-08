@@ -142,6 +142,13 @@ new_output_max_chars = 5000
         assert config.compact_thresh == 50000
         assert config.new_output_max_chars == 5000
 
+    def test_no_mcp_section_means_no_servers(
+        self, isolated_home: Path, tmp_path: Path,
+    ) -> None:
+        config, warnings = _load_toml(tmp_path, 'model = "m"\n')
+        assert warnings == []
+        assert config.mcp_servers == []
+
     def test_empty_string_means_unset(self, isolated_home: Path, tmp_path: Path) -> None:
         config, warnings = _load_toml(tmp_path, """
 log_file = ""
@@ -220,6 +227,141 @@ shell = 3
         config, warnings = _load_toml(tmp_path, 'hotkey = "ctrl-c"\n')
         assert config.hotkey == DEFAULT_HOTKEY
         assert any("Ctrl-C" in w for w in warnings)
+
+
+class TestMCPServers:
+    def test_all_transports(self, isolated_home: Path, tmp_path: Path) -> None:
+        config, warnings = _load_toml(tmp_path, """
+[mcp.SERVER1]
+type = "stdio"
+command = "npx"
+args = ["arg1", "arg2"]
+env = { FOO = "bar" }
+
+[mcp.SERVER2]
+type = "sse"
+url = "http://localhost:9000/sse"
+token = "TOKEN"
+
+[mcp.SERVER3]
+type = "streamable-http"
+url = "http://localhost:9001/mcp"
+""")
+        assert warnings == []
+        stdio, sse, http = config.mcp_servers
+        assert (stdio.name, stdio.type) == ("SERVER1", "stdio")
+        assert stdio.command == "npx"
+        assert stdio.args == ["arg1", "arg2"]
+        assert stdio.env == {"FOO": "bar"}
+        assert (sse.name, sse.type, sse.url) == (
+            "SERVER2", "sse", "http://localhost:9000/sse",
+        )
+        assert sse.token == "TOKEN"
+        assert (http.name, http.type) == ("SERVER3", "streamable-http")
+        assert http.token == ""
+
+    def test_optional_stdio_keys_default_to_empty(
+        self, isolated_home: Path, tmp_path: Path,
+    ) -> None:
+        config, warnings = _load_toml(tmp_path, """
+[mcp.S]
+type = "stdio"
+command = "server"
+""")
+        assert warnings == []
+        assert config.mcp_servers[0].args == []
+        assert config.mcp_servers[0].env == {}
+
+    def test_token_expands_environment_variable(
+        self, isolated_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("EXPECTO_TEST_TOKEN", "secret-value")
+        config, warnings = _load_toml(tmp_path, """
+[mcp.A]
+type = "sse"
+url = "http://localhost:9000/sse"
+token = "$EXPECTO_TEST_TOKEN"
+
+[mcp.B]
+type = "sse"
+url = "http://localhost:9000/sse"
+token = "${EXPECTO_TEST_TOKEN}"
+""")
+        assert warnings == []
+        assert [s.token for s in config.mcp_servers] == ["secret-value"] * 2
+
+    def test_unset_token_variable_skips_the_server(
+        self, isolated_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.delenv("EXPECTO_TEST_TOKEN", raising=False)
+        config, warnings = _load_toml(tmp_path, """
+[mcp.A]
+type = "sse"
+url = "http://localhost:9000/sse"
+token = "$EXPECTO_TEST_TOKEN"
+""")
+        assert config.mcp_servers == []
+        assert any("EXPECTO_TEST_TOKEN is not set" in w for w in warnings)
+
+    def test_invalid_server_is_skipped_others_kept(
+        self, isolated_home: Path, tmp_path: Path,
+    ) -> None:
+        config, warnings = _load_toml(tmp_path, """
+[mcp.BAD_TYPE]
+type = "carrier-pigeon"
+url = "http://localhost:9000/sse"
+
+[mcp.NO_TYPE]
+command = "server"
+
+[mcp.NO_COMMAND]
+type = "stdio"
+
+[mcp.NO_URL]
+type = "sse"
+
+[mcp.GOOD]
+type = "stdio"
+command = "server"
+""")
+        assert [s.name for s in config.mcp_servers] == ["GOOD"]
+        assert any("BAD_TYPE" in w and "type" in w for w in warnings)
+        assert any("NO_TYPE" in w and "type" in w for w in warnings)
+        assert any("NO_COMMAND" in w and "command is required" in w for w in warnings)
+        assert any("NO_URL" in w and "url is required" in w for w in warnings)
+
+    def test_wrong_value_types_warn(self, isolated_home: Path, tmp_path: Path) -> None:
+        config, warnings = _load_toml(tmp_path, """
+[mcp.S]
+type = "stdio"
+command = "server"
+args = "not-a-list"
+env = { N = 1 }
+""")
+        assert config.mcp_servers[0].args == []
+        assert config.mcp_servers[0].env == {}
+        assert any("args" in w for w in warnings)
+        assert any("env" in w for w in warnings)
+
+    def test_unknown_server_key_warns(self, isolated_home: Path, tmp_path: Path) -> None:
+        config, warnings = _load_toml(tmp_path, """
+[mcp.S]
+type = "stdio"
+command = "server"
+prot = "typo"
+""")
+        assert [s.name for s in config.mcp_servers] == ["S"]
+        assert any("mcp.S" in w and "prot" in w and "unknown key" in w for w in warnings)
+
+    def test_mcp_is_not_reported_as_an_unknown_key(
+        self, isolated_home: Path, tmp_path: Path,
+    ) -> None:
+        _, warnings = _load_toml(tmp_path, """
+[mcp.S]
+type = "stdio"
+command = "server"
+""")
+        assert not any("mcp" in w and "unknown key" in w for w in warnings)
 
 
 class TestParseHotkey:

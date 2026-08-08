@@ -13,11 +13,13 @@ if TYPE_CHECKING:
     from expecto.screen_buffer import ScreenBuffer, ScreenMark
 
 from expecto.llm_client import (
+    MCPToolParams,
     ParsedToolCall,
     RiskLevel,
     RunCommandParams,
     StepResult,
 )
+from expecto.mcp_client import TOOL_NAME_PREFIX
 from expecto.settle import SettleResult
 
 T = TypeVar("T")
@@ -39,6 +41,20 @@ CONTROL_CHAR_MAP: dict[str, bytes] = {
     "ctrl-d": b"\x04",
     "ctrl-z": b"\x1a",
 }
+
+
+class MCPCaller(Protocol):
+    """The MCP servers, as seen by the Executor."""
+
+    async def call(self, qualified_name: str, arguments: dict[str, object]) -> str: ...
+
+
+def _mcp_label(qualified_name: str) -> str:
+    """"mcp__SERVER__tool" as the "SERVER.tool" shown on screen."""
+    parts = qualified_name.split("__", 2)
+    if len(parts) == 3 and parts[0] == TOOL_NAME_PREFIX:
+        return f"{parts[1]}.{parts[2]}"
+    return qualified_name
 
 
 class LLMStepper(Protocol):
@@ -108,6 +124,7 @@ class Executor:
         confirm_level: ConfirmLevel = "destructive",
         dangerous_matcher: DangerousCommandMatcher | None = None,
         new_output_max_chars: int = 20000,
+        mcp: MCPCaller | None = None,
     ) -> None:
         self._llm = llm_client
         self._screen = screen_buffer
@@ -120,6 +137,7 @@ class Executor:
         self._confirm_level = confirm_level
         self._dangerous_matcher = dangerous_matcher
         self._new_output_max_chars = new_output_max_chars
+        self._mcp = mcp
 
         # Where the previous execution ended: the next query sends only
         # the terminal output produced after this point.
@@ -259,6 +277,10 @@ class Executor:
             self._llm.add_tool_output(call.call_id, f"Error: {call.error}")
             return
 
+        if isinstance(call.params, MCPToolParams):
+            await self._run_mcp_call(call.call_id, call.params)
+            return
+
         if isinstance(call.params, RunCommandParams):
             risk, matched = self._effective_risk(call.params)
             if self._needs_confirmation(risk):
@@ -323,6 +345,29 @@ class Executor:
                 "The command may still be running."
             )
         self._llm.add_tool_output(call.call_id, output_text)
+
+    async def _run_mcp_call(self, call_id: str, params: MCPToolParams) -> None:
+        """Call an MCP tool and record its result (design/MCP.md §5).
+
+        No mark / settle wait: an MCP call produces no terminal output.
+        The call is shown on screen so it stays as visible as a command,
+        and a failure comes back as text for the LLM rather than an
+        abort."""
+        if self._mcp is None:
+            self._llm.add_tool_output(
+                call_id, f"Error: no MCP server is available for {params.name}",
+            )
+            return
+
+        self._write_gray(f"\r\n[expecto: mcp {_mcp_label(params.name)}]\r\n")
+        try:
+            output = await self._thinking(
+                self._mcp.call(params.name, params.arguments),
+            )
+        except asyncio.CancelledError:
+            self._llm.add_tool_output(call_id, INTERRUPTED_TOOL_OUTPUT)
+            raise
+        self._llm.add_tool_output(call_id, output)
 
     async def _confirm_continue(self, step: int) -> bool:
         """Ask the user whether to continue past the step checkpoint."""
