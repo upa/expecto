@@ -13,6 +13,7 @@ from expecto.config import (
     default_config_file,
     default_dangerous_patterns_file,
     default_env_file,
+    default_skills_dir,
     parse_hotkey,
 )
 
@@ -51,6 +52,7 @@ class TestConfigDir:
         assert default_config_file("/conf") == "/conf/config.toml"
         assert default_env_file("/conf") == "/conf/.env"
         assert default_agents_md_file("/conf") == "/conf/AGENTS.md"
+        assert default_skills_dir("/conf") == "/conf/skills"
         assert default_dangerous_patterns_file("/conf") == "/conf/dangerous_patterns.txt"
 
     def test_config_dir_feeds_the_loaded_defaults(self, tmp_path: Path) -> None:
@@ -85,6 +87,7 @@ class TestDefaults:
         assert config.raw_io_log_file is None
         assert config.dangerous_patterns_file == default_dangerous_patterns_file()
         assert config.agents_md_file == default_agents_md_file()
+        assert config.skills_dir == default_skills_dir()
         assert config.compact_thresh == 100000
         assert config.new_output_max_chars == 20000
 
@@ -118,6 +121,7 @@ log_file = "~/expecto.jsonl"
 raw_io_log_file = "~/raw.log"
 dangerous_patterns_file = "~/patterns.txt"
 agents_md_file = "~/AGENTS.md"
+skills_dir = "~/skills"
 model = "main-model"
 base_url = "https://main.api/v1"
 reasoning_effort = "high"
@@ -136,6 +140,7 @@ new_output_max_chars = 5000
         assert config.raw_io_log_file == str(isolated_home / "raw.log")
         assert config.dangerous_patterns_file == str(isolated_home / "patterns.txt")
         assert config.agents_md_file == str(isolated_home / "AGENTS.md")
+        assert config.skills_dir == str(isolated_home / "skills")
         assert config.model == "main-model"
         assert config.openai_base_url == "https://main.api/v1"
         assert config.openai_reasoning_effort == "high"
