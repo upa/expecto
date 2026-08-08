@@ -96,10 +96,37 @@ log_file = ""                   # JSONL log of queries and LLM requests/response
 raw_io_log_file = ""            # raw terminal I/O log (for debugging)
 dangerous_patterns_file = ""    # extra dangerous-command regex file
 agents_md_file = ""             # AGENTS.md (default: ~/.expecto/AGENTS.md)
+skills_dir = ""                 # skills (default: ~/.expecto/skills)
 
 # MCP
 mcp_connect_timeout_ms = 10000  # per-server connection timeout
 ```
+
+
+## Skills
+
+A skill is a procedure you write once for a recurring kind of task. Put
+each one in `~/.expecto/skills/<name>/SKILL.md`:
+
+```markdown
+---
+name: junos-upgrade
+description: Upgrade Junos on our edge routers. Use when asked to upgrade or reboot rtr1-rtr4.
+---
+
+# Junos upgrade
+
+1. `request system snapshot` before anything else.
+2. ...
+```
+
+Only the `description` goes into the agent's prompt; when a goal matches
+it, the agent calls `load_skill` and reads the rest. That is the point —
+a long procedure costs you nothing until it is relevant. Write the
+description to say both what the skill covers and when to use it.
+
+Files you put next to `SKILL.md` are reachable too: the agent is told the
+skill's directory and can `cat` them.
 
 
 ## MCP servers

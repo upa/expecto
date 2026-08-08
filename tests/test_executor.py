@@ -15,6 +15,7 @@ from expecto.executor import ConfirmLevel, Executor
 from expecto.input_router import InputRouter
 from expecto.io_relay import IORelay
 from expecto.llm_client import (
+    LoadSkillParams,
     MCPToolParams,
     ParsedToolCall,
     RunCommandParams,
@@ -22,6 +23,7 @@ from expecto.llm_client import (
     StepResult,
 )
 from expecto.screen_buffer import ScreenBuffer
+from expecto.skills import Skill
 
 HOTKEY = bytes([0x1F])
 ENTER = bytes([0x0D])
@@ -66,6 +68,19 @@ def _mcp_result(step: int, name: str, **arguments: object) -> StepResult:
                 call_id=f"call_{step}",
                 name=name,
                 params=MCPToolParams(name=name, arguments=arguments),
+            ),
+        ],
+        final_text=None,
+    )
+
+
+def _skill_result(step: int, name: str) -> StepResult:
+    return StepResult(
+        tool_calls=[
+            ParsedToolCall(
+                call_id=f"call_{step}",
+                name="load_skill",
+                params=LoadSkillParams(name=name),
             ),
         ],
         final_text=None,
@@ -267,6 +282,7 @@ async def make_harness() -> AsyncIterator[MakeHarness]:
         screen: ScreenBuffer | None = None,
         new_output_max_chars: int = 20000,
         mcp: FakeMCP | None = None,
+        skills: list[Skill] | None = None,
     ) -> Harness:
         screen = screen if screen is not None else ScreenBuffer()
         expecto_sock, child_sock = socket.socketpair()
@@ -300,6 +316,7 @@ async def make_harness() -> AsyncIterator[MakeHarness]:
             dangerous_matcher=dangerous_matcher,
             new_output_max_chars=new_output_max_chars,
             mcp=mcp,
+            skills=skills,
         )
         run_task = asyncio.create_task(
             relay.run(expecto_sock.fileno(), stdin_fd=stdin_r, stdout_fd=stdout_w),
@@ -745,6 +762,50 @@ class TestStreamingFinalDisplay:
         out = harness.output()
         assert b"[checking]" in out
         assert b"[all done]" in out
+
+
+class TestLoadSkill:
+    async def test_body_recorded_and_load_shown(
+        self, make_harness: MakeHarness,
+    ) -> None:
+        """load_skill answers with the skill's instructions, writing
+        nothing to the terminal."""
+        fake_llm = FakeLLMClient(results=[
+            _skill_result(1, "bgp"),
+            _final_result("followed the skill"),
+        ])
+        skill = Skill(
+            name="bgp",
+            description="Fix BGP",
+            path="/skills/bgp",
+            body="1. show bgp summary",
+        )
+        harness = await make_harness(fake_llm, skills=[skill])
+        harness.start("fix the peer")
+        await harness.wait_done()
+
+        call_id, output = fake_llm.tool_outputs[0]
+        assert call_id == "call_1"
+        assert "1. show bgp summary" in output
+        assert "/skills/bgp" in output  # so run_command can reach its files
+        assert harness.pty_written == [b"\n", b"\n"]
+        assert b"[expecto: skill bgp]" in harness.output()
+
+    async def test_unknown_skill_lists_what_is_available(
+        self, make_harness: MakeHarness,
+    ) -> None:
+        fake_llm = FakeLLMClient(results=[
+            _skill_result(1, "nope"),
+            _final_result("gave up"),
+        ])
+        skill = Skill(name="bgp", description="Fix BGP", path="/s/bgp", body="b")
+        harness = await make_harness(fake_llm, skills=[skill])
+        harness.start("fix the peer")
+        await harness.wait_done()
+
+        _, output = fake_llm.tool_outputs[0]
+        assert output.startswith("Error: unknown skill: nope")
+        assert "bgp" in output
 
 
 class TestMCPToolCalls:

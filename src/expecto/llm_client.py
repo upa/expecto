@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     )
 
     from expecto.config import ExpectoConfig
+    from expecto.skills import Skill
 
 SYSTEM_PROMPT = """\
 You are an assistant that operates the terminal the user is using (which \
@@ -85,6 +86,17 @@ def load_agents_md(path: str) -> str | None:
     return text.strip() or None
 
 
+SKILLS_SECTION_HEADER = """
+# Skills
+
+Skills are instructions the user wrote for a particular kind of task. \
+When the goal matches one of them, call load_skill with its name and \
+follow what it returns before acting. Load only the ones you need.
+
+Available skills:
+"""
+
+
 MCP_SECTION = """
 # MCP Tools
 
@@ -97,15 +109,22 @@ on the terminal.
 
 
 def build_system_prompt(
-    agents_md: str | None = None, *, has_mcp_tools: bool = False,
+    agents_md: str | None = None,
+    *,
+    skills: list[Skill] | None = None,
+    has_mcp_tools: bool = False,
 ) -> str:
-    """The system prompt: the base prompt, with the user's AGENTS.md
-    appended as a trailing section when one was loaded, and a note about
-    MCP tools when any server provided some.
+    """The system prompt: the base prompt, plus a catalog of the user's
+    skills, a note about MCP tools when any server provided some, and the
+    user's AGENTS.md, each when present.
 
-    Both are settled at startup and fixed for the whole session, so the
-    prompt prefix stays cached (design/Conversation.md §2)."""
+    All of them are settled at startup and fixed for the whole session,
+    so the prompt prefix stays cached (design/Conversation.md §2)."""
     prompt = SYSTEM_PROMPT
+    if skills:
+        prompt += SKILLS_SECTION_HEADER + "".join(
+            f"- {skill.name}: {skill.description}\n" for skill in skills
+        )
     if has_mcp_tools:
         prompt += MCP_SECTION
     if agents_md is not None:
@@ -145,6 +164,35 @@ class RunCommandParams(BaseModel):
 
 class SendControlParams(BaseModel):
     key: Literal["ctrl-c", "ctrl-d", "ctrl-z"]
+
+
+class LoadSkillParams(BaseModel):
+    name: str
+
+
+LOAD_SKILL_TOOL: ChatCompletionFunctionToolParam = {
+    "type": "function",
+    "function": {
+        "name": "load_skill",
+        "description": (
+            "Load one of the user's skills and return its instructions. Call "
+            "this before acting when the goal matches a skill listed in the "
+            "system prompt."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "The name of the skill to load.",
+                },
+            },
+            "required": ["name"],
+            "additionalProperties": False,
+        },
+        "strict": True,
+    },
+}
 
 
 TOOLS: list[ChatCompletionFunctionToolParam] = [
@@ -222,7 +270,7 @@ class MCPToolParams:
     arguments: dict[str, object]
 
 
-ToolParams = RunCommandParams | SendControlParams | MCPToolParams
+ToolParams = RunCommandParams | SendControlParams | LoadSkillParams | MCPToolParams
 
 
 @dataclass
@@ -315,11 +363,19 @@ class LLMClient:
     transparently when it grows past compact_thresh (design/Conversation.md)."""
 
     def __init__(
-        self, config: ExpectoConfig, agents_md: str | None = None,
+        self,
+        config: ExpectoConfig,
+        agents_md: str | None = None,
+        skills: list[Skill] | None = None,
     ) -> None:
         self._config = config
         self._agents_md = agents_md
-        self._tools: list[ChatCompletionFunctionToolParam] = list(TOOLS)
+        self._skills = skills or []
+        # load_skill is only offered when there is something to load.
+        self._base_tools: list[ChatCompletionFunctionToolParam] = [
+            *TOOLS, *([LOAD_SKILL_TOOL] if self._skills else []),
+        ]
+        self._tools: list[ChatCompletionFunctionToolParam] = list(self._base_tools)
         self._mcp_tool_names: frozenset[str] = frozenset()
         self._client: openai.AsyncOpenAI = openai.AsyncOpenAI(
             api_key=config.openai_api_key,
@@ -328,7 +384,10 @@ class LLMClient:
         self._log_file = config.log_file
         self._compact_thresh = config.compact_thresh
         self._messages: list[ChatCompletionMessageParam] = [
-            {"role": "system", "content": build_system_prompt(agents_md)},
+            {
+                "role": "system",
+                "content": build_system_prompt(agents_md, skills=self._skills),
+            },
         ]
         self._last_prompt_tokens: int = 0
         self._logged_messages: int = 0
@@ -353,13 +412,15 @@ class LLMClient:
         assert len(self._messages) == 1, "MCP tools must be set before the first query"
         if not tools:
             return
-        self._tools = [*TOOLS, *tools]
+        self._tools = [*self._base_tools, *tools]
         self._mcp_tool_names = frozenset(
             str(tool["function"]["name"]) for tool in tools
         )
         self._messages[0] = {
             "role": "system",
-            "content": build_system_prompt(self._agents_md, has_mcp_tools=True),
+            "content": build_system_prompt(
+                self._agents_md, skills=self._skills, has_mcp_tools=True,
+            ),
         }
 
     # --- conversation API (used by Executor) ---
@@ -520,6 +581,8 @@ class LLMClient:
                 params = RunCommandParams.model_validate_json(item.function.arguments)
             elif name == "send_control":
                 params = SendControlParams.model_validate_json(item.function.arguments)
+            elif name == "load_skill" and self._skills:
+                params = LoadSkillParams.model_validate_json(item.function.arguments)
             elif name in self._mcp_tool_names:
                 # MCP schemas are the servers' own and are not validated
                 # here; the server itself rejects bad arguments.

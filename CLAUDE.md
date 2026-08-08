@@ -42,6 +42,7 @@ Core components (each a separate module under `src/expecto/`):
 - `executor` — the command-execute-observe loop (async, cancellation-based interrupts)
 - `settle` — idle-timer output settle detection (`wait_settle` coroutine, no PS1 dependency)
 - `dangerous` — regex backstop for unmistakably catastrophic commands
+- `skills` — Agent Skills from `<config_dir>/skills`: SKILL.md discovery/parsing; the `load_skill` tool serves the body (see `design/Skills.md`)
 - `mcp_client` — MCP servers from `[mcp.*]`: connect at startup, expose their tools to the LLM as `mcp__<server>__<tool>`, dispatch calls (see `design/MCP.md`)
 - `config` — config.toml loading (defaults < file < CLI flags), hotkey parsing, startup warnings (see `design/Config.md`)
 - `cli` — entry point, argparse, asyncio.run

@@ -19,6 +19,7 @@
 ├── .env                      # OPENAI_API_KEY only (secret)
 ├── config.toml               # behavior settings (this document)
 ├── AGENTS.md                 # user instructions appended to the system prompt (DESIGN.md §8)
+├── skills/                   # Agent Skills, one directory each (Skills.md)
 └── dangerous_patterns.txt    # additional dangerous-command regexes (DESIGN.md §5.8)
 ```
 
@@ -44,6 +45,7 @@ log_file = ""                     # JSONL log. default: disabled
 raw_io_log_file = ""              # raw I/O log for debugging. default: disabled
 dangerous_patterns_file = ""      # default: <config_dir>/dangerous_patterns.txt
 agents_md_file = ""               # default: <config_dir>/AGENTS.md
+skills_dir = ""                   # default: <config_dir>/skills
 
 model = "gpt-5.4"                 # expecto's own default
 base_url = ""                     # if unset, SDK default (api.openai.com)
@@ -91,6 +93,8 @@ Follows the existing policy of `dangerous_patterns.txt` (invalid lines are warne
 | `.env` at the default path does not exist | Normal (the key comes from the environment) |
 | File explicitly specified via `--env` does not exist | **Exit with error** (same policy as `--config`) |
 | AGENTS.md at the default path (or the `agents_md_file` path) does not exist | Normal (no user instructions are added) |
+| The skills directory does not exist | Normal (no skills are offered) |
+| A skill directory is unusable (no SKILL.md, no frontmatter, no description) | Warn and skip **that skill only** (Skills.md §2) |
 | File explicitly specified via `-a` / `--agents-md` does not exist | **Exit with error** (same policy as `--config`) |
 | TOML syntax error | Ignore the entire file with a warning |
 | Unknown key | Warn (typo detection), ignore |
