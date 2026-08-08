@@ -199,6 +199,74 @@ class TestStdioTransport:
         assert "mcp.NOPE" in warnings[0]
 
 
+class TestToolDefs:
+    async def test_exposes_namespaced_non_strict_functions(
+        self, monkeypatch: pytest.MonkeyPatch, errlog: TextIO,
+    ) -> None:
+        _install_fakes(monkeypatch, {"A": _FakeSession([_tool("search")])})
+        manager = MCPManager(errlog)
+        await manager.connect([MCPServerConfig(name="A", type="sse", url="http://a")])
+        (definition,) = manager.tool_defs()
+        assert definition["type"] == "function"
+        function = definition["function"]
+        assert function["name"] == "mcp__A__search"
+        # The server's own schema is passed through, and strict mode — which
+        # arbitrary MCP schemas do not satisfy — is not claimed.
+        assert function["parameters"] == _tool("search").input_schema
+        assert "strict" not in function
+        assert "A" in function["description"]
+
+    async def test_tool_without_description_still_gets_one(
+        self, monkeypatch: pytest.MonkeyPatch, errlog: TextIO,
+    ) -> None:
+        bare = Tool(name="run", input_schema={"type": "object"})
+        _install_fakes(monkeypatch, {"A": _FakeSession([bare])})
+        manager = MCPManager(errlog)
+        await manager.connect([MCPServerConfig(name="A", type="sse", url="http://a")])
+        assert manager.tool_defs()[0]["function"]["description"]
+
+
+class TestCall:
+    """Calls go through the real stdio server (tests/mcp_stdio_server.py)."""
+
+    async def test_returns_the_tool_result_text(self, errlog: TextIO) -> None:
+        manager = MCPManager(errlog)
+        try:
+            await manager.connect([_stdio_server()])
+            output = await manager.call("mcp__S__echo", {"text": "hello there"})
+            assert "hello there" in output
+        finally:
+            await manager.aclose()
+
+    async def test_failing_tool_comes_back_as_error_text(
+        self, errlog: TextIO,
+    ) -> None:
+        """A tool failure is information for the LLM, not an exception."""
+        manager = MCPManager(errlog)
+        try:
+            await manager.connect([_stdio_server()])
+            output = await manager.call("mcp__S__boom", {})
+            assert output.startswith("Error:")
+        finally:
+            await manager.aclose()
+
+    async def test_bad_arguments_come_back_as_error_text(
+        self, errlog: TextIO,
+    ) -> None:
+        manager = MCPManager(errlog)
+        try:
+            await manager.connect([_stdio_server()])
+            output = await manager.call("mcp__S__echo", {"wrong": 1})
+            assert output.startswith("Error:")
+        finally:
+            await manager.aclose()
+
+    async def test_unknown_tool_is_reported(self, errlog: TextIO) -> None:
+        manager = MCPManager(errlog)
+        output = await manager.call("mcp__GONE__nope", {})
+        assert output == "Error: unknown MCP tool: mcp__GONE__nope"
+
+
 class TestErrlog:
     def test_discards_server_stderr(self) -> None:
         """A stdio server's stderr must not reach the raw-mode tty."""

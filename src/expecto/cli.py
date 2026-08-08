@@ -255,6 +255,7 @@ def main(argv: list[str] | None = None) -> None:
         confirm_level=config.confirm_level,
         dangerous_matcher=dangerous_matcher,
         new_output_max_chars=config.new_output_max_chars,
+        mcp=mcp_manager,
     )
 
     async def run_session() -> int:
@@ -269,6 +270,7 @@ def main(argv: list[str] | None = None) -> None:
             )
             for warning in await mcp_manager.connect(config.mcp_servers):
                 print(f"expecto: warning: {warning}", file=sys.stderr)
+            llm_client.set_mcp_tools(mcp_manager.tool_defs())
 
         tty_ctrl.enter_raw()
         pty_mgr.spawn(command)

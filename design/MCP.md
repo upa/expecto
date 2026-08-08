@@ -1,7 +1,6 @@
 # MCP Client Design Document
 
-- Status: config parsing and connection implemented; tool exposure and
-  dispatch (§4, §5) pending
+- Status: implemented
 - Parent document: `DESIGN.md` (§5.7, §7)
 - This document is the detailed design of expecto acting as an **MCP
   client**: connecting to the MCP servers listed in config.toml and
@@ -111,10 +110,16 @@ only when servers are configured, and `run_session()` drives it.
   not satisfy the strict-mode requirements (every property required,
   `additionalProperties: false`); expecto's own two tools keep
   `strict: true`.
+- The description is prefixed with `[MCP server <name>]` so the model can
+  tell where a tool comes from even when the server's own description is
+  terse (or missing, in which case a generated one is used).
 - **Prompt-cache invariant**: the tools definition must be identical on
   every request of a session (Conversation.md §2). MCP tools are
   discovered once at startup and never change afterwards, so the
   invariant holds — this is why connection precedes the first request.
+  `LLMClient.set_mcp_tools()` is the one-shot hand-off: it is called
+  after connecting and before the relay starts, and asserts that the
+  conversation has not begun, since it also rewrites the system message.
 - When at least one MCP tool exists, a paragraph is appended to the
   system prompt telling the model that `mcp__`-prefixed tools come from
   servers the user configured. Like the AGENTS.md section, it is fixed
@@ -133,6 +138,10 @@ show "[expecto: mcp <server>.<tool>]" on the outer tty in gray
 await the MCP call (inside _thinking(), so the pty stays paused)
 record the result text as the tool output
 ```
+
+The arguments are handed to the server as the model produced them
+(decoded from JSON, not validated against the schema): the server
+validates its own input, and a rejection comes back as tool-output text.
 
 - No `mark()` and no `wait_settle()`: an MCP call produces no terminal
   output, so there is nothing to settle.

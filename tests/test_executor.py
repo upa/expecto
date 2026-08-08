@@ -15,6 +15,7 @@ from expecto.executor import ConfirmLevel, Executor
 from expecto.input_router import InputRouter
 from expecto.io_relay import IORelay
 from expecto.llm_client import (
+    MCPToolParams,
     ParsedToolCall,
     RunCommandParams,
     SendControlParams,
@@ -56,6 +57,34 @@ def _control_result(step: int, key: Literal["ctrl-c", "ctrl-d", "ctrl-z"]) -> St
 
 def _final_result(text: str) -> StepResult:
     return StepResult(tool_calls=[], final_text=text)
+
+
+def _mcp_result(step: int, name: str, **arguments: object) -> StepResult:
+    return StepResult(
+        tool_calls=[
+            ParsedToolCall(
+                call_id=f"call_{step}",
+                name=name,
+                params=MCPToolParams(name=name, arguments=arguments),
+            ),
+        ],
+        final_text=None,
+    )
+
+
+class FakeMCP:
+    """Implements the MCPCaller protocol with a canned answer."""
+
+    def __init__(self, output: str = "mcp result", delay: float = 0.0) -> None:
+        self._output = output
+        self._delay = delay
+        self.calls: list[tuple[str, dict[str, object]]] = []
+
+    async def call(self, qualified_name: str, arguments: dict[str, object]) -> str:
+        self.calls.append((qualified_name, arguments))
+        if self._delay:
+            await asyncio.sleep(self._delay)
+        return self._output
 
 
 def _risky_cmd_result(step: int, command: str, risk: str = "destructive") -> StepResult:
@@ -237,6 +266,7 @@ async def make_harness() -> AsyncIterator[MakeHarness]:
         dangerous_matcher: DangerousCommandMatcher | None = None,
         screen: ScreenBuffer | None = None,
         new_output_max_chars: int = 20000,
+        mcp: FakeMCP | None = None,
     ) -> Harness:
         screen = screen if screen is not None else ScreenBuffer()
         expecto_sock, child_sock = socket.socketpair()
@@ -269,6 +299,7 @@ async def make_harness() -> AsyncIterator[MakeHarness]:
             confirm_level=confirm_level,
             dangerous_matcher=dangerous_matcher,
             new_output_max_chars=new_output_max_chars,
+            mcp=mcp,
         )
         run_task = asyncio.create_task(
             relay.run(expecto_sock.fileno(), stdin_fd=stdin_r, stdout_fd=stdout_w),
@@ -714,6 +745,65 @@ class TestStreamingFinalDisplay:
         out = harness.output()
         assert b"[checking]" in out
         assert b"[all done]" in out
+
+
+class TestMCPToolCalls:
+    async def test_result_recorded_and_call_shown(
+        self, make_harness: MakeHarness,
+    ) -> None:
+        """An MCP call is dispatched to the server, shown on screen, and its
+        result recorded — with no command written to the pty."""
+        fake_llm = FakeLLMClient(results=[
+            _mcp_result(1, "mcp__DOCS__search", query="bgp"),
+            _final_result("found it"),
+        ])
+        mcp = FakeMCP(output="RFC 4271")
+        harness = await make_harness(fake_llm, mcp=mcp)
+        harness.start("look it up")
+        await harness.wait_done()
+
+        assert mcp.calls == [("mcp__DOCS__search", {"query": "bgp"})]
+        assert fake_llm.tool_outputs == [("call_1", "RFC 4271")]
+        # No command was injected: only the prompt nudge and final newline.
+        assert harness.pty_written == [b"\n", b"\n"]
+        out = harness.output()
+        assert b"[expecto: mcp DOCS.search]" in out
+        assert b"[found it]" in out
+
+    async def test_without_a_server_the_call_is_answered_with_an_error(
+        self, make_harness: MakeHarness,
+    ) -> None:
+        fake_llm = FakeLLMClient(results=[
+            _mcp_result(1, "mcp__DOCS__search"),
+            _final_result("gave up"),
+        ])
+        harness = await make_harness(fake_llm)  # no mcp
+        harness.start("look it up")
+        await harness.wait_done()
+
+        call_id, output = fake_llm.tool_outputs[0]
+        assert call_id == "call_1"
+        assert output.startswith("Error:")
+
+    async def test_interrupt_during_a_call_records_the_output(
+        self, make_harness: MakeHarness,
+    ) -> None:
+        """Ctrl-C during an MCP call still answers the tool call, so the
+        conversation is never left with an unanswered one."""
+        fake_llm = FakeLLMClient(results=[
+            _mcp_result(1, "mcp__DOCS__search"),
+            _final_result("unreachable"),
+        ])
+        mcp = FakeMCP(delay=5.0)
+        harness = await make_harness(fake_llm, mcp=mcp)
+        harness.start("look it up")
+        await _until(lambda: bool(mcp.calls))
+        harness.user_types(b"\x03")
+        await harness.wait_done()
+
+        assert [c for c, _ in fake_llm.tool_outputs] == ["call_1"]
+        assert "interrupted" in fake_llm.tool_outputs[0][1]
+        assert b"[expecto interrupted]" in harness.output()
 
 
 class TestDangerousCommandConfirmation:

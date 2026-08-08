@@ -15,6 +15,8 @@ from mcp.shared._httpx_utils import create_mcp_http_client
 if TYPE_CHECKING:
     from typing import TextIO
 
+    from openai.types.chat import ChatCompletionFunctionToolParam
+
     from expecto.config import MCPServerConfig
 
 TOOL_NAME_PREFIX = "mcp"
@@ -122,6 +124,54 @@ class MCPManager:
             streamable_http_client(server.url, http_client=http_client),
         )
 
+    def tool_defs(self) -> list[ChatCompletionFunctionToolParam]:
+        """The discovered tools as Chat Completions function tools.
+
+        The server's own input schema is passed through without `strict`:
+        arbitrary MCP schemas do not meet strict mode's requirements, and
+        the server validates its arguments anyway (design/MCP.md §4)."""
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": tool.qualified_name,
+                    "description": (
+                        f"[MCP server {tool.server}] {tool.description}"
+                        if tool.description
+                        else f"Tool {tool.tool} on MCP server {tool.server}"
+                    ),
+                    "parameters": tool.input_schema,
+                },
+            }
+            for tool in self._tools
+        ]
+
+    def find(self, qualified_name: str) -> MCPTool | None:
+        for tool in self._tools:
+            if tool.qualified_name == qualified_name:
+                return tool
+        return None
+
+    async def call(self, qualified_name: str, arguments: dict[str, object]) -> str:
+        """Call one tool and render its result as tool-output text.
+
+        A tool that reports failure comes back as text starting with
+        "Error:" rather than an exception: like a declined command, a
+        failure is information for the LLM, not an abort."""
+        tool = self.find(qualified_name)
+        if tool is None:
+            return f"Error: unknown MCP tool: {qualified_name}"
+        session = self._sessions.get(tool.server)
+        if session is None:
+            return f"Error: MCP server {tool.server} is not connected"
+        try:
+            result = await session.call_tool(tool.tool, arguments)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - reported to the LLM, never fatal
+            return f"Error: {_describe_error(exc)}"
+        return _render_result(result)
+
     async def aclose(self) -> None:
         """Close every session and transport (stdio children are stopped).
 
@@ -131,6 +181,25 @@ class MCPManager:
         self._tools.clear()
         with contextlib.suppress(Exception):
             await self._stack.aclose()
+
+
+def _render_result(result: object) -> str:
+    """Render a CallToolResult as the text handed back to the LLM.
+
+    Text blocks are joined; anything else becomes a placeholder, since a
+    tool message can only carry text."""
+    content = getattr(result, "content", None)
+    parts: list[str] = []
+    for block in content or []:
+        text = getattr(block, "text", None)
+        if text is not None:
+            parts.append(text)
+        else:
+            parts.append(f"[non-text content omitted: {getattr(block, 'type', '?')}]")
+    rendered = "\n".join(parts).strip() or "(the tool returned no content)"
+    if getattr(result, "is_error", False):
+        return f"Error: {rendered}"
+    return rendered
 
 
 def _describe_error(exc: BaseException) -> str:
