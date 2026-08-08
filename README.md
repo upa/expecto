@@ -7,8 +7,7 @@ terminal, and when you ask the AI agent, it runs commands on your
 behalf until the goal is done.
 
 
-
-https://github.com/user-attachments/assets/a22e805b-6724-4a45-ac48-0c85f4221033
+https://github.com/user-attachments/assets/cb0954d9-463a-47a1-9a19-5c9f1441a789
 
 
 
@@ -32,7 +31,7 @@ expecto
 Press `Ctrl-/` (the default hotkey) to query your AI agent.
 
 `-u` / `--base-url` overrides the endpoint, and `-m` / `--model`
-overrides the model, for a single run. For example:
+overrides the model. For example:
 
 ```console
 OPENAI_API_KEY=ollama expecto -u http://localhost:11434/v1 -m gpt-oss:20b
