@@ -196,7 +196,7 @@ The single step of "execute a command and receive its result" is exposed to the 
 |----------------|----------------------------------------|-------------------------------------------------------------------------------------------------------|
 | `run_command`  | `command: string`                      | Writes the command + Enter to the pty master, waits for the output to settle, and returns the screen text |
 | `send_control` | `key: "ctrl-c" \| "ctrl-d" \| "ctrl-z"` | Writes a control character to the pty master, likewise waits for settle, and returns the screen text     |
-| `load_skill`   | `name: string`                         | Returns the body of one of the user's skills. Only offered when skills exist; see **`Skills.md`** |
+| `load_skill`   | `name: string`, `file: string`         | Returns the body of one of the user's skills, or a file bundled with it. Read by expecto itself, since skills live on the local machine while the terminal may not. Only offered when skills exist; see **`Skills.md`** |
 | `mcp__<server>__<tool>` | the server's own schema | Calls a tool on one of the MCP servers configured in config.toml and returns its result text. Discovered at session start; see **`MCP.md`** |
 
 - Tool definitions are passed as JSON Schema with `strict: true`, and arguments are validated with Pydantic models (`RunCommandParams` / `SendControlParams`). If validation fails (which normally cannot happen due to strict mode), error text is returned as the output for the corresponding `call_id`.

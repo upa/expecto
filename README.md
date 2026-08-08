@@ -125,8 +125,10 @@ it, the agent calls `load_skill` and reads the rest. That is the point —
 a long procedure costs you nothing until it is relevant. Write the
 description to say both what the skill covers and when to use it.
 
-Files you put next to `SKILL.md` are reachable too: the agent is told the
-skill's directory and can `cat` them.
+Files you put next to `SKILL.md` — a checklist, a script — are listed at
+the end of the skill, and the agent can pull one in the same way. They
+are read by `expecto` itself, so they work even when your terminal is
+sitting inside an ssh session or on a device CLI.
 
 
 ## MCP servers

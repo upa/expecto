@@ -168,6 +168,7 @@ class SendControlParams(BaseModel):
 
 class LoadSkillParams(BaseModel):
     name: str
+    file: str = ""
 
 
 LOAD_SKILL_TOOL: ChatCompletionFunctionToolParam = {
@@ -177,7 +178,9 @@ LOAD_SKILL_TOOL: ChatCompletionFunctionToolParam = {
         "description": (
             "Load one of the user's skills and return its instructions. Call "
             "this before acting when the goal matches a skill listed in the "
-            "system prompt."
+            "system prompt. Skills live on the machine running this session's "
+            "wrapper, not necessarily on the system the terminal is connected "
+            "to, so always read them with this tool rather than with a command."
         ),
         "parameters": {
             "type": "object",
@@ -186,8 +189,16 @@ LOAD_SKILL_TOOL: ChatCompletionFunctionToolParam = {
                     "type": "string",
                     "description": "The name of the skill to load.",
                 },
+                "file": {
+                    "type": "string",
+                    "description": (
+                        "A file bundled with the skill, as listed at the end of "
+                        "the skill's instructions. Use an empty string for the "
+                        "skill's own instructions."
+                    ),
+                },
             },
-            "required": ["name"],
+            "required": ["name", "file"],
             "additionalProperties": False,
         },
         "strict": True,

@@ -2,7 +2,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from expecto.skills import load_skills, render_skill
+import pytest
+
+from expecto.skills import (
+    load_skills,
+    render_skill,
+    render_skill_file,
+    resolve_skill_file,
+)
 
 SKILL_MD = """\
 ---
@@ -112,12 +119,64 @@ class TestNameMismatch:
         assert any("declared" in w and "actual" in w for w in warnings)
 
 
-class TestRenderSkill:
-    def test_names_the_skill_and_its_directory(self, tmp_path: Path) -> None:
+class TestBundledFiles:
+    def test_listed_relative_to_the_skill_directory(self, tmp_path: Path) -> None:
         directory = _write_skill(tmp_path, "bgp", SKILL_MD)
+        (directory / "checklist.md").write_text("check")
+        (directory / "scripts").mkdir()
+        (directory / "scripts" / "probe.sh").write_text("#!/bin/sh")
+        (directory / ".hidden").write_text("ignored")
+        (skill,) = load_skills(str(tmp_path))[0]
+        assert skill.files == ("checklist.md", "scripts/probe.sh")
+
+    def test_skill_md_itself_is_not_listed(self, tmp_path: Path) -> None:
+        _write_skill(tmp_path, "bgp", SKILL_MD)
+        (skill,) = load_skills(str(tmp_path))[0]
+        assert skill.files == ()
+
+    def test_resolve_rejects_paths_outside_the_skill(self, tmp_path: Path) -> None:
+        """The skill directory is the boundary: load_skill is not a
+        general-purpose file reader."""
+        _write_skill(tmp_path, "bgp", SKILL_MD)
+        (tmp_path / "secret.txt").write_text("nope")
+        (skill,) = load_skills(str(tmp_path))[0]
+        with pytest.raises(ValueError, match="outside the skill directory"):
+            resolve_skill_file(skill, "../secret.txt")
+        with pytest.raises(ValueError, match="outside the skill directory"):
+            resolve_skill_file(skill, "/etc/passwd")
+
+    def test_render_file_returns_its_contents(self, tmp_path: Path) -> None:
+        directory = _write_skill(tmp_path, "bgp", SKILL_MD)
+        (directory / "checklist.md").write_text("- confirm the peer address\n")
+        (skill,) = load_skills(str(tmp_path))[0]
+        rendered = render_skill_file(skill, "checklist.md")
+        assert rendered.startswith("# Skill: bgp — checklist.md")
+        assert "confirm the peer address" in rendered
+
+    def test_render_file_raises_when_missing(self, tmp_path: Path) -> None:
+        _write_skill(tmp_path, "bgp", SKILL_MD)
+        (skill,) = load_skills(str(tmp_path))[0]
+        with pytest.raises(OSError, match="No such file"):
+            render_skill_file(skill, "nonexistent.md")
+
+
+class TestRenderSkill:
+    def test_names_the_skill_and_returns_the_body(self, tmp_path: Path) -> None:
+        _write_skill(tmp_path, "bgp", SKILL_MD)
         (skill,) = load_skills(str(tmp_path))[0]
         rendered = render_skill(skill)
         assert rendered.startswith("# Skill: bgp")
-        assert str(directory) in rendered
-        assert "run_command" in rendered  # how to reach the bundled files
         assert rendered.endswith("1. show bgp summary")
+        assert "load_skill" not in rendered  # nothing bundled, nothing to offer
+
+    def test_advertises_bundled_files_and_how_to_get_them(
+        self, tmp_path: Path,
+    ) -> None:
+        directory = _write_skill(tmp_path, "bgp", SKILL_MD)
+        (directory / "checklist.md").write_text("check")
+        (skill,) = load_skills(str(tmp_path))[0]
+        rendered = render_skill(skill)
+        assert "checklist.md" in rendered
+        assert 'load_skill(name="bgp", file="<path>")' in rendered
+        # Never via the terminal: the skill is local, the terminal may not be.
+        assert "run_command" not in rendered

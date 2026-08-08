@@ -26,7 +26,7 @@ the model pull in the body when the goal matches.
 ~/.expecto/skills/                 # or the skills_dir config key
 ├── bgp-troubleshooting/
 │   ├── SKILL.md
-│   └── checklist.md               # bundled file, read with run_command
+│   └── checklist.md               # bundled file, served by load_skill
 └── junos-upgrade/
     └── SKILL.md
 ```
@@ -82,29 +82,41 @@ Available skills:
 
 | tool | arguments | behavior |
 |------|-----------|----------|
-| `load_skill` | `name: string` | Returns that skill's SKILL.md body as the tool result |
+| `load_skill` | `name: string`, `file: string` | Returns that skill's SKILL.md body, or — when `file` is non-empty — a file bundled with the skill |
 
 - Registered with `strict: true` and validated with `LoadSkillParams`,
   like expecto's other own tools. **It is only offered when skills
-  exist** — an empty tool is worse than none.
+  exist** — an empty tool is worse than none. `file` is required by
+  strict mode; the empty string means the skill itself.
 - The Executor handles it synchronously: the skills were read at startup,
   so there is nothing to send to the terminal and nothing to wait for. The
-  load is shown on screen (`[expecto: skill <name>]`) so it is as visible
-  as a command.
-- An unknown name comes back as tool-result text listing what is
-  available, rather than an abort — the model can correct itself.
-- The result names the skill's **directory**, so the model can read files
-  bundled next to SKILL.md with `run_command` (`cat checklist.md`).
-  expecto drives a terminal; a separate file-reading tool would be
-  redundant.
+  load is shown on screen (`[expecto: skill <name>]`, or
+  `[expecto: skill <name>/<file>]`) so it is as visible as a command.
+- **Files are read by expecto, never through `run_command`.** The skills
+  live on the machine expecto runs on, while the terminal may be an ssh
+  session or a device CLI where those paths do not exist — the tool
+  description and the rendered skill both say so, and the skill's local
+  path is deliberately not shown, so the model is not tempted to `cat`
+  it.
+- A skill's rendered body ends with the list of files bundled beside it
+  and how to fetch one, so a procedure can refer to its own checklist or
+  script.
+- `file` is resolved against the skill directory and must stay inside it
+  (`..` and absolute paths are refused): `load_skill` is not a
+  general-purpose file reader.
+- An unknown skill name, an escaping path, or an unreadable file all come
+  back as tool-result text — listing the available skills or the skill's
+  bundled files — rather than an abort, so the model can correct itself.
 
 ## 5. Design-Decision Record
 
 1. **Description in the prompt, body behind a tool.** The whole point is
    to keep long procedures out of the prompt until they are relevant.
-2. **No file-reading tool for bundled files.** `run_command` already
-   reads files, and going through the terminal keeps every access visible
-   to the user.
+2. **`load_skill` serves bundled files too, rather than pointing the
+   model at `run_command`.** Reading them through the terminal only works
+   when the terminal happens to be a local shell — and the situations a
+   skill is written for (a router upgrade, a device stuck mid-migration)
+   are exactly the ones where it is not.
 3. **Read at startup, not on demand.** Simpler, and it keeps `load_skill`
    free of I/O failures mid-session. The cost — edits need a restart — is
    the same one AGENTS.md already has.

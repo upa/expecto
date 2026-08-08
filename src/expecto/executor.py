@@ -22,7 +22,7 @@ from expecto.llm_client import (
     StepResult,
 )
 from expecto.mcp_client import TOOL_NAME_PREFIX
-from expecto.skills import render_skill
+from expecto.skills import render_skill, render_skill_file
 from expecto.settle import SettleResult
 
 T = TypeVar("T")
@@ -356,10 +356,12 @@ class Executor:
         self._llm.add_tool_output(call.call_id, output_text)
 
     def _run_load_skill(self, call_id: str, params: LoadSkillParams) -> None:
-        """Hand the LLM one of the user's skills (design/Skills.md).
+        """Hand the LLM one of the user's skills, or a file bundled with
+        it (design/Skills.md).
 
-        Synchronous: the skills were read at startup, so this is a lookup,
-        with nothing to send to the terminal and nothing to wait for."""
+        Synchronous, and read here rather than through run_command: the
+        skills live on the machine expecto runs on, which is not
+        necessarily where the terminal is connected."""
         skill = self._skills.get(params.name)
         if skill is None:
             available = ", ".join(sorted(self._skills)) or "(none)"
@@ -368,8 +370,22 @@ class Executor:
                 f"Error: unknown skill: {params.name}. Available skills: {available}",
             )
             return
-        self._write_gray(f"\r\n[expecto: skill {skill.name}]\r\n")
-        self._llm.add_tool_output(call_id, render_skill(skill))
+
+        label = f"{skill.name}/{params.file}" if params.file else skill.name
+        self._write_gray(f"\r\n[expecto: skill {label}]\r\n")
+
+        if not params.file:
+            self._llm.add_tool_output(call_id, render_skill(skill))
+            return
+        try:
+            output = render_skill_file(skill, params.file)
+        except (OSError, ValueError) as exc:
+            bundled = ", ".join(skill.files) or "(none)"
+            output = (
+                f"Error: cannot read {params.file!r} from skill {skill.name}: {exc}. "
+                f"Files bundled with this skill: {bundled}"
+            )
+        self._llm.add_tool_output(call_id, output)
 
     async def _run_mcp_call(self, call_id: str, params: MCPToolParams) -> None:
         """Call an MCP tool and record its result (design/MCP.md §5).

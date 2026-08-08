@@ -6,6 +6,7 @@ import os
 import socket
 from collections.abc import AsyncIterator, Callable, Coroutine
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Literal, cast
 
 import pytest
@@ -74,13 +75,13 @@ def _mcp_result(step: int, name: str, **arguments: object) -> StepResult:
     )
 
 
-def _skill_result(step: int, name: str) -> StepResult:
+def _skill_result(step: int, name: str, file: str = "") -> StepResult:
     return StepResult(
         tool_calls=[
             ParsedToolCall(
                 call_id=f"call_{step}",
                 name="load_skill",
-                params=LoadSkillParams(name=name),
+                params=LoadSkillParams(name=name, file=file),
             ),
         ],
         final_text=None,
@@ -787,9 +788,56 @@ class TestLoadSkill:
         call_id, output = fake_llm.tool_outputs[0]
         assert call_id == "call_1"
         assert "1. show bgp summary" in output
-        assert "/skills/bgp" in output  # so run_command can reach its files
         assert harness.pty_written == [b"\n", b"\n"]
         assert b"[expecto: skill bgp]" in harness.output()
+
+    async def test_bundled_file_is_read_locally(
+        self, make_harness: MakeHarness, tmp_path: Path,
+    ) -> None:
+        """A bundled file is served by expecto, not fetched through the
+        terminal — which may be an ssh session with no such path."""
+        (tmp_path / "checklist.md").write_text("- confirm the peer address\n")
+        fake_llm = FakeLLMClient(results=[
+            _skill_result(1, "bgp", file="checklist.md"),
+            _final_result("done"),
+        ])
+        skill = Skill(
+            name="bgp",
+            description="Fix BGP",
+            path=str(tmp_path),
+            body="see the checklist",
+            files=("checklist.md",),
+        )
+        harness = await make_harness(fake_llm, skills=[skill])
+        harness.start("fix the peer")
+        await harness.wait_done()
+
+        _, output = fake_llm.tool_outputs[0]
+        assert "confirm the peer address" in output
+        assert harness.pty_written == [b"\n", b"\n"]
+        assert b"[expecto: skill bgp/checklist.md]" in harness.output()
+
+    async def test_unreadable_bundled_file_lists_what_exists(
+        self, make_harness: MakeHarness, tmp_path: Path,
+    ) -> None:
+        fake_llm = FakeLLMClient(results=[
+            _skill_result(1, "bgp", file="../secrets.txt"),
+            _final_result("gave up"),
+        ])
+        skill = Skill(
+            name="bgp",
+            description="Fix BGP",
+            path=str(tmp_path),
+            body="b",
+            files=("checklist.md",),
+        )
+        harness = await make_harness(fake_llm, skills=[skill])
+        harness.start("fix the peer")
+        await harness.wait_done()
+
+        _, output = fake_llm.tool_outputs[0]
+        assert output.startswith("Error:")
+        assert "checklist.md" in output
 
     async def test_unknown_skill_lists_what_is_available(
         self, make_harness: MakeHarness,

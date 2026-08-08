@@ -12,12 +12,15 @@ class Skill:
     """One skill from <skills_dir>/<name>/SKILL.md (design/Skills.md).
 
     The description is what the model selects on (it is listed in the
-    system prompt); the body is what load_skill returns."""
+    system prompt); the body is what load_skill returns; files are the
+    other files bundled in the skill directory, which load_skill can
+    serve too."""
 
     name: str            # the directory name, which is authoritative
     description: str
     path: str            # the skill directory, absolute
     body: str
+    files: tuple[str, ...] = ()   # bundled files, relative to path
 
 
 def load_skills(skills_dir: str) -> tuple[list[Skill], list[str]]:
@@ -81,7 +84,22 @@ def _load_skill(name: str, directory: str, warnings: list[str]) -> Skill | None:
         description=description,
         path=os.path.abspath(directory),
         body=body.strip(),
+        files=_bundled_files(directory),
     )
+
+
+def _bundled_files(directory: str) -> tuple[str, ...]:
+    """The files sitting next to SKILL.md, as paths relative to the skill
+    directory. These are offered to the model so it can pull one in with
+    load_skill when the instructions refer to it."""
+    found: list[str] = []
+    for root, dirs, names in os.walk(directory):
+        dirs[:] = sorted(d for d in dirs if not d.startswith("."))
+        for name in sorted(names):
+            if name.startswith(".") or (root == directory and name == SKILL_FILE):
+                continue
+            found.append(os.path.relpath(os.path.join(root, name), directory))
+    return tuple(found)
 
 
 def _split_frontmatter(text: str) -> tuple[dict[str, str] | None, str]:
@@ -107,14 +125,36 @@ def _split_frontmatter(text: str) -> tuple[dict[str, str] | None, str]:
 
 
 def render_skill(skill: Skill) -> str:
-    """The text load_skill hands back to the model.
+    """The text load_skill hands back for a skill itself.
 
-    The directory is named so the model can read the files bundled with
-    the skill through run_command — expecto drives a terminal, so no
-    separate file-reading tool is needed."""
-    return (
-        f"# Skill: {skill.name}\n"
-        f"Directory: {skill.path}\n"
-        "(Files bundled with this skill can be read from there with run_command.)\n\n"
-        f"{skill.body}"
-    )
+    Any bundled files are advertised at the end, with how to fetch one.
+    They are never suggested via run_command: the skill lives on the
+    machine expecto runs on, while the terminal may be an ssh session or
+    a device CLI where that path does not exist."""
+    rendered = f"# Skill: {skill.name}\n\n{skill.body}"
+    if skill.files:
+        rendered += (
+            f"\n\n[Files bundled with this skill: {', '.join(skill.files)}. "
+            f'Load one with load_skill(name="{skill.name}", file="<path>").]'
+        )
+    return rendered
+
+
+def resolve_skill_file(skill: Skill, relative: str) -> str:
+    """The absolute path of a file bundled with the skill.
+
+    Raises ValueError when the path would leave the skill directory."""
+    directory = os.path.realpath(skill.path)
+    resolved = os.path.realpath(os.path.join(directory, relative))
+    if resolved != directory and not resolved.startswith(directory + os.sep):
+        raise ValueError(f"{relative!r} is outside the skill directory")
+    return resolved
+
+
+def render_skill_file(skill: Skill, relative: str) -> str:
+    """The text load_skill hands back for a bundled file.
+
+    Raises ValueError for a path outside the skill directory and OSError
+    when the file cannot be read."""
+    with open(resolve_skill_file(skill, relative)) as f:
+        return f"# Skill: {skill.name} — {relative}\n\n{f.read().strip()}"
