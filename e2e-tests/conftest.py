@@ -6,6 +6,7 @@ is driven through a pty exactly like a user's terminal would.
 """
 from __future__ import annotations
 
+import json
 import os
 import pty
 import select
@@ -13,7 +14,7 @@ import signal
 import subprocess
 import time
 import urllib.request
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
@@ -28,6 +29,9 @@ HOTKEY = b"\x1f"  # Ctrl-/ (expecto's default)
 # A fixed, distinctive shell prompt so tests can wait for it regardless
 # of the user the container runs as (root's default is "bash-5.2#").
 PROMPT = "e2e> "
+
+# Exactly what QueryModeUI draws when query mode opens.
+QUERY_PROMPT = b"\x1b[90m? \x1b[0m"
 
 
 @pytest.fixture(scope="session")
@@ -76,7 +80,7 @@ class ExpectoSession:
     `expect()` waits for a byte pattern to appear in it.
     """
 
-    def __init__(self, config_file: str) -> None:
+    def __init__(self, config_file: str, log_file: str | None = None) -> None:
         env = dict(os.environ)
         env["OPENAI_API_KEY"] = "dummy"  # llama-server accepts anything
         env["TERM"] = "xterm-256color"
@@ -91,6 +95,7 @@ class ExpectoSession:
             )
         self.pid = pid
         self.master = master
+        self.log_file = log_file
         self.output = bytearray()
         self._exited: int | None = None
 
@@ -103,15 +108,38 @@ class ExpectoSession:
         self.send(text.encode())
         self.send(b"\r")
 
+    def enter_query(self, text: str, timeout: float = 120.0) -> None:
+        """Like query(), but retries the hotkey until query mode actually
+        opens — the hotkey is discarded while a previous execution is
+        still finishing, so this is how a user starts the next query."""
+        deadline = time.time() + timeout
+        while True:
+            start = self.cursor()
+            self.send(HOTKEY)
+            try:
+                self.expect(QUERY_PROMPT, timeout=1.0, start=start)
+                break
+            except AssertionError:
+                if time.time() > deadline:
+                    raise
+        self.send(text.encode())
+        self.send(b"\r")
+
     def wait_prompt(self, timeout: float = 30.0) -> bytes:
         """Wait for the wrapped shell's prompt to appear."""
         return self.expect(PROMPT.encode(), timeout=timeout)
 
-    def expect(self, needle: bytes, timeout: float = 30.0) -> bytes:
-        """Read pty output until needle appears; returns all output so
-        far. Raises AssertionError (with the output) on timeout or EOF."""
+    def cursor(self) -> int:
+        """Current end of the collected output; pass to expect(start=...)
+        to match only output produced after this point."""
+        return len(self.output)
+
+    def expect(self, needle: bytes, timeout: float = 30.0, start: int = 0) -> bytes:
+        """Read pty output until needle appears at or after `start`;
+        returns all output so far. Raises AssertionError (with the
+        output) on timeout or EOF."""
         deadline = time.time() + timeout
-        while needle not in self.output:
+        while needle not in self.output[start:]:
             remaining = deadline - time.time()
             if remaining <= 0:
                 raise AssertionError(
@@ -132,6 +160,54 @@ class ExpectoSession:
                 )
             self.output.extend(chunk)
         return bytes(self.output)
+
+    def drain(self, duration: float = 0.2) -> None:
+        """Collect whatever arrives on the pty for `duration` seconds."""
+        end = time.time() + duration
+        while True:
+            remaining = end - time.time()
+            if remaining <= 0:
+                return
+            r, _, _ = select.select([self.master], [], [], remaining)
+            if not r:
+                return
+            try:
+                chunk = os.read(self.master, 4096)
+            except OSError:
+                return
+            if not chunk:
+                return
+            self.output.extend(chunk)
+
+    def read_log(self) -> list[dict[str, object]]:
+        """Parse the JSONL log expecto was started with."""
+        if self.log_file is None:
+            return []
+        try:
+            with open(self.log_file) as f:
+                return [json.loads(line) for line in f if line.strip()]
+        except FileNotFoundError:
+            return []
+
+    def wait_log(
+        self,
+        predicate: Callable[[dict[str, object]], bool],
+        timeout: float = 120.0,
+        description: str = "log entry",
+    ) -> dict[str, object]:
+        """Wait until a log entry matching predicate appears (keeps
+        draining the pty meanwhile); returns the entry."""
+        deadline = time.time() + timeout
+        while True:
+            for entry in self.read_log():
+                if predicate(entry):
+                    return entry
+            if time.time() > deadline:
+                raise AssertionError(
+                    f"timed out waiting for {description}; log entries:\n"
+                    + "\n".join(str(e.get("type")) for e in self.read_log()),
+                )
+            self.drain(0.2)
 
     def wait_exit(self, timeout: float = 10.0) -> int:
         """Wait for the expecto process to exit; returns its exit code."""
@@ -172,15 +248,36 @@ class ExpectoSession:
             pass
 
 
+MakeExpecto = Callable[..., ExpectoSession]
+
+
 @pytest.fixture
-def expecto_session(llama_server: str, tmp_path: Path) -> Iterator[ExpectoSession]:
-    """An expecto instance wrapping bash, configured to talk to the
-    local llama-server."""
-    config_file = tmp_path / "config.toml"
-    config_file.write_text(
-        f'base_url = "{llama_server}/v1"\n'
-        'model = "qwen3-0.6b"\n',
-    )
-    session = ExpectoSession(str(config_file))
-    yield session
-    session.close()
+def make_expecto(llama_server: str, tmp_path: Path) -> Iterator[MakeExpecto]:
+    """Factory for expecto instances wrapping bash, configured to talk
+    to the local llama-server. Extra config.toml lines can be appended
+    per test (e.g. "max_steps = 2")."""
+    sessions: list[ExpectoSession] = []
+
+    def _make(config_extra: str = "") -> ExpectoSession:
+        index = len(sessions)
+        config_file = tmp_path / f"config{index}.toml"
+        log_file = tmp_path / f"expecto{index}.jsonl"
+        config_file.write_text(
+            f'base_url = "{llama_server}/v1"\n'
+            'model = "qwen3-0.6b"\n'
+            f'log_file = "{log_file}"\n'
+            + config_extra,
+        )
+        session = ExpectoSession(str(config_file), log_file=str(log_file))
+        sessions.append(session)
+        return session
+
+    yield _make
+    for session in sessions:
+        session.close()
+
+
+@pytest.fixture
+def expecto_session(make_expecto: MakeExpecto) -> ExpectoSession:
+    """A single expecto instance with the default test configuration."""
+    return make_expecto()
