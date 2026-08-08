@@ -31,7 +31,7 @@ expecto
 Press `Ctrl-/` (the default hotkey) to query your AI agent.
 
 `-u` / `--base-url` overrides the endpoint, and `-m` / `--model`
-overrides the model, for a single run. For example:
+overrides the model. For example:
 
 ```console
 OPENAI_API_KEY=ollama expecto -u http://localhost:11434/v1 -m gpt-oss:20b
