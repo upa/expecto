@@ -53,6 +53,8 @@ reasoning_effort = ""             # none|minimal|low|medium|high|xhigh|max
 compact_thresh = 100000           # conversation-history compaction threshold (prompt_tokens)
 new_output_max_chars = 20000      # max characters of new output diff between queries
 
+mcp_connect_timeout_ms = 10000    # per-server MCP connection timeout
+
 [mcp.SERVER1]                     # MCP servers to connect to (MCP.md §2)
 type = "stdio"                    # stdio | sse | streamable-http
 command = "npx"

@@ -7,6 +7,7 @@ dependencies = [
     "pyte>=0.8",
     "openai>=1.0",
     "python-dotenv>=1.2.2",
+    "mcp>=1.9",
 ]
 
 [project.scripts]

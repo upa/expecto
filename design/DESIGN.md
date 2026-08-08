@@ -106,6 +106,7 @@ Launch: expecto [-- command...]
 │  LLMClient           : OpenAI API calls (async)      │
 │  Executor            : controls the execution loop   │
 │  settle.wait_settle  : settle detection              │
+│  MCPManager          : MCP servers (client side)     │
 └───────────────────────────────────────────────┘
 
 Concurrency runs on a single-threaded asyncio event loop (no threads or
@@ -412,6 +413,7 @@ expecto/
 │       ├── executor.py       # execution loop control
 │       ├── settle.py         # settle detection (wait_settle coroutine)
 │       ├── dangerous.py      # dangerous-command regex backstop
+│       ├── mcp_client.py     # MCP servers: connection and tool dispatch
 │       └── config.py         # configuration loading
 └── tests/
 ```
@@ -421,6 +423,7 @@ expecto/
 - `pyte` — terminal emulation / clean-text conversion
 - `openai` — LLM calls (official OpenAI Python SDK, AsyncOpenAI)
 - `python-dotenv` — loading `.env` (for the API key)
+- `mcp` — MCP client SDK (`ClientSession` and the stdio / SSE / streamable-HTTP transports)
 - `pytest` / `pytest-asyncio` — test framework (dev dependency)
 - Standard library: `asyncio`, `pty`, `termios`, `tty`, `os`, `signal`, `fcntl`, `struct`
 

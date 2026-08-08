@@ -298,6 +298,7 @@ class ExpectoConfig:
     dangerous_patterns_file: str = ""
     agents_md_file: str = ""
     mcp_servers: list[MCPServerConfig] = field(default_factory=list)
+    mcp_connect_timeout_ms: int = 10000
 
     @classmethod
     def load(
@@ -384,6 +385,8 @@ def _apply_toml(
     if (v := table.take_int("new_output_max_chars")) is not None:
         config.new_output_max_chars = v
 
+    if (v := table.take_int("mcp_connect_timeout_ms")) is not None:
+        config.mcp_connect_timeout_ms = v
     if (mcp := table.take_table("mcp")) is not None:
         config.mcp_servers = _parse_mcp_servers(mcp, path, warnings)
 

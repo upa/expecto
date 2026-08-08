@@ -21,7 +21,7 @@ Core loop complete (LLMClient with Chat Completions function calling — `run_co
 
 - Python 3.11+
 - Target OS: macOS, Linux
-- Key dependencies: `pyte` (terminal emulation), `openai` (LLM SDK, AsyncOpenAI with Structured Outputs)
+- Key dependencies: `pyte` (terminal emulation), `openai` (LLM SDK, AsyncOpenAI with Structured Outputs), `mcp` (MCP client SDK)
 - Heavy use of stdlib: `asyncio`, `pty`, `termios`, `tty`, `os`, `signal`, `fcntl`
 - Build/packaging: `pyproject.toml` (hatchling, `expecto` script entry point)
 - Config: `~/.expecto/config.toml` (TOML, warn-and-continue; see `design/Config.md`), overridden by CLI flags. `OPENAI_API_KEY` is the only env var (required — startup error when missing; `.env` from cwd, falling back to `~/.expecto/.env`)
@@ -42,6 +42,7 @@ Core components (each a separate module under `src/expecto/`):
 - `executor` — the command-execute-observe loop (async, cancellation-based interrupts)
 - `settle` — idle-timer output settle detection (`wait_settle` coroutine, no PS1 dependency)
 - `dangerous` — regex backstop for unmistakably catastrophic commands
+- `mcp_client` — MCP servers from `[mcp.*]`: connect at startup, expose their tools to the LLM (see `design/MCP.md`)
 - `config` — config.toml loading (defaults < file < CLI flags), hotkey parsing, startup warnings (see `design/Config.md`)
 - `cli` — entry point, argparse, asyncio.run
 

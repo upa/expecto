@@ -1,0 +1,148 @@
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import os
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.sse import sse_client
+from mcp.client.stdio import get_default_environment, stdio_client
+from mcp.client.streamable_http import TransportStreams, streamable_http_client
+from mcp.shared._httpx_utils import create_mcp_http_client
+
+if TYPE_CHECKING:
+    from typing import TextIO
+
+    from expecto.config import MCPServerConfig
+
+TOOL_NAME_PREFIX = "mcp"
+
+
+def qualified_tool_name(server: str, tool: str) -> str:
+    """The name an MCP tool is exposed to the LLM under.
+
+    Namespaced by server so two servers offering the same tool name can
+    coexist, and so a call's origin is readable in the log."""
+    return f"{TOOL_NAME_PREFIX}__{server}__{tool}"
+
+
+@dataclass(frozen=True)
+class MCPTool:
+    """One tool discovered on a connected MCP server."""
+
+    server: str
+    tool: str
+    qualified_name: str
+    description: str
+    input_schema: dict[str, object]
+
+
+class MCPManager:
+    """Client side of the configured MCP servers (design/MCP.md).
+
+    Connects at session start, keeps every session open for the whole
+    expecto session, and closes them all at the end. A server that fails
+    to connect is reported and dropped: an unreachable side service must
+    never stop the user from getting a shell."""
+
+    def __init__(self, errlog: TextIO, connect_timeout_ms: int = 10000) -> None:
+        self._errlog = errlog
+        self._connect_timeout_ms = connect_timeout_ms
+        self._stack = contextlib.AsyncExitStack()
+        self._sessions: dict[str, ClientSession] = {}
+        self._tools: list[MCPTool] = []
+
+    @property
+    def tools(self) -> list[MCPTool]:
+        return self._tools
+
+    async def connect(self, servers: list[MCPServerConfig]) -> list[str]:
+        """Connect to every configured server and collect their tools.
+
+        Returns a warning message per server that could not be used; those
+        servers are simply left out."""
+        warnings: list[str] = []
+        for server in servers:
+            try:
+                async with asyncio.timeout(self._connect_timeout_ms / 1000):
+                    await self._connect_one(server)
+            except Exception as exc:  # noqa: BLE001 - any failure drops one server
+                warnings.append(
+                    f"mcp.{server.name}: {_describe_error(exc)}; server not available",
+                )
+        return warnings
+
+    async def _connect_one(self, server: MCPServerConfig) -> None:
+        read, write = await self._open_transport(server)
+        session = await self._stack.enter_async_context(ClientSession(read, write))
+        await session.initialize()
+        result = await session.list_tools()
+        self._sessions[server.name] = session
+        for tool in result.tools:
+            self._tools.append(
+                MCPTool(
+                    server=server.name,
+                    tool=tool.name,
+                    qualified_name=qualified_tool_name(server.name, tool.name),
+                    description=tool.description or "",
+                    input_schema=dict(tool.input_schema),
+                ),
+            )
+
+    async def _open_transport(self, server: MCPServerConfig) -> TransportStreams:
+        if server.type == "stdio":
+            # The child inherits the SDK's minimal environment (PATH, HOME,
+            # ...) plus whatever the user declared — not expecto's own
+            # environment, which holds OPENAI_API_KEY.
+            params = StdioServerParameters(
+                command=server.command,
+                args=server.args,
+                env={**get_default_environment(), **server.env},
+            )
+            return await self._stack.enter_async_context(
+                stdio_client(params, errlog=self._errlog),
+            )
+
+        headers = (
+            {"Authorization": f"Bearer {server.token}"} if server.token else None
+        )
+        if server.type == "sse":
+            return await self._stack.enter_async_context(
+                sse_client(server.url, headers=headers),
+            )
+
+        # streamable-http takes headers via a pre-configured HTTP client,
+        # whose lifecycle is then ours to manage.
+        http_client = await self._stack.enter_async_context(
+            create_mcp_http_client(headers=headers),
+        )
+        return await self._stack.enter_async_context(
+            streamable_http_client(server.url, http_client=http_client),
+        )
+
+    async def aclose(self) -> None:
+        """Close every session and transport (stdio children are stopped).
+
+        Must run in the task that opened them: the SDK's transports are
+        anyio cancel scopes (design/MCP.md §3)."""
+        self._sessions.clear()
+        self._tools.clear()
+        with contextlib.suppress(Exception):
+            await self._stack.aclose()
+
+
+def _describe_error(exc: BaseException) -> str:
+    if isinstance(exc, TimeoutError):
+        return "connection timed out"
+    text = str(exc).strip()
+    return f"{type(exc).__name__}: {text}" if text else type(exc).__name__
+
+
+def open_mcp_errlog() -> TextIO:
+    """Where a stdio server's stderr goes.
+
+    The SDK's default is sys.stderr, which would write straight onto the
+    outer tty while it is in raw mode."""
+    return open(os.devnull, "w")

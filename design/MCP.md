@@ -1,6 +1,7 @@
 # MCP Client Design Document
 
-- Status: config parsing implemented; connection and tool dispatch pending
+- Status: config parsing and connection implemented; tool exposure and
+  dispatch (§4, §5) pending
 - Parent document: `DESIGN.md` (§5.7, §7)
 - This document is the detailed design of expecto acting as an **MCP
   client**: connecting to the MCP servers listed in config.toml and
@@ -65,28 +66,40 @@ token = "$MY_TOKEN"               # environment variable reference
   warned about (typo detection) and ignored. A bad entry never prevents
   expecto from starting.
 - Parsing produces `config.mcp_servers: list[MCPServerConfig]` in the
-  order written.
+  order written. `mcp_connect_timeout_ms` (top-level, default 10000)
+  bounds each server's connection.
 
 ## 3. Connection lifecycle
 
+`MCPManager` (`mcp_client.py`) owns this. It is created by `cli.main()`
+only when servers are configured, and `run_session()` drives it.
+
 - Servers are connected (for `stdio`, launched) **at session start,
-  synchronously, before the relay pump starts**. The tool list must be
-  fixed before the first LLM request (§4), and connecting up front keeps
-  the startup path linear. The cost is that a slow server delays the
-  shell appearing.
-- Each connection runs `initialize()` and then `list_tools()`, under a
-  per-server timeout. **A failure at any step prints a warning to stderr
-  and drops that server**; the session continues with whatever connected.
+  synchronously, before the child process is spawned and before the tty
+  goes into raw mode**. The tool list must be fixed before the first LLM
+  request (§4), connecting up front keeps the startup path linear, and
+  warnings can still be printed as ordinary lines. The cost is that a
+  slow server delays the shell appearing; a status line is printed so
+  the wait is not mistaken for a hang.
+- Each connection opens its transport, constructs a `ClientSession`, and
+  runs `initialize()` then `list_tools()`, all under
+  `mcp_connect_timeout_ms` (default 10s). **A failure at any step
+  produces a warning on stderr and drops that server**; the session
+  continues with whatever connected.
 - The sessions stay open for the whole expecto session and are held on a
   `contextlib.AsyncExitStack`. The stack is entered and closed from
   `run_session()` — the same task — because the SDK's transports are
   anyio cancel scopes and cannot be exited from a different task.
 - Everything runs on the single asyncio event loop; no threads are added
   (Async.md §1).
-- **A stdio server's stderr is redirected away from the outer tty**
-  (`/dev/null`, or the `--log-file` destination when set). The SDK's
-  default of `sys.stderr` would write straight onto the user's screen,
-  which is in raw mode.
+- **A stdio server's stderr goes to `/dev/null`.** The SDK's default of
+  `sys.stderr` would write straight onto the user's screen, which is in
+  raw mode. (Routing it to a debug log instead is future work; the JSONL
+  log is not a candidate, since free-form text would break its format.)
+- **A stdio child does not inherit expecto's environment.** It gets the
+  SDK's minimal default environment (`PATH`, `HOME`, `SHELL`, …) plus the
+  server's own `env` table, so `OPENAI_API_KEY` and the rest of expecto's
+  environment are not handed to third-party servers.
 
 ## 4. Exposing the tools to the LLM
 
