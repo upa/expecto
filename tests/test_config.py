@@ -9,9 +9,10 @@ from expecto.config import (
     DEFAULT_MODEL,
     ExpectoConfig,
     config_dir,
-    default_config_file,
     default_agents_md_file,
+    default_config_file,
     default_dangerous_patterns_file,
+    default_env_file,
     parse_hotkey,
 )
 
@@ -23,7 +24,6 @@ def isolated_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
-    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.setenv("SHELL", "/bin/testsh")
     return home
@@ -36,17 +36,34 @@ def _load_toml(tmp_path: Path, text: str) -> tuple[ExpectoConfig, list[str]]:
 
 
 class TestConfigDir:
-    def test_xdg_config_home(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("XDG_CONFIG_HOME", "/xdg/conf")
-        assert config_dir() == "/xdg/conf/expecto"
-        assert default_config_file() == "/xdg/conf/expecto/config.toml"
-
-    def test_falls_back_to_home_config(
+    def test_defaults_to_home_expecto(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
     ) -> None:
-        monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
         monkeypatch.setenv("HOME", str(tmp_path))
-        assert config_dir() == str(tmp_path / ".config" / "expecto")
+        assert config_dir() == str(tmp_path / ".expecto")
+        assert default_config_file() == str(tmp_path / ".expecto" / "config.toml")
+
+    def test_override_is_used_for_every_default_path(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    ) -> None:
+        monkeypatch.setenv("HOME", str(tmp_path))
+        assert config_dir("~/elsewhere") == str(tmp_path / "elsewhere")
+        assert default_config_file("/conf") == "/conf/config.toml"
+        assert default_env_file("/conf") == "/conf/.env"
+        assert default_agents_md_file("/conf") == "/conf/AGENTS.md"
+        assert default_dangerous_patterns_file("/conf") == "/conf/dangerous_patterns.txt"
+
+    def test_config_dir_feeds_the_loaded_defaults(self, tmp_path: Path) -> None:
+        config, warnings = ExpectoConfig.load(config_dir=str(tmp_path))
+        assert warnings == []
+        assert config.agents_md_file == str(tmp_path / "AGENTS.md")
+        assert config.dangerous_patterns_file == str(tmp_path / "dangerous_patterns.txt")
+
+    def test_config_dir_holds_the_default_config_file(self, tmp_path: Path) -> None:
+        (tmp_path / "config.toml").write_text('model = "dir-model"\n')
+        config, warnings = ExpectoConfig.load(config_dir=str(tmp_path))
+        assert warnings == []
+        assert config.model == "dir-model"
 
 
 class TestDefaults:
@@ -79,7 +96,7 @@ class TestDefaults:
         assert config.openai_api_key == "sk-test"
 
     def test_default_config_path_is_read(self, isolated_home: Path) -> None:
-        config_path = isolated_home / ".config" / "expecto" / "config.toml"
+        config_path = isolated_home / ".expecto" / "config.toml"
         config_path.parent.mkdir(parents=True)
         config_path.write_text('model = "my-model"\n')
         config, warnings = ExpectoConfig.load()

@@ -233,7 +233,7 @@ The message history is held by `LLMClient` and continues as **a single conversat
 - Controls the execution loop after query submission (command execution → output inspection → next action).
 - At the start (immediately after query submission), it first sends a single newline to the pty to display the shell's new prompt and reflect it on screen via a settle wait, before proceeding to the first LLM call. Since the query line has consumed the previous prompt line, without this the first command would appear to be injected into a line with no prompt.
 - Implemented as a loop in which the LLM calls `run_command` / `send_control` via function calling (§5.7). Executing the tool call (writing to the pty master + waiting for settle + collecting the new output (mark / get_text_since from §5.5) and recording the tool result) is the Executor's responsibility.
-- **Dangerous-command confirmation gate (3 layers)**: (1) the LLM self-declares each command's risk via the required `run_command` fields `risk` (`read_only` / `mutating` / `destructive`) + `risk_reason` (the primary, environment-adaptive judgment; knowledge of vendor CLIs lives in the LLM, and session context accumulated in the conversation history supports accuracy). (2) A deterministic backstop: commands matching the built-in + user-defined (`~/.config/expecto/dangerous_patterns.txt`, one regex per line, `#` comments, case-insensitive) regexes are **escalated** to `destructive` regardless of the LLM's declaration (escalate-only — it never works in the direction of waiving confirmation). (3) Commands at or above `--confirm-level` (default `destructive`) require y/n confirmation from the user before execution. **A refusal is not an abort**: "the user refused" is returned to the LLM as the tool result, prompting it to take an alternative approach. If stdin is lost while waiting for confirmation (EOF), the execution is aborted as session termination (interrupted). This mechanism is a prompt-volume reduction, not a guarantee (LLM self-declaration is not robust against prompt injection or self-evaluation bias); the ultimate safety device is the structure in which "every command and its output is always visible on the user's screen" + user presence + Ctrl-C + checkpoints.
+- **Dangerous-command confirmation gate (3 layers)**: (1) the LLM self-declares each command's risk via the required `run_command` fields `risk` (`read_only` / `mutating` / `destructive`) + `risk_reason` (the primary, environment-adaptive judgment; knowledge of vendor CLIs lives in the LLM, and session context accumulated in the conversation history supports accuracy). (2) A deterministic backstop: commands matching the built-in + user-defined (`~/.expecto/dangerous_patterns.txt`, one regex per line, `#` comments, case-insensitive) regexes are **escalated** to `destructive` regardless of the LLM's declaration (escalate-only — it never works in the direction of waiving confirmation). (3) Commands at or above `--confirm-level` (default `destructive`) require y/n confirmation from the user before execution. **A refusal is not an abort**: "the user refused" is returned to the LLM as the tool result, prompting it to take an alternative approach. If stdin is lost while waiting for confirmation (EOF), the execution is aborted as session termination (interrupted). This mechanism is a prompt-volume reduction, not a guarantee (LLM self-declaration is not robust against prompt injection or self-evaluation bias); the ultimate safety device is the structure in which "every command and its output is always visible on the user's screen" + user presence + Ctrl-C + checkpoints.
 - The command echo of `run_command` is displayed in the same gray as expecto's status displays. Immediately before command injection, SGR (gray) is written to the outer tty and a reservation is placed with IORelay (`arm_sgr_reset_at_newline()`); the pump then inserts a reset right after the first newline of the echo (the echo of Enter). If settle, interruption, or EOF occurs before a newline arrives, the reset is still guaranteed via `flush_sgr_reset()` (idempotent). SGR is written only to the outer tty and never enters ScreenBuffer, so the text passed to the LLM is unaffected (if the shell itself colors its echo, that may take precedence — best effort).
 - Loop processing uses the settle detection below (§5.9). Every `max_steps` steps (default 15, counted by LLM calls), the user is asked for continuation confirmation (`continue? (y/n)`) as a **checkpoint**. On y, execution continues with the conversation history preserved; on n / Esc / Ctrl-C, it ends. By making this a confirmation rather than a hard abort, the limit functions as "an opportunity to put human eyes on it" rather than "task failure" (as an interactive tool, user presence is the first safety device). While waiting for confirmation, pty output relay continues (handled by the always-on pump). If stdin is lost (EOF), the execution task is cancelled as session termination.
 - The LLM can send control characters (Ctrl-C etc.) via the `send_control` tool. This lets the LLM itself decide on things like interrupting a long-running command.
@@ -276,31 +276,38 @@ expecto [OPTIONS] [-- COMMAND ...]
 
 OPTIONS (implemented):
   --shell PATH               Command to launch as the child process (default: $SHELL)
+  --config-dir PATH          Directory holding config.toml, .env, AGENTS.md and
+                             dangerous_patterns.txt (default: ~/.expecto)
   -c, --config PATH          Path to the config file
-                             (default: ~/.config/expecto/config.toml)
+                             (default: <config-dir>/config.toml)
   -e, --env PATH             Path to the .env file to load
-                             (default: ~/.config/expecto/.env)
+                             (default: ~/.expecto/.env)
   -a, --agents-md PATH       Path to the AGENTS.md appended to the system prompt
-                             (default: ~/.config/expecto/AGENTS.md)
+                             (default: ~/.expecto/AGENTS.md)
+  -m, --model NAME           Model to use (default: config.toml's model)
+  -u, --base-url URL         OpenAI API endpoint (default: config.toml's
+                             base_url, or the SDK default)
   --scrollback-lines N       pyte scrollback capacity (default: 5000)
   --confirm-level LEVEL      Minimum risk level that requires confirmation
                              (destructive|mutating|none, default: destructive)
   --dangerous-patterns-file PATH  Additional file of dangerous-command regexes
-                             (default: ~/.config/expecto/dangerous_patterns.txt)
+                             (default: ~/.expecto/dangerous_patterns.txt)
   -l, --log-file PATH        Destination for the JSONL log of queries and LLM requests/responses (disabled by default)
   --raw-io-log-file PATH     Destination for the raw I/O log (for debugging, disabled by default)
 ```
 
-Configuration is written in `~/.config/expecto/config.toml`, with precedence
+The config directory is `~/.expecto` by default and holds `config.toml`, `.env`, `AGENTS.md`, and `dangerous_patterns.txt`. `--config-dir PATH` points every one of those defaults at another directory (a path that does not exist is a startup error); the individual `-c` / `-e` / `-a` / `--dangerous-patterns-file` flags still override single files. No environment variable selects the directory — `OPENAI_API_KEY` remains the only one expecto reads.
+
+Configuration is written in `<config-dir>/config.toml`, with precedence
 **built-in defaults < config.toml < CLI flags**. The only value read from an
 environment variable is `OPENAI_API_KEY` (startup error if unset); everything
 else — model, base_url, reasoning effort, hotkey, compaction threshold, etc. —
 is specified in config.toml. See **`Config.md`** for the schema, error
 handling, and hotkey notation details.
 
-`.env` file loading: the file given by `--env PATH` (startup error if it does not exist) → without that flag, `~/.config/expecto/.env` if it exists. The current directory is not searched — as an installed command, expecto must behave the same no matter where it is launched from. Environment variables that are already set always take precedence over values from the file.
+`.env` file loading: the file given by `--env PATH` (startup error if it does not exist) → without that flag, `<config-dir>/.env` if it exists. The current directory is not searched — as an installed command, expecto must behave the same no matter where it is launched from. Environment variables that are already set always take precedence over values from the file.
 
-Not implemented (future work): the `--hotkey` / `--model` / `--max-steps` / `--settle-ms` CLI flags (all low priority now that they are configurable via config.toml).
+Not implemented (future work): the `--hotkey` / `--max-steps` / `--settle-ms` CLI flags (all low priority now that they are configurable via config.toml).
 
 ### TODO (improvements planned for the future)
 

@@ -32,23 +32,11 @@ expecto
 
 Press `Ctrl-/` (the default hotkey) to query your AI agent.
 
-Instead of exporting it, you can write the key to
-`~/.config/expecto/.env`, which `expecto` loads at startup (use
-`--env PATH` for a different file):
+`-u` / `--base-url` overrides the endpoint, and `-m` / `--model`
+overrides the model, for a single run. For example:
 
-```
-OPENAI_API_KEY=[API KEY HERE]
-```
-
-A key already set in the environment always wins over the file.
-
-
-To change the model or the OpenAI API endpoint, put the following in
-`~/.config/expecto/config.toml`
-
-```toml
-model = "gpt-5.6"
-base_url = "[YOUR API ENDPOINT URL]"
+```console
+OPENAI_API_KEY=ollama expecto -u http://localhost:11434/v1 -m gpt-oss:20b
 ```
 
 See [Configuration](#configuration) for all available options.
@@ -75,10 +63,15 @@ keep going without exhausting the context window.
 
 ## Configuration
 
-`expecto` reads `~/.config/expecto/config.toml` (or a file given by
+`expecto` keeps its files in `~/.expecto/` — `config.toml`, `.env`,
+`AGENTS.md`, and `dangerous_patterns.txt`. `--config-dir PATH` points all
+of them at another directory; `-c` / `-e` / `-a` /
+`--dangerous-patterns-file` override single files.
+
+`expecto` reads `~/.expecto/config.toml` (or a file given by
 `--config`). All keys are optional; command-line flags override the
 file. `OPENAI_API_KEY` is intentionally *not* read from this file —
-set it in the environment or in `~/.config/expecto/.env` (or the file
+set it in the environment or in `~/.expecto/.env` (or the file
 given by `--env`).
 
 ```toml
@@ -104,14 +97,7 @@ new_output_max_chars = 20000    # max chars of between-query output sent to the 
 log_file = ""                   # JSONL log of queries and LLM requests/responses
 raw_io_log_file = ""            # raw terminal I/O log (for debugging)
 dangerous_patterns_file = ""    # extra dangerous-command regex file
-agents_md_file = ""             # AGENTS.md (default: ~/.config/expecto/AGENTS.md)
+agents_md_file = ""             # AGENTS.md (default: ~/.expecto/AGENTS.md)
 ```
 
-
-## AGENTS.md
-
-If `~/.config/expecto/AGENTS.md` exists (or a file given by `-a` /
-`--agents-md`), its contents are appended to the system prompt. Use it for
-what the agent cannot see on the screen — your hosts and their quirks,
-device conventions, commands you prefer.
 
