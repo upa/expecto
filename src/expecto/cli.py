@@ -12,7 +12,7 @@ from expecto.executor import Executor
 from expecto.input_router import InputRouter
 from expecto.io_relay import IORelay
 from expecto.llm_client import LLMClient, load_agents_md
-from expecto.mcp_client import MCPManager, open_mcp_errlog
+from expecto.mcp_client import MCPManager
 from expecto.pty_manager import NESTING_ENV_VAR, PTYManager
 from expecto.query_ui import QueryModeUI
 from expecto.screen_buffer import ScreenBuffer
@@ -230,10 +230,9 @@ def main(argv: list[str] | None = None) -> None:
 
     raw_io_log_fh = open(config.raw_io_log_file, "a") if config.raw_io_log_file else None
 
-    mcp_errlog = open_mcp_errlog() if config.mcp_servers else None
     mcp_manager = (
-        MCPManager(mcp_errlog, connect_timeout_ms=config.mcp_connect_timeout_ms)
-        if mcp_errlog is not None
+        MCPManager(connect_timeout_ms=config.mcp_connect_timeout_ms)
+        if config.mcp_servers
         else None
     )
 
@@ -302,8 +301,6 @@ def main(argv: list[str] | None = None) -> None:
         tty_ctrl.restore()
         if raw_io_log_fh is not None:
             raw_io_log_fh.close()
-        if mcp_errlog is not None:
-            mcp_errlog.close()
 
     sys.exit(exit_code)
 

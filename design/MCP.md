@@ -91,10 +91,14 @@ only when servers are configured, and `run_session()` drives it.
   anyio cancel scopes and cannot be exited from a different task.
 - Everything runs on the single asyncio event loop; no threads are added
   (Async.md §1).
-- **A stdio server's stderr goes to `/dev/null`.** The SDK's default of
-  `sys.stderr` would write straight onto the user's screen, which is in
-  raw mode. (Routing it to a debug log instead is future work; the JSONL
-  log is not a candidate, since free-form text would break its format.)
+- **A stdio server's stderr goes to expecto's own stderr**, i.e. straight
+  to the user's terminal, so a server's diagnostics are visible rather
+  than silently dropped. Two consequences to accept: those bytes bypass
+  the relay pump, so a server that writes while the tty is in raw mode
+  produces unindented ("staircase") lines and can disturb the child's
+  screen; and they never reach the ScreenBuffer, so the LLM does not see
+  them. Relaying MCP stderr through the pump, with the same normalization
+  the pty output gets, is the fix if this becomes a nuisance.
 - **A stdio child does not inherit expecto's environment.** It gets the
   SDK's minimal default environment (`PATH`, `HOME`, `SHELL`, …) plus the
   server's own `env` table, so `OPENAI_API_KEY` and the rest of expecto's
@@ -176,6 +180,8 @@ validates its own input, and a rejection comes back as tool-output text.
 
 ## 7. Future work
 
+- Relaying a stdio server's stderr through the pump instead of letting it
+  write to the terminal directly (§3).
 - Reconnecting a server that dies mid-session (currently its tool calls
   just fail until expecto is restarted).
 - MCP resources and prompts (only tools are used today).

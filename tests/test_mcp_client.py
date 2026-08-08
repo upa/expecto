@@ -10,11 +10,7 @@ import pytest
 from mcp.types import ListToolsResult, Tool
 
 from expecto.config import MCPServerConfig
-from expecto.mcp_client import (
-    MCPManager,
-    open_mcp_errlog,
-    qualified_tool_name,
-)
+from expecto.mcp_client import MCPManager, qualified_tool_name
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -25,9 +21,10 @@ STDIO_SERVER = str(Path(__file__).parent / "mcp_stdio_server.py")
 
 @pytest.fixture
 def errlog() -> Iterator[TextIO]:
-    fh = open_mcp_errlog()
-    yield fh
-    fh.close()
+    """Keep a test server's stderr out of the test output; in a real run
+    it goes to expecto's own stderr (the user's terminal)."""
+    with open(os.devnull, "w") as fh:
+        yield fh
 
 
 def _stdio_server(name: str = "S") -> MCPServerConfig:
@@ -268,7 +265,6 @@ class TestCall:
 
 
 class TestErrlog:
-    def test_discards_server_stderr(self) -> None:
-        """A stdio server's stderr must not reach the raw-mode tty."""
-        with open_mcp_errlog() as fh:
-            assert fh.name == os.devnull
+    def test_server_stderr_goes_to_expectos_stderr(self) -> None:
+        """A stdio server's diagnostics land on the user's terminal."""
+        assert MCPManager()._errlog is sys.stderr

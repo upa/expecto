@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import os
+import sys
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -49,8 +49,12 @@ class MCPManager:
     to connect is reported and dropped: an unreachable side service must
     never stop the user from getting a shell."""
 
-    def __init__(self, errlog: TextIO, connect_timeout_ms: int = 10000) -> None:
-        self._errlog = errlog
+    def __init__(
+        self, errlog: TextIO | None = None, connect_timeout_ms: int = 10000,
+    ) -> None:
+        # A stdio server's stderr goes to expecto's own stderr, i.e. the
+        # user's terminal, so its diagnostics are visible rather than lost.
+        self._errlog = errlog if errlog is not None else sys.stderr
         self._connect_timeout_ms = connect_timeout_ms
         self._stack = contextlib.AsyncExitStack()
         self._sessions: dict[str, ClientSession] = {}
@@ -207,11 +211,3 @@ def _describe_error(exc: BaseException) -> str:
         return "connection timed out"
     text = str(exc).strip()
     return f"{type(exc).__name__}: {text}" if text else type(exc).__name__
-
-
-def open_mcp_errlog() -> TextIO:
-    """Where a stdio server's stderr goes.
-
-    The SDK's default is sys.stderr, which would write straight onto the
-    outer tty while it is in raw mode."""
-    return open(os.devnull, "w")
