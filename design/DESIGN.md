@@ -284,6 +284,7 @@ OPTIONS (implemented):
                              (default: ~/.expecto/.env)
   -a, --agents-md PATH       Path to the AGENTS.md appended to the system prompt
                              (default: ~/.expecto/AGENTS.md)
+  -m, --model NAME           Model to use (default: config.toml's model)
   -u, --base-url URL         OpenAI API endpoint (default: config.toml's
                              base_url, or the SDK default)
   --scrollback-lines N       pyte scrollback capacity (default: 5000)
@@ -306,7 +307,7 @@ handling, and hotkey notation details.
 
 `.env` file loading: the file given by `--env PATH` (startup error if it does not exist) → without that flag, `<config-dir>/.env` if it exists. The current directory is not searched — as an installed command, expecto must behave the same no matter where it is launched from. Environment variables that are already set always take precedence over values from the file.
 
-Not implemented (future work): the `--hotkey` / `--model` / `--max-steps` / `--settle-ms` CLI flags (all low priority now that they are configurable via config.toml).
+Not implemented (future work): the `--hotkey` / `--max-steps` / `--settle-ms` CLI flags (all low priority now that they are configurable via config.toml).
 
 ### TODO (improvements planned for the future)
 

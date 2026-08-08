@@ -47,6 +47,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Env file to load (default: <config-dir>/.env)",
     )
     parser.add_argument(
+        "-m",
+        "--model",
+        default=None,
+        help="Model to use (default: the config file's model)",
+    )
+    parser.add_argument(
         "-u",
         "--base-url",
         default=None,
@@ -152,6 +158,8 @@ def main(argv: list[str] | None = None) -> None:
         )
         sys.exit(1)
 
+    if args.model is not None:
+        config.model = args.model
     if args.base_url is not None:
         config.openai_base_url = args.base_url
     if args.raw_io_log_file:

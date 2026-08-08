@@ -32,29 +32,11 @@ expecto
 
 Press `Ctrl-/` (the default hotkey) to query your AI agent.
 
-Instead of exporting it, you can write the key to
-`~/.expecto/.env`, which `expecto` loads at startup (use
-`--env PATH` for a different file):
-
-```
-OPENAI_API_KEY=[API KEY HERE]
-```
-
-A key already set in the environment always wins over the file.
-
-
-To change the model or the OpenAI API endpoint, put the following in
-`~/.expecto/config.toml`
-
-```toml
-model = "gpt-5.6"
-base_url = "[YOUR API ENDPOINT URL]"
-```
-
-`-u` / `--base-url` overrides the endpoint for a single run:
+`-u` / `--base-url` overrides the endpoint, and `-m` / `--model`
+overrides the model, for a single run. For example:
 
 ```console
-expecto -u http://localhost:11434/v1
+OPENAI_API_KEY=ollama expecto -u http://localhost:11434/v1 -m gpt-oss:20b
 ```
 
 See [Configuration](#configuration) for all available options.
