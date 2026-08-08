@@ -30,14 +30,13 @@ class TestLoadEnv:
         home.mkdir()
         monkeypatch.chdir(cwd)
         monkeypatch.setenv("HOME", str(home))
-        monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
         return home
 
     def test_explicit_env_file_takes_precedence(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
     ) -> None:
         home = self._isolate(monkeypatch, tmp_path)
-        config_dir = home / ".config" / "expecto"
+        config_dir = home / ".expecto"
         config_dir.mkdir(parents=True)
         (config_dir / ".env").write_text("EXPECTO_TEST_VAR=from_config\n")
         explicit = tmp_path / "explicit.env"
@@ -70,11 +69,27 @@ class TestLoadEnv:
         finally:
             os.environ.pop("EXPECTO_TEST_VAR", None)
 
+    def test_config_dir_override_is_used(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    ) -> None:
+        home = self._isolate(monkeypatch, tmp_path)
+        (home / ".expecto").mkdir()
+        (home / ".expecto" / ".env").write_text("EXPECTO_TEST_VAR=from_default_dir\n")
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        (elsewhere / ".env").write_text("EXPECTO_TEST_VAR=from_override_dir\n")
+        monkeypatch.delenv("EXPECTO_TEST_VAR", raising=False)
+        try:
+            load_env(config_dir=str(elsewhere))
+            assert os.environ.get("EXPECTO_TEST_VAR") == "from_override_dir"
+        finally:
+            os.environ.pop("EXPECTO_TEST_VAR", None)
+
     def test_falls_back_to_config_dir_env(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
     ) -> None:
         home = self._isolate(monkeypatch, tmp_path)
-        config_dir = home / ".config" / "expecto"
+        config_dir = home / ".expecto"
         config_dir.mkdir(parents=True)
         (config_dir / ".env").write_text("EXPECTO_TEST_VAR=from_config\n")
         monkeypatch.delenv("EXPECTO_TEST_VAR", raising=False)
@@ -96,7 +111,7 @@ class TestLoadEnv:
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
     ) -> None:
         home = self._isolate(monkeypatch, tmp_path)
-        config_dir = home / ".config" / "expecto"
+        config_dir = home / ".expecto"
         config_dir.mkdir(parents=True)
         (config_dir / ".env").write_text("EXPECTO_TEST_VAR=from_file\n")
         monkeypatch.setenv("EXPECTO_TEST_VAR", "from_shell")
@@ -112,7 +127,6 @@ class TestStartupErrors:
         home.mkdir()
         monkeypatch.chdir(cwd)
         monkeypatch.setenv("HOME", str(home))
-        monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
         monkeypatch.delenv(NESTING_ENV_VAR, raising=False)
         return home
 
@@ -154,6 +168,18 @@ class TestStartupErrors:
             main(["--env", str(missing)])
         assert exc_info.value.code == 1
         assert "env file not found" in capsys.readouterr().err
+
+    def test_missing_config_dir_exits(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        self._isolate(monkeypatch, tmp_path)
+        with pytest.raises(SystemExit) as exc_info:
+            main(["--config-dir", str(tmp_path / "nonexistent")])
+        assert exc_info.value.code == 1
+        assert "config directory not found" in capsys.readouterr().err
 
     def test_missing_explicit_agents_md_exits(
         self,

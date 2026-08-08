@@ -24,7 +24,7 @@ Core loop complete (LLMClient with Chat Completions function calling — `run_co
 - Key dependencies: `pyte` (terminal emulation), `openai` (LLM SDK, AsyncOpenAI with Structured Outputs)
 - Heavy use of stdlib: `asyncio`, `pty`, `termios`, `tty`, `os`, `signal`, `fcntl`
 - Build/packaging: `pyproject.toml` (hatchling, `expecto` script entry point)
-- Config: `~/.config/expecto/config.toml` (TOML, warn-and-continue; see `design/Config.md`), overridden by CLI flags. `OPENAI_API_KEY` is the only env var (required — startup error when missing; `.env` from cwd, falling back to `~/.config/expecto/.env`)
+- Config: `~/.expecto/config.toml` (TOML, warn-and-continue; see `design/Config.md`), overridden by CLI flags. `OPENAI_API_KEY` is the only env var (required — startup error when missing; `.env` from cwd, falling back to `~/.expecto/.env`)
 
 ## Architecture
 
@@ -65,7 +65,7 @@ Core components (each a separate module under `src/expecto/`):
 
 - No shell-specific dependencies (PS1, readline) — must work over ssh/vendor CLI
 - Settle detection is idle-timer only (no prompt markers). When settle threshold is exceeded without settling, current output is sent to LLM for decision (not treated as timeout error)
-- Dangerous command gate (3 layers): LLM self-classifies each command's risk (`read_only`/`mutating`/`destructive` in the run_command schema); a deterministic regex backstop (builtin + `~/.config/expecto/dangerous_patterns.txt`) escalates matches to destructive (escalate-only); commands at/above `--confirm-level` (default: destructive) require y/n confirmation. Decline feeds back to the LLM as a tool result, not an abort
+- Dangerous command gate (3 layers): LLM self-classifies each command's risk (`read_only`/`mutating`/`destructive` in the run_command schema); a deterministic regex backstop (builtin + `~/.expecto/dangerous_patterns.txt`) escalates matches to destructive (escalate-only); commands at/above `--confirm-level` (default: destructive) require y/n confirmation. Decline feeds back to the LLM as a tool result, not an abort
 - The execution loop asks user confirmation (continue? y/n) every `max_steps` steps (default 15, checkpoint interval, keeps the response chain on continue) and supports Ctrl-C interrupt
 - Tool arguments are enforced via strict JSON Schema (+ Pydantic validation); the loop's final response is plain text (no Structured Outputs) so it can be streamed to the screen. Structured Outputs is still used for the compaction handoff summary
 - Design documents, code, and comments are in English

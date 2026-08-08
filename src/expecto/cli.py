@@ -29,16 +29,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Child process command (default: $SHELL)",
     )
     parser.add_argument(
+        "--config-dir",
+        default=None,
+        help="Directory holding config.toml, .env, AGENTS.md and "
+        "dangerous_patterns.txt (default: ~/.expecto)",
+    )
+    parser.add_argument(
         "-c",
         "--config",
         default=None,
-        help="Config file path (default: ~/.config/expecto/config.toml)",
+        help="Config file path (default: <config-dir>/config.toml)",
     )
     parser.add_argument(
         "-e",
         "--env",
         default=None,
-        help="Env file to load (default: ~/.config/expecto/.env)",
+        help="Env file to load (default: <config-dir>/.env)",
     )
     parser.add_argument(
         "--raw-io-log-file",
@@ -69,13 +75,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--agents-md",
         default=None,
         help="AGENTS.md with user instructions for the system prompt "
-        "(default: ~/.config/expecto/AGENTS.md)",
+        "(default: <config-dir>/AGENTS.md)",
     )
     parser.add_argument(
         "--dangerous-patterns-file",
         default=None,
         help="File with additional dangerous command regex patterns "
-        "(default: ~/.config/expecto/dangerous_patterns.txt)",
+        "(default: <config-dir>/dangerous_patterns.txt)",
     )
     parser.add_argument(
         "command",
@@ -85,8 +91,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def load_env(env_file: str | None = None) -> None:
-    """Load the env file given with --env, or ~/.config/expecto/.env when it
+def load_env(env_file: str | None = None, config_dir: str | None = None) -> None:
+    """Load the env file given with --env, or <config-dir>/.env when it
     exists. Existing environment variables always take precedence over file
     values.
 
@@ -97,7 +103,7 @@ def load_env(env_file: str | None = None) -> None:
             raise FileNotFoundError(env_file)
         load_dotenv(env_file)
         return
-    load_dotenv(default_env_file())
+    load_dotenv(default_env_file(config_dir))
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -110,14 +116,21 @@ def main(argv: list[str] | None = None) -> None:
 
     args = parse_args(argv)
 
+    if args.config_dir is not None and not os.path.isdir(args.config_dir):
+        print(
+            f"expecto: error: config directory not found: {args.config_dir}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     try:
-        load_env(args.env)
+        load_env(args.env, args.config_dir)
     except FileNotFoundError:
         print(f"expecto: error: env file not found: {args.env}", file=sys.stderr)
         sys.exit(1)
 
     try:
-        config, config_warnings = ExpectoConfig.load(args.config)
+        config, config_warnings = ExpectoConfig.load(args.config, args.config_dir)
     except FileNotFoundError:
         print(f"expecto: error: config file not found: {args.config}", file=sys.stderr)
         sys.exit(1)
@@ -127,7 +140,7 @@ def main(argv: list[str] | None = None) -> None:
     if not config.openai_api_key:
         print(
             "expecto: error: OPENAI_API_KEY is not set. "
-            f"Set it in the environment or in {default_env_file()}.",
+            f"Set it in the environment or in {default_env_file(args.config_dir)}.",
             file=sys.stderr,
         )
         sys.exit(1)

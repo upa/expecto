@@ -19,27 +19,29 @@ DEFAULT_MODEL = "gpt-5.4"
 DEFAULT_HOTKEY = 0x1F  # Ctrl-/
 
 
-def config_dir() -> str:
-    """The expecto config directory: $XDG_CONFIG_HOME/expecto, falling
-    back to ~/.config/expecto."""
-    base = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
-    return os.path.join(base, "expecto")
+DEFAULT_CONFIG_DIR = "~/.expecto"
 
 
-def default_config_file() -> str:
-    return os.path.join(config_dir(), "config.toml")
+def config_dir(override: str | None = None) -> str:
+    """The expecto config directory: the --config-dir path when given,
+    otherwise ~/.expecto."""
+    return os.path.expanduser(override or DEFAULT_CONFIG_DIR)
 
 
-def default_env_file() -> str:
-    return os.path.join(config_dir(), ".env")
+def default_config_file(base: str | None = None) -> str:
+    return os.path.join(config_dir(base), "config.toml")
 
 
-def default_dangerous_patterns_file() -> str:
-    return os.path.join(config_dir(), "dangerous_patterns.txt")
+def default_env_file(base: str | None = None) -> str:
+    return os.path.join(config_dir(base), ".env")
 
 
-def default_agents_md_file() -> str:
-    return os.path.join(config_dir(), "AGENTS.md")
+def default_dangerous_patterns_file(base: str | None = None) -> str:
+    return os.path.join(config_dir(base), "dangerous_patterns.txt")
+
+
+def default_agents_md_file(base: str | None = None) -> str:
+    return os.path.join(config_dir(base), "AGENTS.md")
 
 
 _HOTKEY_SPECIAL_CODES: dict[str, int] = {
@@ -168,22 +170,29 @@ class ExpectoConfig:
     agents_md_file: str = ""
 
     @classmethod
-    def load(cls, config_file: str | None = None) -> tuple[ExpectoConfig, list[str]]:
+    def load(
+        cls,
+        config_file: str | None = None,
+        config_dir: str | None = None,
+    ) -> tuple[ExpectoConfig, list[str]]:
         """Build the effective config: built-in defaults overridden by the
         TOML config file. The API key comes from the environment
         (OPENAI_API_KEY, the only setting that does); CLI flags are applied
         on top by the caller. Returns (config, warnings).
 
-        An explicitly given config_file that does not exist raises
-        FileNotFoundError; the default path is optional."""
+        config_dir (--config-dir) is the directory the default file paths
+        are resolved against. An explicitly given config_file that does not
+        exist raises FileNotFoundError; the default path is optional."""
         config = cls(
             shell=os.environ.get("SHELL", "/bin/bash"),
             openai_api_key=os.environ.get("OPENAI_API_KEY", ""),
-            dangerous_patterns_file=default_dangerous_patterns_file(),
-            agents_md_file=default_agents_md_file(),
+            dangerous_patterns_file=default_dangerous_patterns_file(config_dir),
+            agents_md_file=default_agents_md_file(config_dir),
         )
         warnings: list[str] = []
-        path = config_file if config_file is not None else default_config_file()
+        path = (
+            config_file if config_file is not None else default_config_file(config_dir)
+        )
         try:
             with open(path, "rb") as f:
                 data = tomllib.load(f)

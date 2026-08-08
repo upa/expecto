@@ -1,8 +1,8 @@
-# Configuration (config.toml / ~/.config/expecto) Design Document
+# Configuration (config.toml / ~/.expecto) Design Document
 
 - Status: implemented
 - Parent document: `DESIGN.md` (§7)
-- This document is the detailed design of the files under `~/.config/expecto/` and of configuration loading and precedence.
+- This document is the detailed design of the files under `~/.expecto/` and of configuration loading and precedence.
 
 ---
 
@@ -15,14 +15,15 @@
 ## 2. Directory Layout
 
 ```
-~/.config/expecto/            # $XDG_CONFIG_HOME/expecto if set
+~/.expecto/                   # or the directory given by --config-dir
 ├── .env                      # OPENAI_API_KEY only (secret)
 ├── config.toml               # behavior settings (this document)
 ├── AGENTS.md                 # user instructions appended to the system prompt (DESIGN.md §8)
 └── dangerous_patterns.txt    # additional dangerous-command regexes (DESIGN.md §5.8)
 ```
 
-- Path resolution is centralized in `config.config_dir()`: `$XDG_CONFIG_HOME/expecto` → `~/.config/expecto` if unset.
+- Path resolution is centralized in `config.config_dir(override)`: the `--config-dir` path when given, otherwise `~/.expecto`. Every default path (`config.toml` / `.env` / `AGENTS.md` / `dangerous_patterns.txt`) is derived from it, and the per-file flags (`-c` / `-e` / `-a` / `--dangerous-patterns-file`) still override individual files on top. A `--config-dir` path that does not exist is a startup error.
+- No environment variable selects the directory. `$XDG_CONFIG_HOME` is deliberately **not** consulted: it would duplicate `--config-dir`, and §8-1's policy is that `OPENAI_API_KEY` is the only environment variable expecto reads. There is no fallback to the pre-`~/.expecto` location either — one resolution path only.
 - `.env` loading: the file given by `--env PATH` → without that flag, `<config_dir>/.env` if it exists. The current directory is not searched, so an installed expecto behaves the same wherever it is launched from. An already-set environment variable always takes precedence over the file value.
 - `--env` cannot be set in config.toml: the `.env` file is loaded before the config file is read.
 - If `OPENAI_API_KEY` is unset (neither in the environment nor in `.env`), expecto prints an error message at startup and exits.
@@ -63,7 +64,7 @@ built-in defaults < config.toml < CLI flags
 ```
 
 - Implementation: `ExpectoConfig.load(config_file) -> (config, warnings)` — build an `ExpectoConfig` from the defaults, apply the TOML, and resolve `OPENAI_API_KEY` from the environment. CLI flag overrides are applied by `cli.main()` as before.
-- `--config PATH` changes the location of the config file (default: `<config_dir>/config.toml`).
+- `--config PATH` changes the location of the config file (default: `<config_dir>/config.toml`); `--config-dir PATH` moves the whole directory the defaults are resolved against (§2).
 
 ## 5. hotkey Notation
 
@@ -77,6 +78,7 @@ Follows the existing policy of `dangerous_patterns.txt` (invalid lines are warne
 
 | Situation | Behavior |
 |------|------|
+| Directory given via `--config-dir` does not exist | **Exit with error** (so a mistyped path is noticed) |
 | config.toml at the default path does not exist | Normal (all defaults) |
 | File explicitly specified via `--config` does not exist | **Exit with error** (so a mistyped path is noticed) |
 | `.env` at the default path does not exist | Normal (the key comes from the environment) |
@@ -91,7 +93,7 @@ Follows the existing policy of `dangerous_patterns.txt` (invalid lines are warne
 
 ## 7. dangerous_patterns.txt (unchanged)
 
-The format (one regex per line, `#` comments, case-insensitive) and the semantics — "additions to the built-in patterns, escalation to destructive only" — remain as in DESIGN.md §5.8. The only changes in this design are that the default path is now resolved via `config_dir()` (XDG support) and that the path can also be specified via `dangerous_patterns_file` in config.toml.
+The format (one regex per line, `#` comments, case-insensitive) and the semantics — "additions to the built-in patterns, escalation to destructive only" — remain as in DESIGN.md §5.8. The only changes in this design are that the default path is now resolved via `config_dir()` (so `--config-dir` moves it) and that the path can also be specified via `dangerous_patterns_file` in config.toml.
 
 ## 8. Design-Decision Record
 
