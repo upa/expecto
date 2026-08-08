@@ -49,11 +49,12 @@ Core components (each a separate module under `src/expecto/`):
 
 - Package manager: `uv`
 - Install: `uv sync`
-- Run tests: `uv run pytest tests/ -v`
+- Run tests: `uv run pytest tests/ -v` (or `make test`)
 - Run single test: `uv run pytest tests/test_foo.py::TestClass::test_name -v`
 - Type check: `uv run ty check`
 - Type check single path: `uv run ty check src/<path>`
 - Tests live in `tests/` and mirror `src/expecto/` modules. Create or update tests alongside every code change.
+- End-to-end tests: `make e2e-test` — builds a podman image (`e2e-tests/Dockerfile`: ubuntu 24.04 + expecto + llama.cpp `llama-server` + a small GGUF model) and runs `pytest e2e-tests` inside the container, driving a real expecto through a pty against the local LLM. Slow; not part of the regular test loop.
 
 ## Code Style
 
