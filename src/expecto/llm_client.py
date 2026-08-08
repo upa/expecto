@@ -7,7 +7,6 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 import openai
-from openai.lib.streaming.chat import ContentDeltaEvent
 from openai.types.chat import (
     ChatCompletionAssistantMessageParam,
     ChatCompletionFunctionToolParam,
@@ -22,6 +21,7 @@ if TYPE_CHECKING:
     from openai.types.chat.chat_completion_message import (
         ChatCompletionMessageToolCallUnion,
     )
+    from openai.types.completion_usage import CompletionUsage
 
     from expecto.config import ExpectoConfig
 
@@ -434,7 +434,11 @@ class LLMClient:
     ) -> StepResult:
         self._log_request()
 
-        async with self._client.chat.completions.stream(
+        # Raw chunk streaming, assembled by hand: the SDK's auto-parsing
+        # stream helper refuses to parse a call to a non-strict function
+        # tool, and MCP tool schemas are passed through without strict
+        # (design/MCP.md §4).
+        stream = await self._client.chat.completions.create(
             model=self._config.model,
             messages=self._messages,
             tools=self._tools,
@@ -444,14 +448,51 @@ class LLMClient:
                 if self._config.openai_reasoning_effort is not None
                 else openai.omit
             ),
+            stream=True,
             stream_options={"include_usage": True},
-        ) as stream:
-            async for event in stream:
-                if isinstance(event, ContentDeltaEvent) and on_delta is not None:
-                    on_delta(event.delta)
-            completion = await stream.get_final_completion()
+        )
+        content_parts: list[str] = []
+        calls_by_index: dict[int, dict[str, str]] = {}
+        usage: CompletionUsage | None = None
+        try:
+            async for chunk in stream:
+                if chunk.usage is not None:
+                    usage = chunk.usage
+                if not chunk.choices:
+                    continue
+                delta = chunk.choices[0].delta
+                if delta.content:
+                    content_parts.append(delta.content)
+                    if on_delta is not None:
+                        on_delta(delta.content)
+                for tc in delta.tool_calls or []:
+                    acc = calls_by_index.setdefault(
+                        tc.index, {"id": "", "name": "", "arguments": ""},
+                    )
+                    if tc.id:
+                        acc["id"] = tc.id
+                    if tc.function is not None:
+                        if tc.function.name:
+                            acc["name"] = tc.function.name
+                        if tc.function.arguments:
+                            acc["arguments"] += tc.function.arguments
+        finally:
+            # Cancellation (user Ctrl-C) must abort the HTTP request too.
+            await stream.close()
 
-        message = completion.choices[0].message
+        message = ChatCompletionMessage.model_validate({
+            "role": "assistant",
+            "content": "".join(content_parts) if content_parts else None,
+            "tool_calls": [
+                {
+                    "id": acc["id"],
+                    "type": "function",
+                    "function": {"name": acc["name"], "arguments": acc["arguments"]},
+                }
+                for _, acc in sorted(calls_by_index.items())
+            ]
+            or None,
+        })
         self._messages.append(_assistant_param(message))
 
         tool_calls: list[ParsedToolCall] = []
@@ -462,8 +503,8 @@ class LLMClient:
         if not tool_calls:
             final_text = message.content
 
-        if completion.usage is not None:
-            self._last_prompt_tokens = completion.usage.prompt_tokens
+        if usage is not None:
+            self._last_prompt_tokens = usage.prompt_tokens
 
         self._log({
             "type": "llm_response",
@@ -473,9 +514,7 @@ class LLMClient:
                 for c in tool_calls
             ],
             "final_text": final_text,
-            "prompt_tokens": (
-                completion.usage.prompt_tokens if completion.usage is not None else None
-            ),
+            "prompt_tokens": usage.prompt_tokens if usage is not None else None,
         })
 
         return StepResult(tool_calls=tool_calls, final_text=final_text)

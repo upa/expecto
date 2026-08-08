@@ -12,6 +12,7 @@ deterministic backstop, not the model's own risk classification.
 from __future__ import annotations
 
 import json
+import sys
 import time
 from pathlib import Path
 
@@ -170,6 +171,36 @@ class TestCheckpointConfirmation:
         start = session.cursor()
         session.send(b"echo AFTER_STOP\r")
         session.expect(b"\rAFTER_STOP", timeout=30, start=start)
+
+
+class TestMCP:
+    def test_mcp_server_tool_is_called(self, make_expecto: MakeExpecto) -> None:
+        """expecto connects to the configured stdio MCP server at session
+        start, offers its tool to the LLM, dispatches the call, and the
+        tool's result reaches the conversation."""
+        server_py = Path(__file__).with_name("mcp_server.py")
+        session = make_expecto(
+            "\n[mcp.e2e]\n"
+            'type = "stdio"\n'
+            f'command = "{sys.executable}"\n'
+            f'args = ["{server_py}"]\n',
+        )
+        session.wait_prompt()
+        session.enter_query(
+            "Use the mcp__e2e__get_marker tool to get the marker, "
+            "then tell me what it returned.",
+        )
+        # The dispatch is announced on the terminal...
+        session.expect(b"[expecto: mcp e2e.get_marker]", timeout=LLM_TIMEOUT)
+        # ...and the tool's result is recorded in the conversation (it is
+        # never printed to the terminal by expecto itself, so this part
+        # is asserted on the log).
+        session.wait_log(
+            lambda e: e.get("type") == "llm_request"
+            and "MCP_MARKER_31337" in json.dumps(e),
+            timeout=LLM_TIMEOUT,
+            description="tool result carrying the MCP marker",
+        )
 
 
 class TestCompaction:

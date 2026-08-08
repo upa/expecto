@@ -6,9 +6,18 @@ from pathlib import Path
 from typing import cast
 
 import pytest
-from openai.lib.streaming.chat import ContentDeltaEvent
-from openai.types.chat import ChatCompletionFunctionToolParam, ChatCompletionMessage
+from openai.types.chat import (
+    ChatCompletionChunk,
+    ChatCompletionFunctionToolParam,
+    ChatCompletionMessage,
+)
 from openai.types.chat.chat_completion import ChatCompletion, Choice
+from openai.types.chat.chat_completion_chunk import (
+    Choice as ChunkChoice,
+    ChoiceDelta,
+    ChoiceDeltaToolCall,
+    ChoiceDeltaToolCallFunction,
+)
 from openai.types.chat.chat_completion_message_function_tool_call import (
     ChatCompletionMessageFunctionToolCall,
     Function,
@@ -51,10 +60,11 @@ def _function_call(
     )
 
 
-def _delta_event(delta: str, snapshot: str) -> ContentDeltaEvent:
-    return ContentDeltaEvent(
-        type="content.delta", delta=delta, snapshot=snapshot, parsed=None,
-    )
+def _delta_event(delta: str, snapshot: str) -> str:
+    """A content delta for the canned stream (snapshot kept for the
+    callers' readability)."""
+    del snapshot
+    return delta
 
 
 def _completion(
@@ -85,49 +95,80 @@ def _tool_call_message(
     )
 
 
+def _content_chunk(delta: ChoiceDelta) -> ChatCompletionChunk:
+    return ChatCompletionChunk.model_construct(
+        choices=[ChunkChoice.model_construct(delta=delta)],
+    )
+
+
+def _chunks_from(events: list[object], final: ChatCompletion) -> list[ChatCompletionChunk]:
+    """Raw stream chunks equivalent to a canned response: the given
+    content deltas (or the final content when no deltas were given),
+    tool-call deltas, and a trailing usage chunk."""
+    message = final.choices[0].message
+    deltas = [cast("str", event) for event in events]
+    if not deltas and message.content:
+        deltas = [message.content]
+
+    chunks = [
+        _content_chunk(ChoiceDelta.model_construct(content=text)) for text in deltas
+    ]
+    if message.tool_calls:
+        chunks.append(_content_chunk(ChoiceDelta.model_construct(tool_calls=[
+            ChoiceDeltaToolCall.model_construct(
+                index=index,
+                id=call.id,
+                function=ChoiceDeltaToolCallFunction.model_construct(
+                    name=call.function.name,
+                    arguments=call.function.arguments,
+                ),
+            )
+            for index, call in enumerate(message.tool_calls)
+            if call.type == "function"
+        ])))
+    chunks.append(
+        ChatCompletionChunk.model_construct(choices=[], usage=final.usage),
+    )
+    return chunks
+
+
 class _FakeStream:
-    """Stands in for the AsyncChatCompletionStreamManager returned by
-    client.chat.completions.stream(): async context manager, async
-    iterator of events, and get_final_completion()."""
+    """Stands in for the AsyncStream returned by
+    client.chat.completions.create(stream=True): an async iterator of raw
+    chunks, with close()."""
 
-    def __init__(self, events: list[object], final: ChatCompletion) -> None:
-        self._events = events
-        self._final = final
-
-    async def __aenter__(self) -> "_FakeStream":
-        return self
-
-    async def __aexit__(self, *exc: object) -> None:
-        return None
+    def __init__(self, chunks: list[ChatCompletionChunk]) -> None:
+        self._chunks = chunks
+        self.closed = False
 
     def __aiter__(self) -> "_FakeStream":
         return self
 
-    async def __anext__(self) -> object:
-        if not self._events:
+    async def __anext__(self) -> ChatCompletionChunk:
+        if not self._chunks:
             raise StopAsyncIteration
-        return self._events.pop(0)
+        return self._chunks.pop(0)
 
-    async def get_final_completion(self) -> ChatCompletion:
-        return self._final
+    async def close(self) -> None:
+        self.closed = True
 
 
 def _client_with_fake_stream(
     responses: list[tuple[list[object], ChatCompletion]],
 ) -> tuple[LLMClient, list[dict[str, object]]]:
-    """An LLMClient whose stream() serves canned responses; every call's
-    kwargs are captured (messages are copied at call time)."""
+    """An LLMClient whose create(stream=True) serves canned responses;
+    every call's kwargs are captured (messages are copied at call time)."""
     client = LLMClient(_make_config())
     captured: list[dict[str, object]] = []
     queue = list(responses)
 
-    def fake_stream(**kwargs: object) -> _FakeStream:
+    async def fake_create(**kwargs: object) -> _FakeStream:
         kwargs["messages"] = list(cast("list[object]", kwargs["messages"]))
         captured.append(kwargs)
         events, final = queue.pop(0)
-        return _FakeStream(list(events), final)
+        return _FakeStream(_chunks_from(list(events), final))
 
-    setattr(client._client.chat.completions, "stream", fake_stream)  # noqa: B010
+    setattr(client._client.chat.completions, "create", fake_create)  # noqa: B010
     return client, captured
 
 
@@ -473,11 +514,10 @@ class TestLLMClient:
         config = _make_config()
         config.log_file = log_path
         client = LLMClient(config)
-        setattr(  # noqa: B010
-            client._client.chat.completions,
-            "stream",
-            lambda **kwargs: _FakeStream([], _completion(_final_message("ok"))),
-        )
+        async def fake_create(**kwargs: object) -> _FakeStream:
+            return _FakeStream(_chunks_from([], _completion(_final_message("ok"))))
+
+        setattr(client._client.chat.completions, "create", fake_create)  # noqa: B010
         await client.start_query("check disk", screen_text="$ ")
         with open(log_path) as f:
             entries = [json.loads(line) for line in f]
