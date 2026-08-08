@@ -52,9 +52,14 @@ reasoning_effort = ""             # none|minimal|low|medium|high|xhigh|max
 
 compact_thresh = 100000           # conversation-history compaction threshold (prompt_tokens)
 new_output_max_chars = 20000      # max characters of new output diff between queries
+
+[mcp.SERVER1]                     # MCP servers to connect to (MCP.md §2)
+type = "stdio"                    # stdio | sse | streamable-http
+command = "npx"
+args = ["arg1", "arg2"]
 ```
 
-- No tables (sections) — flat keys only.
+- Flat keys only, with one exception: the `[mcp.<name>]` tables that declare MCP servers (**`MCP.md` §2**). A list of servers is naturally nested, and flattening it would be worse to read and to write.
 - **API keys are not accepted**: if `api_key` is present, warn "use the `OPENAI_API_KEY` environment variable" and ignore it. Local LLMs and the like do not validate keys, so changing `base_url` alone suffices.
 
 ## 4. Precedence
@@ -89,6 +94,7 @@ Follows the existing policy of `dangerous_patterns.txt` (invalid lines are warne
 | Unknown key | Warn (typo detection), ignore |
 | Invalid type or value (negative integer, value outside the enum, etc.) | Warn for that key only and keep the default (the default for `confirm_level` is the safest option, `destructive`, so the fallback errs on the safe side) |
 | `api_key` key | Warn and ignore (§3) |
+| Invalid `[mcp.*]` entry (unknown type, missing required key, unset token variable) | Warn and drop **that server only**; the rest of the session is unaffected (MCP.md §2) |
 | `OPENAI_API_KEY` unset | **Exit with error** (pointing to where to set it) |
 
 ## 7. dangerous_patterns.txt (unchanged)

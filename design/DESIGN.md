@@ -195,6 +195,7 @@ The single step of "execute a command and receive its result" is exposed to the 
 |----------------|----------------------------------------|-------------------------------------------------------------------------------------------------------|
 | `run_command`  | `command: string`                      | Writes the command + Enter to the pty master, waits for the output to settle, and returns the screen text |
 | `send_control` | `key: "ctrl-c" \| "ctrl-d" \| "ctrl-z"` | Writes a control character to the pty master, likewise waits for settle, and returns the screen text     |
+| `mcp__<server>__<tool>` | the server's own schema | Calls a tool on one of the MCP servers configured in config.toml and returns its result text. Discovered at session start; see **`MCP.md`** |
 
 - Tool definitions are passed as JSON Schema with `strict: true`, and arguments are validated with Pydantic models (`RunCommandParams` / `SendControlParams`). If validation fails (which normally cannot happen due to strict mode), error text is returned as the output for the corresponding `call_id`.
 - `parallel_tool_calls=False` is specified to guarantee one tool call per response at the API level (if multiple are defensively returned anyway, they are executed sequentially).
@@ -295,6 +296,8 @@ OPTIONS (implemented):
   -l, --log-file PATH        Destination for the JSONL log of queries and LLM requests/responses (disabled by default)
   --raw-io-log-file PATH     Destination for the raw I/O log (for debugging, disabled by default)
 ```
+
+MCP servers to connect to are declared as `[mcp.<name>]` tables in config.toml; see **`MCP.md`**.
 
 The config directory is `~/.expecto` by default and holds `config.toml`, `.env`, `AGENTS.md`, and `dangerous_patterns.txt`. `--config-dir PATH` points every one of those defaults at another directory (a path that does not exist is a startup error); the individual `-c` / `-e` / `-a` / `--dangerous-patterns-file` flags still override single files. No environment variable selects the directory — `OPENAI_API_KEY` remains the only one expecto reads.
 
