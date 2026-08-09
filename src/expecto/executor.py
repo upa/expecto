@@ -144,6 +144,9 @@ class Executor:
         # Where the previous execution ended: the next query sends only
         # the terminal output produced after this point.
         self._last_mark: ScreenMark | None = None
+        # Whether this execution still owes the terminal a prompt nudge
+        # (see _nudge_prompt).
+        self._nudge_pending: bool = False
 
     async def _thinking(
         self, awaitable: Awaitable[T], label: bytes = b"[thinking...]",
@@ -169,13 +172,13 @@ class Executor:
         session-long conversation held by the LLM client. Runs as the
         relay's execution task; user Ctrl-C arrives as task cancellation."""
         stream: _StreamingFinal | None = None
+        # The terminal is nudged for a fresh prompt only when a command is
+        # actually about to be injected (see _nudge_prompt); until then the
+        # terminal is left exactly as the user had it.
+        self._nudge_pending = True
         try:
-            # Clear any input the user typed but did not submit (Ctrl-U —
-            # a bare newline would execute it unreviewed), then nudge with
-            # a newline so a fresh prompt is shown (and captured) before
-            # the first command is injected: the finalized query line took
-            # over the prompt line on the outer tty.
-            self._write_to_pty(b"\x15\n")
+            # Let any output still in flight settle, so the LLM sees a
+            # stable screen. Nothing is written to the pty here.
             await self._relay.wait_settle(self._settle_ms, self._threshold_ms)
 
             result: StepResult | None = None
@@ -253,6 +256,24 @@ class Executor:
             # client compact the conversation in the background if needed.
             self._llm.finish_query()
 
+    async def _nudge_prompt(self) -> None:
+        """Give the shell a fresh prompt before the first command of this
+        execution is injected.
+
+        Ctrl-U discards input the user typed but did not submit (a bare
+        newline would execute it unreviewed), and the newline draws the
+        prompt the query line took over on the outer tty. Both assume a
+        shell line editor, so this runs only right before a command is
+        actually injected — never at query start, where the terminal may
+        be showing a full-screen program whose buffer these keys would
+        damage. Once send_keys has been used, it is skipped entirely.
+        """
+        if not self._nudge_pending:
+            return
+        self._nudge_pending = False
+        self._write_to_pty(b"\x15\n")
+        await self._relay.wait_settle(self._settle_ms, self._threshold_ms)
+
     def _new_output_since_last(self) -> str | None:
         """Terminal output produced since the previous execution ended
         (the user's manual activity between queries), tail-capped at
@@ -309,6 +330,13 @@ class Executor:
                 if not confirmed:
                     self._llm.add_tool_output(call.call_id, DECLINED_TOOL_OUTPUT)
                     return
+
+        if isinstance(call.params, RunCommandParams):
+            await self._nudge_prompt()
+        else:
+            # The LLM is driving the terminal itself now; a later Ctrl-U
+            # would land inside whatever it is operating.
+            self._nudge_pending = False
 
         mark = self._screen.mark()
 
