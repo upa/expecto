@@ -61,10 +61,8 @@ keep going without exhausting the context window.
 
 ## Configuration
 
-`expecto` keeps its files in `~/.expecto/` — `config.toml`, `.env`,
-`AGENTS.md`, and `dangerous_patterns.txt`. `--config-dir PATH` points all
-of them at another directory; `-c` / `-e` / `-a` /
-`--dangerous-patterns-file` override single files.
+`expecto` keeps its files in `~/.expecto/`. `--config-dir PATH` points
+all of them at another directory.
 
 `expecto` reads `~/.expecto/config.toml` (or a file given by
 `--config`). All keys are optional; command-line flags override the
@@ -120,9 +118,9 @@ description: Upgrade Junos on our edge routers. Use when asked to upgrade or reb
 2. ...
 ```
 
-Only the `description` goes into the agent's prompt; when a goal matches
-it, the agent calls `load_skill` and reads the rest. That is the point —
-a long procedure costs you nothing until it is relevant. Write the
+Only the `description` goes into the agent's system prompt; when a
+goal matches it, the agent calls `load_skill` and reads the rest; a
+long procedure costs you nothing until it is relevant. Write the
 description to say both what the skill covers and when to use it.
 
 
