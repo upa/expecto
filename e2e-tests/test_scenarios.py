@@ -218,24 +218,21 @@ class TestSendKeys:
         session.expect(b"\rAFTER_INTERRUPT", timeout=30, start=start)
 
 
-    def test_llm_fixes_a_pending_command_line(
+    def test_pending_input_is_cleared_not_executed(
         self, make_expecto: MakeExpecto,
     ) -> None:
-        """Input the user typed but did not submit survives query start
-        (the pty is not nudged), and the LLM repairs it with send_keys."""
+        """Input the user typed but did not submit is cleared (Ctrl-U)
+        at query start — never executed — and the query proceeds on a
+        fresh prompt."""
         session = make_expecto('confirm_level = "none"\n')
         session.wait_prompt()
         # A misspelled command, Enter deliberately not pressed.
-        session.send(b"ehco FIXED_OK")
+        session.send(b"ehco BAD_PENDING")
         session.drain(0.5)
 
-        session.enter_query(
-            "The prompt line holds a misspelled command. Call the "
-            'send_keys tool exactly once with keys "<C-u>echo FIXED_OK<CR>" '
-            "to replace it and run the fixed command.",
-        )
-        session.expect(b"\rFIXED_OK", timeout=LLM_TIMEOUT)
-        # The pending typo was never executed as-is.
+        session.enter_query("Use the run_command tool to run: echo GOOD_OK")
+        session.expect(b"\rGOOD_OK", timeout=LLM_TIMEOUT)
+        # The pending typo was cleared, not executed.
         assert b"command not found" not in session.output
 
 class TestMCP:

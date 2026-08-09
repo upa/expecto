@@ -170,12 +170,12 @@ class Executor:
         relay's execution task; user Ctrl-C arrives as task cancellation."""
         stream: _StreamingFinal | None = None
         try:
-            # The finalized query line took over the prompt line on the
-            # outer tty; break the line there — display only. Writing
-            # "\n" to the pty would execute anything the user had typed
-            # but deliberately not submitted; a pending input line must
-            # survive so the LLM can inspect or fix it with send_keys.
-            os.write(self._stdout_fd, b"\r\n")
+            # Clear any input the user typed but did not submit (Ctrl-U —
+            # a bare newline would execute it unreviewed), then nudge with
+            # a newline so a fresh prompt is shown (and captured) before
+            # the first command is injected: the finalized query line took
+            # over the prompt line on the outer tty.
+            self._write_to_pty(b"\x15\n")
             await self._relay.wait_settle(self._settle_ms, self._threshold_ms)
 
             result: StepResult | None = None
@@ -242,11 +242,10 @@ class Executor:
             raise
         finally:
             self._relay.flush_sgr_reset()
-            # Line break on the outer tty only, for the same reason as at
-            # the start: the pty may now hold input the LLM prepared for
-            # the user to review. The fd may already be gone at EOF.
+            # The pty (or the whole session) may already be gone when we
+            # get here through cancellation at EOF.
             with contextlib.suppress(OSError):
-                os.write(self._stdout_fd, b"\r\n")
+                self._write_to_pty(b"\n")
             # Track where this execution ended so the next query can send
             # only the terminal output produced in between.
             self._last_mark = self._screen.mark()
