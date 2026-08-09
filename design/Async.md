@@ -171,7 +171,7 @@ async def wait_settle(
 |------|-------------|------|
 | passthrough | Ctrl-C | Passed through to the pty (SIGINT to the child process) |
 | during query input | Esc / Ctrl-C | Cancel → PASSTHROUGH |
-| executing (waiting for LLM / settle) | Ctrl-C | **cancel() the execution task**. CancelledError propagates; in finally: restore display, SGR reset, show `[expecto interrupted]`. The tool result for an already-sent command is recorded with the output up to that point (Conversation.md §4) |
+| executing (waiting for LLM / settle) | Ctrl-C | **cancel() the execution task**. CancelledError propagates; in finally: restore display, SGR reset, show `[expecto: interrupted]`. The tool result for an already-sent command is recorded with the output up to that point (Conversation.md §4) |
 | y/n prompt displayed | Ctrl-C / Esc / n | `wait_key` resolves → **treated as "n"** (the task survives). For a continuation confirmation this stops; for a command confirmation the decline is returned to the LLM as the tool result |
 | executing | any other key | Discarded (only terminal response sequences are forwarded to the pty — DESIGN.md §5.4) |
 | child process exit | — | pty EOF → cancel the execution task → shutdown sequence |

@@ -207,7 +207,7 @@ class Executor:
                     elif result.final_text:
                         self._show_final(result.final_text)
                     else:
-                        self._show_end("(empty response)")
+                        self._show_end("empty response")
                     return
                 # Text alongside tool calls (the model narrating before a
                 # call) has already been streamed; end the open message.
@@ -430,13 +430,13 @@ class Executor:
     async def _confirm_continue(self, step: int) -> bool:
         """Ask the user whether to continue past the step checkpoint."""
         return await self._prompt_yes_no(
-            f"[expecto] reached step {step} — continue?",
+            f"reached step {step} — continue?",
         )
 
     async def _confirm_command(self, command: str, risk: str, detail: str) -> bool:
         """Ask the user whether to run a command that hit the confirm level."""
         return await self._prompt_yes_no(
-            f"[expecto] {risk} command ({detail}): {command} — run?",
+            f"{risk} command ({detail}): {command} — run?",
         )
 
     async def _prompt_yes_no(self, message: str) -> bool:
@@ -446,7 +446,7 @@ class Executor:
         session that goes away entirely arrives as cancellation instead."""
         os.write(
             self._stdout_fd,
-            f"\r\n\x1b[90m{message} (y/n) \x1b[0m".encode(),
+            f"\r\n\x1b[90m[expecto: {message} (y/n)] \x1b[0m".encode(),
         )
         key = await self._relay.wait_key(
             frozenset({0x79, 0x59, 0x6E, 0x4E, 0x1B, 0x03}),  # y Y n N Esc Ctrl-C
@@ -458,7 +458,7 @@ class Executor:
         return False
 
     def _show_end(self, label: str) -> None:
-        self._write_gray(f"[expecto {label}]")
+        self._write_gray(f"[expecto: {label}]")
 
     def _show_final(self, text: str) -> None:
         """Show a final response that did not arrive via streaming."""
