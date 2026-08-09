@@ -15,6 +15,7 @@ import json
 import sys
 import time
 from pathlib import Path
+from typing import cast
 
 from conftest import ExpectoSession, MakeExpecto
 
@@ -171,6 +172,50 @@ class TestCheckpointConfirmation:
         start = session.cursor()
         session.send(b"echo AFTER_STOP\r")
         session.expect(b"\rAFTER_STOP", timeout=30, start=start)
+
+
+class TestSendKeys:
+    def test_llm_stops_a_running_program_with_ctrl_c(
+        self, expecto_session: ExpectoSession,
+    ) -> None:
+        """A program the user started never finishes; asked to stop it,
+        the LLM calls send_keys with <C-c> and the shell prompt comes
+        back."""
+        session = expecto_session
+        session.wait_prompt()
+        # The user starts a command that will not finish by itself.
+        session.send(b"sleep 1000\r")
+        session.drain(0.5)
+
+        session.enter_query(
+            "The terminal is running a command that will not finish. "
+            "Use the send_keys tool to send <C-c> to stop it.",
+        )
+        # The LLM's Ctrl-C reaches the shell: bash shows ^C and prompts.
+        start = session.output.index(b"sleep 1000")
+        session.expect(b"^C", timeout=LLM_TIMEOUT, start=start)
+        # The send_keys call is recorded with the notation it sent.
+        entry = session.wait_log(
+            lambda e: e.get("type") == "llm_response"
+            and any(
+                c.get("name") == "send_keys" and "C-c" in str(c.get("params", ""))
+                for c in cast("list[dict[str, object]]", e.get("tool_calls") or [])
+            ),
+            timeout=LLM_TIMEOUT,
+            description="a send_keys tool call carrying <C-c>",
+        )
+        assert entry is not None
+
+        # The shell is usable again: wait for the execution to finish,
+        # then run a command through passthrough.
+        session.wait_log(
+            lambda e: e.get("type") == "llm_response" and bool(e.get("final_text")),
+            timeout=LLM_TIMEOUT,
+            description="final response after the interrupt",
+        )
+        start = session.cursor()
+        session.send(b"echo AFTER_INTERRUPT\r")
+        session.expect(b"\rAFTER_INTERRUPT", timeout=30, start=start)
 
 
 class TestMCP:
