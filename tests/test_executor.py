@@ -358,7 +358,7 @@ class TestExecution:
         harness.start("say hello")
         await harness.wait_done()
 
-        assert harness.pty_written == [b"\n", b"\n"]  # prompt nudge + final newline
+        assert harness.pty_written == []  # nothing injected, pty untouched
         assert b"[task complete]" in harness.output()
 
     async def test_empty_final_text(self, make_harness: MakeHarness) -> None:
@@ -368,7 +368,7 @@ class TestExecution:
         harness.start("do something")
         await harness.wait_done()
 
-        assert harness.pty_written == [b"\n", b"\n"]
+        assert harness.pty_written == []
         assert b"[expecto (empty response)]" in harness.output()
 
     async def test_two_steps(self, make_harness: MakeHarness) -> None:
@@ -381,7 +381,7 @@ class TestExecution:
         harness.start("list then finish")
         await harness.wait_done()
 
-        assert harness.pty_written == [b"\n", b"ls\n", b"\n"]
+        assert harness.pty_written == [b"ls\n"]
         out = harness.output()
         assert b"[complete]" in out
         assert b"output from step 1" in out  # relayed to the user's screen
@@ -397,9 +397,7 @@ class TestExecution:
         harness.start("stop it")
         await harness.wait_done()
 
-        assert harness.pty_written[0] == b"\n"  # initial prompt nudge
-        assert harness.pty_written[1] == b"q\x03\x1b\r"
-        assert harness.pty_written[-1] == b"\n"
+        assert harness.pty_written == [b"q\x03\x1b\r"]
 
     async def test_send_keys_result_is_screen_and_cursor(
         self, make_harness: MakeHarness,
@@ -435,7 +433,7 @@ class TestExecution:
         harness.start("press it")
         await harness.wait_done()
 
-        assert harness.pty_written == [b"\n", b"\n"]  # nudges only
+        assert harness.pty_written == []  # nothing was sent
         _, output = fake_llm.tool_outputs[0]
         assert output.startswith("Error:")
         assert "NoSuchKey" in output
@@ -551,7 +549,7 @@ class TestExecution:
         harness.user_types(b"\x03")
         await harness.wait_done()
 
-        assert harness.pty_written == [b"\n", b"\n"]  # no command was injected
+        assert harness.pty_written == []  # no command was injected
         assert fake_llm.was_cancelled  # the in-flight call was truly cancelled
         assert b"[expecto interrupted]" in harness.output()
 
@@ -675,7 +673,7 @@ class TestExecution:
         await harness.wait_done()
 
         # No command was written to the pty, only the nudge and trailing newline.
-        assert harness.pty_written == [b"\n", b"\n"]
+        assert harness.pty_written == []
 
         call_id, output = fake_llm.tool_outputs[0]
         assert call_id == "call_1"
@@ -844,7 +842,7 @@ class TestLoadSkill:
         call_id, output = fake_llm.tool_outputs[0]
         assert call_id == "call_1"
         assert "1. show bgp summary" in output
-        assert harness.pty_written == [b"\n", b"\n"]
+        assert harness.pty_written == []
         assert b"[expecto: skill bgp]" in harness.output()
 
     async def test_bundled_file_is_read_locally(
@@ -870,7 +868,7 @@ class TestLoadSkill:
 
         _, output = fake_llm.tool_outputs[0]
         assert "confirm the peer address" in output
-        assert harness.pty_written == [b"\n", b"\n"]
+        assert harness.pty_written == []
         assert b"[expecto: skill bgp/checklist.md]" in harness.output()
 
     async def test_unreadable_bundled_file_lists_what_exists(
@@ -930,7 +928,7 @@ class TestMCPToolCalls:
         assert mcp.calls == [("mcp__DOCS__search", {"query": "bgp"})]
         assert fake_llm.tool_outputs == [("call_1", "RFC 4271")]
         # No command was injected: only the prompt nudge and final newline.
-        assert harness.pty_written == [b"\n", b"\n"]
+        assert harness.pty_written == []
         out = harness.output()
         assert b"[expecto: mcp DOCS.search]" in out
         assert b"[found it]" in out

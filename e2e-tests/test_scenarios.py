@@ -218,6 +218,26 @@ class TestSendKeys:
         session.expect(b"\rAFTER_INTERRUPT", timeout=30, start=start)
 
 
+    def test_llm_fixes_a_pending_command_line(
+        self, make_expecto: MakeExpecto,
+    ) -> None:
+        """Input the user typed but did not submit survives query start
+        (the pty is not nudged), and the LLM repairs it with send_keys."""
+        session = make_expecto('confirm_level = "none"\n')
+        session.wait_prompt()
+        # A misspelled command, Enter deliberately not pressed.
+        session.send(b"ehco FIXED_OK")
+        session.drain(0.5)
+
+        session.enter_query(
+            "The prompt line holds a misspelled command. Call the "
+            'send_keys tool exactly once with keys "<C-u>echo FIXED_OK<CR>" '
+            "to replace it and run the fixed command.",
+        )
+        session.expect(b"\rFIXED_OK", timeout=LLM_TIMEOUT)
+        # The pending typo was never executed as-is.
+        assert b"command not found" not in session.output
+
 class TestMCP:
     def test_mcp_server_tool_is_called(self, make_expecto: MakeExpecto) -> None:
         """expecto connects to the configured stdio MCP server at session
