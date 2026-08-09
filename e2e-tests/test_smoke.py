@@ -32,14 +32,22 @@ class TestLlamaServer:
 
 class TestExpectoPassthrough:
     def test_shell_commands_pass_through(self, expecto_session: ExpectoSession) -> None:
-        """expecto relays a wrapped bash transparently."""
+        """expecto relays a wrapped bash transparently, bracketed by the
+        session start and termination messages."""
         expecto_session.wait_prompt()
+        assert (
+            b"[expecto: session started (model: qwen3-0.6b)]"
+            in expecto_session.output
+        )
         expecto_session.send(b"echo hello-e2e\r")
         # "\r" + result distinguishes the output line (column 0) from the
         # echoed command line ("echo hello-e2e" after the prompt).
         expecto_session.expect(b"\rhello-e2e", timeout=15)
 
         expecto_session.send(b"exit\r")
+        # Read the message while the pty is still open; the process exits
+        # immediately after writing it.
+        expecto_session.expect(b"[expecto: session terminated]", timeout=15)
         assert expecto_session.wait_exit(timeout=15) == 0
 
 

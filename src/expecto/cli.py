@@ -121,42 +121,57 @@ def load_env(env_file: str | None = None, config_dir: str | None = None) -> None
     load_dotenv(default_env_file(config_dir))
 
 
+def status(message: str) -> None:
+    """Write one of expecto's own lines to the terminal, in the same gray
+    bracketed form as its in-session messages. Redirected output gets the
+    plain form, so no escape sequences land in a log file."""
+    if sys.stderr.isatty():
+        print(f"\x1b[90m[expecto: {message}]\x1b[0m", file=sys.stderr)
+    else:
+        print(f"expecto: {message}", file=sys.stderr)
+
+
+def warn(message: str) -> None:
+    status(f"warning: {message}")
+
+
+def fail(message: str) -> None:
+    """Report a startup problem. The caller exits."""
+    status(f"error: {message}")
+
+
 def main(argv: list[str] | None = None) -> None:
     if os.environ.get(NESTING_ENV_VAR):
-        print(
-            "expecto: already inside an expecto session; nested sessions are not supported. exited.",
-            file=sys.stderr,
+        fail(
+            "already inside an expecto session; "
+            "nested sessions are not supported",
         )
         sys.exit(1)
 
     args = parse_args(argv)
 
     if args.config_dir is not None and not os.path.isdir(args.config_dir):
-        print(
-            f"expecto: error: config directory not found: {args.config_dir}",
-            file=sys.stderr,
-        )
+        fail(f"config directory not found: {args.config_dir}")
         sys.exit(1)
 
     try:
         load_env(args.env, args.config_dir)
     except FileNotFoundError:
-        print(f"expecto: error: env file not found: {args.env}", file=sys.stderr)
+        fail(f"env file not found: {args.env}")
         sys.exit(1)
 
     try:
         config, config_warnings = ExpectoConfig.load(args.config, args.config_dir)
     except FileNotFoundError:
-        print(f"expecto: error: config file not found: {args.config}", file=sys.stderr)
+        fail(f"config file not found: {args.config}")
         sys.exit(1)
     for warning in config_warnings:
-        print(f"expecto: warning: {warning}", file=sys.stderr)
+        warn(warning)
 
     if not config.openai_api_key:
-        print(
-            "expecto: error: OPENAI_API_KEY is not set. "
-            f"Set it in the environment or in {default_env_file(args.config_dir)}.",
-            file=sys.stderr,
+        fail(
+            "OPENAI_API_KEY is not set. Set it in the environment or in "
+            f"{default_env_file(args.config_dir)}",
         )
         sys.exit(1)
 
@@ -176,10 +191,7 @@ def main(argv: list[str] | None = None) -> None:
         config.dangerous_patterns_file = args.dangerous_patterns_file
     if args.agents_md is not None:
         if not os.path.exists(args.agents_md):
-            print(
-                f"expecto: error: AGENTS.md not found: {args.agents_md}",
-                file=sys.stderr,
-            )
+            fail(f"AGENTS.md not found: {args.agents_md}")
             sys.exit(1)
         config.agents_md_file = args.agents_md
 
@@ -204,7 +216,7 @@ def main(argv: list[str] | None = None) -> None:
 
     skills, skill_warnings = load_skills(config.skills_dir)
     for warning in skill_warnings:
-        print(f"expecto: warning: {warning}", file=sys.stderr)
+        warn(warning)
 
     llm_client = LLMClient(
         config,
@@ -216,7 +228,7 @@ def main(argv: list[str] | None = None) -> None:
         config.dangerous_patterns_file or None,
     )
     for error in pattern_errors:
-        print(f"expecto: warning: {error}", file=sys.stderr)
+        warn(error)
 
     def write_to_pty(data: bytes) -> None:
         assert pty_mgr.master_fd is not None
@@ -269,16 +281,14 @@ def main(argv: list[str] | None = None) -> None:
 
     async def run_session() -> int:
         loop = asyncio.get_running_loop()
+        status(f"session started (model: {config.model})")
         # MCP servers are connected before the child starts: their tools
         # must be known before the first LLM request (design/MCP.md §3),
         # and warnings still print with the tty in its normal mode.
         if mcp_manager is not None:
-            print(
-                f"expecto: connecting to {len(config.mcp_servers)} MCP server(s)...",
-                file=sys.stderr,
-            )
+            status(f"connecting to {len(config.mcp_servers)} MCP server(s)...")
             for warning in await mcp_manager.connect(config.mcp_servers):
-                print(f"expecto: warning: {warning}", file=sys.stderr)
+                warn(warning)
             llm_client.set_mcp_tools(mcp_manager.tool_defs())
 
         tty_ctrl.enter_raw()
@@ -308,7 +318,10 @@ def main(argv: list[str] | None = None) -> None:
         exit_code = asyncio.run(run_session())
     finally:
         pty_mgr.close()
+        # Restore first: the message is written after the tty is back in
+        # its normal mode, so it needs no raw-mode line handling.
         tty_ctrl.restore()
+        status("session terminated")
         if raw_io_log_fh is not None:
             raw_io_log_fh.close()
 

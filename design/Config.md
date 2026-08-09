@@ -83,7 +83,7 @@ built-in defaults < config.toml < CLI flags
 
 ## 6. Error Handling (warn-and-continue)
 
-Follows the existing policy of `dangerous_patterns.txt` (invalid lines are warned about and skipped; startup continues). Warnings are printed to stderr at startup in the form `expecto: warning: <path>: <key>: ...`.
+Follows the existing policy of `dangerous_patterns.txt` (invalid lines are warned about and skipped; startup continues). Warnings are printed to stderr at startup in the form `[expecto: warning: <path>: <key>: ...]` (the plain `expecto: warning: ...` form when stderr is not a terminal — see DESIGN.md §5.10).
 
 | Situation | Behavior |
 |------|------|

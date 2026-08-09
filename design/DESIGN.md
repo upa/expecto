@@ -242,7 +242,7 @@ The message history is held by `LLMClient` and continues as **a single conversat
 - The command echo of `run_command` is displayed in the same gray as expecto's status displays. Immediately before command injection, SGR (gray) is written to the outer tty and a reservation is placed with IORelay (`arm_sgr_reset_at_newline()`); the pump then inserts a reset right after the first newline of the echo (the echo of Enter). If settle, interruption, or EOF occurs before a newline arrives, the reset is still guaranteed via `flush_sgr_reset()` (idempotent). SGR is written only to the outer tty and never enters ScreenBuffer, so the text passed to the LLM is unaffected (if the shell itself colors its echo, that may take precedence — best effort).
 - Loop processing uses the settle detection below (§5.9). Every `max_steps` steps (default 15, counted by LLM calls), the user is asked for continuation confirmation (`continue? (y/n)`) as a **checkpoint**. `max_steps = 0` disables the checkpoint entirely (the loop runs autonomously until done/fail or Ctrl-C). On y, execution continues with the conversation history preserved; on n / Esc / Ctrl-C, it ends. By making this a confirmation rather than a hard abort, the limit functions as "an opportunity to put human eyes on it" rather than "task failure" (as an interactive tool, user presence is the first safety device). While waiting for confirmation, pty output relay continues (handled by the always-on pump). If stdin is lost (EOF), the execution task is cancelled as session termination.
 - The LLM can send control characters (Ctrl-C etc.) via the `send_control` tool. This lets the LLM itself decide on things like interrupting a long-running command.
-- **Streaming display of the final response**: when `content.delta` starts arriving, the `[thinking...]` overlay is erased and the final response text is displayed progressively as a gray `[` followed by the arriving characters, closed with `]` + SGR reset upon completion. The overlay erasure happens exactly once at streaming start and is never rewound afterward (when a multi-line response scrolls the screen, the DECSC saved position cannot be trusted). If Ctrl-C interrupts mid-stream, the partial text already displayed is left on screen, followed by a newline and `[expecto interrupted]`. If no delta ever arrives (empty response etc.), the text is displayed at once after completion, as before. During streaming, pty reads remain paused, so no entanglement with child process output occurs.
+- **Streaming display of the final response**: when `content.delta` starts arriving, the `[thinking...]` overlay is erased and the final response text is displayed progressively as a gray `[` followed by the arriving characters, closed with `]` + SGR reset upon completion. The overlay erasure happens exactly once at streaming start and is never rewound afterward (when a multi-line response scrolls the screen, the DECSC saved position cannot be trusted). If Ctrl-C interrupts mid-stream, the partial text already displayed is left on screen, followed by a newline and `[expecto: interrupted]`. If no delta ever arrives (empty response etc.), the text is displayed at once after completion, as before. During streaming, pty reads remain paused, so no entanglement with child process output occurs.
 - The user can interrupt execution at any time with `Ctrl-C` (interrupt detection is done by InputRouter handling input with priority while executing).
 - LLM calls (each step's call, and awaiting a compaction started after the previous query ended) await `AsyncOpenAI`. The entire execution is a single asyncio task, and **Ctrl-C interrupts it immediately at any await point, including while waiting for an LLM response** (task cancellation). On cancellation, the in-flight HTTP request itself is aborted (compaction, being an independent task, runs to completion), and cleanup (overlay erasure, SGR reset, trailing newline) is guaranteed in finally (Async.md §4).
 
@@ -259,6 +259,23 @@ The message history is held by `LLMClient` and continues as **a single conversat
 The session context is carried by the client-held message history itself (all past queries, commands, and outputs remain). When the history grows beyond a threshold (`compact_thresh`, measured in prompt_tokens), after the query's execution finishes (after the explanation is displayed and control is returned to the user), LLMClient internally (almost transparently to the Executor) requests a handoff summary (`HandoffSummary`: environment / activities / notes) of the history in the background, and starts the next query as a new conversation headed by the summary + the full screen (compaction). The user's manual operations between queries are conveyed by the diff of new output attached to the next query (capped by `new_output_max_chars`).
 
 See **`Conversation.md`** for the detailed design.
+
+### 5.11 expecto's own messages
+
+Everything expecto says for itself — as opposed to the child's output or the LLM's answer — is written in gray as `[expecto: ...]`, so it is distinguishable at a glance from what the terminal produced:
+
+| message | example |
+|---------|---------|
+| session lifecycle | `[expecto: session started (model: gpt-5.4)]`, `[expecto: session terminated]` |
+| startup status | `[expecto: connecting to 2 MCP server(s)...]` |
+| startup warning / error | `[expecto: warning: <path>: <key>: ...]`, `[expecto: error: config file not found: ...]` |
+| tool activity | `[expecto: mcp docs.search]`, `[expecto: skill junos-upgrade]` |
+| confirmation prompt | `[expecto: destructive command (...): <cmd> — run? (y/n)]` |
+| end of an execution | `[expecto: interrupted]`, `[expecto: stopped at step 15]` |
+| unhandled error | `[expecto: error: ...]` (relay's done callback) |
+
+- The LLM's final response is the one gray message **without** the prefix (`[<text>]`): it is the agent speaking, not expecto.
+- Startup lines go to stderr via `cli.status()` / `warn()` / `fail()`, which drop the color and brackets when stderr is not a terminal (`expecto: warning: ...`), so a redirected log holds no escape sequences. In-session messages are written to the outer tty directly, which is a terminal by construction.
 
 ---
 

@@ -60,7 +60,7 @@ class TestCancelDuringLLMStep:
         session.enter_query("Use the run_command tool to run: echo NEVER_RUN_MARKER")
         session.expect(b"[thinking...]", timeout=60)
         session.send(b"\x03")  # Ctrl-C
-        session.expect(b"[expecto interrupted]", timeout=60)
+        session.expect(b"[expecto: interrupted]", timeout=60)
 
         # Passthrough is alive again.
         start = session.cursor()
@@ -165,7 +165,7 @@ class TestCheckpointConfirmation:
     def test_answer_n_stops(self, make_expecto: MakeExpecto) -> None:
         session = self._start(make_expecto)
         session.send(b"n")
-        session.expect(b"[expecto stopped at step 1]", timeout=30)
+        session.expect(b"[expecto: stopped at step 1]", timeout=30)
 
         # Back to passthrough.
         start = session.cursor()

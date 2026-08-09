@@ -369,7 +369,7 @@ class TestExecution:
         await harness.wait_done()
 
         assert harness.pty_written == [b"\n", b"\n"]
-        assert b"[expecto (empty response)]" in harness.output()
+        assert b"[expecto: empty response]" in harness.output()
 
     async def test_two_steps(self, make_harness: MakeHarness) -> None:
         """LLM calls run_command then returns done — settle wait between steps."""
@@ -418,7 +418,7 @@ class TestExecution:
         assert fake_llm.step_count == max_steps
         assert f"reached step {max_steps}".encode() in out
         assert b"continue? (y/n)" in out
-        assert f"[expecto stopped at step {max_steps}]".encode() in out
+        assert f"[expecto: stopped at step {max_steps}]".encode() in out
 
     async def test_checkpoint_answer_y_continues(self, make_harness: MakeHarness) -> None:
         """Answering 'y' continues the loop past the checkpoint, keeping the
@@ -438,7 +438,7 @@ class TestExecution:
         out = harness.output()
         assert b"reached step 2" in out
         assert b"reached step 4" in out
-        assert b"[expecto stopped at step 4]" in out
+        assert b"[expecto: stopped at step 4]" in out
 
     async def test_checkpoint_ctrl_c_stops(self, make_harness: MakeHarness) -> None:
         """Ctrl-C at the checkpoint prompt answers 'no' and stops the loop."""
@@ -452,7 +452,7 @@ class TestExecution:
         await asyncio.wait_for(pump, timeout=5)
 
         assert fake_llm.step_count == 1
-        assert b"[expecto stopped at step 1]" in harness.output()
+        assert b"[expecto: stopped at step 1]" in harness.output()
 
     async def test_max_steps_zero_never_asks(self, make_harness: MakeHarness) -> None:
         """max_steps < 1 disables the checkpoint: the loop runs to the
@@ -480,7 +480,7 @@ class TestExecution:
         await harness.wait_done()
 
         assert fake_llm.step_count == 1
-        assert b"[expecto interrupted]" in harness.output()
+        assert b"[expecto: interrupted]" in harness.output()
 
     async def test_ctrl_c_during_llm_call(self, make_harness: MakeHarness) -> None:
         """Ctrl-C while the LLM call is in flight cancels the request
@@ -513,7 +513,7 @@ class TestExecution:
 
         assert harness.pty_written == [b"\n", b"\n"]  # no command was injected
         assert fake_llm.was_cancelled  # the in-flight call was truly cancelled
-        assert b"[expecto interrupted]" in harness.output()
+        assert b"[expecto: interrupted]" in harness.output()
 
     async def test_thinking_indicator(self, make_harness: MakeHarness) -> None:
         """The thinking indicator is shown while the LLM call is in flight."""
@@ -763,7 +763,7 @@ class TestStreamingFinalDisplay:
 
         out = harness.output()
         assert b"[partial answer" in out
-        assert b"partial answer\x1b[0m\r\n\x1b[90m[expecto interrupted]" in out
+        assert b"partial answer\x1b[0m\r\n\x1b[90m[expecto: interrupted]" in out
 
     async def test_narration_before_tool_call_is_closed(self, make_harness: MakeHarness) -> None:
         """Text streamed in a response that also carries a tool call is
@@ -928,7 +928,7 @@ class TestMCPToolCalls:
 
         assert [c for c, _ in fake_llm.tool_outputs] == ["call_1"]
         assert "interrupted" in fake_llm.tool_outputs[0][1]
-        assert b"[expecto interrupted]" in harness.output()
+        assert b"[expecto: interrupted]" in harness.output()
 
 
 class TestDangerousCommandConfirmation:
@@ -1056,7 +1056,7 @@ class TestDangerousCommandConfirmation:
         await harness.wait_done()
 
         assert b"reload\n" not in harness.pty_written
-        assert b"[expecto interrupted]" in harness.output()
+        assert b"[expecto: interrupted]" in harness.output()
 
 
 
@@ -1136,7 +1136,7 @@ class TestConversationIntegrity:
         harness.start("first")
         await harness.wait_done()
         await asyncio.wait_for(pump, timeout=5)
-        assert b"[expecto stopped at step 1]" in harness.output()
+        assert b"[expecto: stopped at step 1]" in harness.output()
 
         assert len(fake_llm.tool_outputs) == 1
         assert fake_llm.tool_outputs[0][0] == "call_1"
@@ -1150,7 +1150,7 @@ class TestConversationIntegrity:
         await _until(lambda: b"sleep 100\n" in harness.pty_written)
         harness.user_types(b"\x03")
         await harness.wait_done()
-        assert b"[expecto interrupted]" in harness.output()
+        assert b"[expecto: interrupted]" in harness.output()
 
         assert len(fake_llm.tool_outputs) == 1
         call_id, output = fake_llm.tool_outputs[0]
