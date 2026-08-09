@@ -59,12 +59,16 @@ class QueryModeUI:
         self._write(b"\x1b[J")
 
     def finalize(self) -> None:
-        """Keep query text visible and mark invisible. No newline is
-        written: the executor nudges the shell with Enter right after,
-        and its echo supplies the line break."""
+        """Keep the query text on screen and mark the prompt invisible.
+
+        A trailing space closes the query so that whatever expecto shows
+        next — the thinking overlay — does not run straight on from it.
+        No newline is written: the executor nudges the shell with Enter
+        right after, and its echo supplies the line break."""
         if not self._visible:
             return
         self._visible = False
+        self._write(b" ")
 
     def _move_to_prompt_start(self) -> None:
         cols = self._get_cols()

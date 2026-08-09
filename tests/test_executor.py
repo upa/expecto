@@ -304,8 +304,9 @@ async def make_harness() -> AsyncIterator[MakeHarness]:
         def write_to_pty(data: bytes) -> None:
             pty_written.append(data)
             # A real child answers an injected command with its output;
-            # the prompt nudge (Ctrl-U + newline) only redraws a prompt.
-            if data == b"\x15\n" or fake_llm.pending_output is None:
+            # a bare newline is only the prompt nudge, or the one that
+            # ends an execution.
+            if data == b"\n" or fake_llm.pending_output is None:
                 return
             harness.child_writes(fake_llm.pending_output)
             fake_llm.pending_output = None
@@ -393,7 +394,7 @@ class TestExecution:
         harness.start("list then finish")
         await harness.wait_done()
 
-        assert harness.pty_written == [b"\x15\n", b"ls\n", b"\n"]
+        assert harness.pty_written == [b"\n", b"ls\n", b"\n"]
         out = harness.output()
         assert b"[complete]" in out
         assert b"output from step 1" in out  # relayed to the user's screen
@@ -409,13 +410,13 @@ class TestExecution:
         harness.start("stop it")
         await harness.wait_done()
 
-        assert harness.pty_written == [b"q\x03\x1b\r", b"\n"]  # no Ctrl-U nudge
+        assert harness.pty_written == [b"q\x03\x1b\r", b"\n"]  # no prompt nudge
 
     async def test_prompt_nudge_precedes_the_first_command_only(
         self, make_harness: MakeHarness,
     ) -> None:
-        """Ctrl-U + newline is sent once, right before the first injected
-        command — not at query start, and not again afterwards."""
+        """The nudge newline is sent once, right before the first
+        injected command — not at query start, and not again."""
         fake_llm = FakeLLMClient(results=[
             _cmd_result(1, "ls"),
             _cmd_result(2, "pwd"),
@@ -425,7 +426,7 @@ class TestExecution:
         harness.start("look around")
         await harness.wait_done()
 
-        assert harness.pty_written == [b"\x15\n", b"ls\n", b"pwd\n", b"\n"]
+        assert harness.pty_written == [b"\n", b"ls\n", b"pwd\n", b"\n"]
 
     async def test_prompt_nudge_after_a_terminal_free_tool(
         self, make_harness: MakeHarness,
@@ -444,13 +445,14 @@ class TestExecution:
         harness.start("use the skill")
         await harness.wait_done()
 
-        assert harness.pty_written == [b"\x15\n", b"ls\n", b"\n"]
+        assert harness.pty_written == [b"\n", b"ls\n", b"\n"]
 
     async def test_no_prompt_nudge_once_send_keys_was_used(
         self, make_harness: MakeHarness,
     ) -> None:
         """After send_keys, the LLM is driving whatever the terminal is
-        running; a later Ctrl-U would land inside it, so it is skipped."""
+        running; a later newline would land inside it, so it is
+        skipped."""
         fake_llm = FakeLLMClient(results=[
             _keys_result(1, "<Esc>:q<CR>"),
             _cmd_result(2, "ls"),

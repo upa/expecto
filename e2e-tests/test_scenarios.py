@@ -218,12 +218,12 @@ class TestSendKeys:
         session.expect(b"\rAFTER_INTERRUPT", timeout=30, start=start)
 
 
-    def test_pending_input_is_cleared_not_executed(
+    def test_pending_input_is_submitted_by_the_nudge(
         self, make_expecto: MakeExpecto,
     ) -> None:
-        """Input the user typed but did not submit is cleared (Ctrl-U)
-        at query start — never executed — and the query proceeds on a
-        fresh prompt."""
+        """Input the user typed but did not submit is submitted by the
+        prompt nudge, error and all — the accepted cost of not clearing
+        the line first — and the query runs regardless."""
         session = make_expecto('confirm_level = "none"\n')
         session.wait_prompt()
         # A misspelled command, Enter deliberately not pressed.
@@ -232,8 +232,8 @@ class TestSendKeys:
 
         session.enter_query("Use the run_command tool to run: echo GOOD_OK")
         session.expect(b"\rGOOD_OK", timeout=LLM_TIMEOUT)
-        # The pending typo was cleared, not executed.
-        assert b"command not found" not in session.output
+        # The typo ran and failed, which is the accepted cost.
+        assert b"command not found" in session.output
 
 class TestMCP:
     def test_mcp_server_tool_is_called(self, make_expecto: MakeExpecto) -> None:

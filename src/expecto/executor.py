@@ -258,20 +258,26 @@ class Executor:
 
     async def _nudge_prompt(self) -> None:
         """Give the shell a fresh prompt before the first command of this
-        execution is injected.
+        execution is injected: the query line took over the previous one
+        on the outer tty, so without this the command would appear on a
+        line with no prompt.
 
-        Ctrl-U discards input the user typed but did not submit (a bare
-        newline would execute it unreviewed), and the newline draws the
-        prompt the query line took over on the outer tty. Both assume a
-        shell line editor, so this runs only right before a command is
-        actually injected — never at query start, where the terminal may
-        be showing a full-screen program whose buffer these keys would
-        damage. Once send_keys has been used, it is skipped entirely.
+        Just a newline. Input the user typed but did not submit is
+        therefore submitted by it, and may well fail — accepted: clearing
+        it first (Ctrl-U) makes the shell repaint the line by absolute
+        arithmetic against a line it believes is shorter than what is on
+        screen, which eats part of the query text.
+
+        A newline still assumes a line-oriented child, so this runs only
+        right before a command is actually injected — never at query
+        start, where the terminal may be showing a full-screen program.
+        Once send_keys has been used it is skipped entirely: the LLM is
+        driving whatever is on screen, and a newline is its business.
         """
         if not self._nudge_pending:
             return
         self._nudge_pending = False
-        self._write_to_pty(b"\x15\n")
+        self._write_to_pty(b"\n")
         await self._relay.wait_settle(self._settle_ms, self._threshold_ms)
 
     def _new_output_since_last(self) -> str | None:
@@ -334,8 +340,8 @@ class Executor:
         if isinstance(call.params, RunCommandParams):
             await self._nudge_prompt()
         else:
-            # The LLM is driving the terminal itself now; a later Ctrl-U
-            # would land inside whatever it is operating.
+            # The LLM is driving the terminal itself now; a later
+            # newline would land inside whatever it is operating.
             self._nudge_pending = False
 
         mark = self._screen.mark()

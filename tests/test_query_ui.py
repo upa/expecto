@@ -99,8 +99,9 @@ class TestQueryModeUI:
         self._read_output()
 
         ui.finalize()
-        finalize_output = self._read_output()
-        assert finalize_output == ""  # the query line stays on screen
+        # The query line stays on screen, closed with a space so the
+        # thinking overlay does not run on from it.
+        assert self._read_output() == " "
 
         ui.update("should not appear")
         output = self._read_output()
