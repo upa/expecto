@@ -4,13 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-`expecto` is a transparent TTY wrapper CLI tool that sits between the terminal and user I/O. It relays input/output to a child process (default: `$SHELL`) in passthrough mode, and on a hotkey (`Ctrl-/`) enters query mode where the user types a natural-language query (goal). The query plus recent terminal history is sent to an LLM, which loops command-execute-observe against the terminal until the goal is met, with idle-based settle detection. The LLM can also send control characters (e.g., Ctrl-C) to manage long-running commands.
+`expecto` is a transparent TTY wrapper CLI tool that sits between the terminal and user I/O. It relays input/output to a child process (default: `$SHELL`) in passthrough mode, and on a hotkey (`Ctrl-/`) enters query mode where the user types a natural-language query (goal). The query plus recent terminal history is sent to an LLM, which loops command-execute-observe against the terminal until the goal is met, with idle-based settle detection. The LLM can also type raw keystrokes (control characters, special keys, plain text) to interrupt long-running commands or drive interactive programs.
 
 Key differentiator: wraps the **tty itself**, not a specific shell — works over ssh, vendor CLI (routers/switches), etc.
 
 ## Status
 
-Core loop complete (LLMClient with Chat Completions function calling — `run_command` / `send_control` tools, Executor tool-call loop, idle-timer settle detection). The final response is plain text streamed to the terminal as it arrives (`chat.completions.stream()`, shown gray in `[...]`). A former one-shot "completion mode" has been removed; the command-execute-observe loop is expecto's sole behavior. The LLMClient owns the message history, which spans the whole session (append-only for prompt-cache hits) and is compacted transparently into a handoff summary past a token threshold (see `design/Conversation.md`). Concurrency is a single-threaded asyncio event loop — one always-on relay pump, executions as cancellable tasks, no threads/locks (see `design/Async.md`). `design/DESIGN.md` is the authoritative specification.
+Core loop complete (LLMClient with Chat Completions function calling — `run_command` / `send_keys` tools, Executor tool-call loop, idle-timer settle detection). The final response is plain text streamed to the terminal as it arrives (`chat.completions.stream()`, shown gray in `[...]`). A former one-shot "completion mode" has been removed; the command-execute-observe loop is expecto's sole behavior. The LLMClient owns the message history, which spans the whole session (append-only for prompt-cache hits) and is compacted transparently into a handoff summary past a token threshold (see `design/Conversation.md`). Concurrency is a single-threaded asyncio event loop — one always-on relay pump, executions as cancellable tasks, no threads/locks (see `design/Async.md`). `design/DESIGN.md` is the authoritative specification.
 
 ### TODO
 
@@ -40,6 +40,7 @@ Core components (each a separate module under `src/expecto/`):
 - `query_ui` — gray inline miniprompt (`? `) drawn at the cursor position
 - `llm_client` — Chat Completions via AsyncOpenAI; owns the session-long message history and its compaction
 - `executor` — the command-execute-observe loop (async, cancellation-based interrupts)
+- `keys` — key-notation parser for the `send_keys` tool (plain text + `<CR>`/`<Esc>`/`<C-x>`/arrows/... → terminal bytes)
 - `settle` — idle-timer output settle detection (`wait_settle` coroutine, no PS1 dependency)
 - `dangerous` — regex backstop for unmistakably catastrophic commands
 - `skills` — Agent Skills from `<config_dir>/skills`: SKILL.md discovery/parsing; the `load_skill` tool serves the body (see `design/Skills.md`)

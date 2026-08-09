@@ -113,6 +113,19 @@ class ScreenBuffer:
             all_lines.insert(0, "[... earlier output truncated: exceeded scrollback capacity ...]")
         return "\n".join(all_lines)
 
+    def get_visible_text(self) -> str:
+        """Render only the currently visible screen (no scrollback),
+        with trailing blank lines trimmed. The right view of a
+        full-screen application's state."""
+        lines = [self._render_screen_row(row) for row in range(self._screen.lines)]
+        while lines and lines[-1] == "":
+            lines.pop()
+        return "\n".join(lines)
+
+    def get_cursor(self) -> tuple[int, int]:
+        """The cursor position as (row, column), 0-based."""
+        return self._screen.cursor.y, self._screen.cursor.x
+
     def get_cursor_col(self) -> int:
         return self._screen.cursor.x
 

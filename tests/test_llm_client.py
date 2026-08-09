@@ -33,7 +33,7 @@ from expecto.llm_client import (
     LoadSkillParams,
     MCPToolParams,
     RunCommandParams,
-    SendControlParams,
+    SendKeysParams,
     SYSTEM_PROMPT,
     TOOLS,
     build_system_prompt,
@@ -185,15 +185,15 @@ class TestToolParams:
         assert params.command == "ls -la"
         assert params.risk == "read_only"
 
-    def test_send_control_params(self) -> None:
-        params = SendControlParams(key="ctrl-c")
-        assert params.key == "ctrl-c"
+    def test_send_keys_params(self) -> None:
+        params = SendKeysParams(keys="<C-c>")
+        assert params.keys == "<C-c>"
 
 
 class TestTools:
     def test_tool_names(self) -> None:
         names = [tool["function"]["name"] for tool in TOOLS]
-        assert names == ["run_command", "send_control"]
+        assert names == ["run_command", "send_keys"]
 
     def test_tools_are_strict(self) -> None:
         for tool in TOOLS:
@@ -225,12 +225,12 @@ class TestParseToolCall:
         assert parsed.params.command == "df -h"
         assert parsed.error is None
 
-    def test_send_control(self) -> None:
+    def test_send_keys(self) -> None:
         client = LLMClient(_make_config())
-        item = _function_call("call_2", "send_control", '{"key": "ctrl-c"}')
+        item = _function_call("call_2", "send_keys", '{"keys": "<C-c>"}')
         parsed = client._parse_tool_call(item)
-        assert isinstance(parsed.params, SendControlParams)
-        assert parsed.params.key == "ctrl-c"
+        assert isinstance(parsed.params, SendKeysParams)
+        assert parsed.params.keys == "<C-c>"
         assert parsed.error is None
 
     def test_unknown_tool(self) -> None:
@@ -243,7 +243,7 @@ class TestParseToolCall:
     def test_invalid_arguments(self) -> None:
         client = LLMClient(_make_config())
         parsed = client._parse_tool_call(
-            _function_call("call_4", "send_control", '{"key": "ctrl-x"}'),
+            _function_call("call_4", "send_keys", '{"key": "not keys"}'),
         )
         assert parsed.params is None
         assert parsed.error is not None
@@ -504,7 +504,7 @@ class TestLLMClient:
         assert "terminal" in SYSTEM_PROMPT.lower()
         assert "goal" in SYSTEM_PROMPT.lower()
         assert "run_command" in SYSTEM_PROMPT
-        assert "send_control" in SYSTEM_PROMPT
+        assert "send_keys" in SYSTEM_PROMPT
         assert "in English by default" in SYSTEM_PROMPT
         assert "language of the query" in SYSTEM_PROMPT
         assert "uname" in SYSTEM_PROMPT
@@ -557,7 +557,7 @@ class TestSkills:
     def test_no_skills_means_no_tool_and_no_section(self) -> None:
         client = LLMClient(_make_config())
         assert [t["function"]["name"] for t in client._tools] == [
-            "run_command", "send_control",
+            "run_command", "send_keys",
         ]
         assert _msg(client._messages[0])["content"] == SYSTEM_PROMPT
 
@@ -566,7 +566,7 @@ class TestSkills:
             _make_config(), skills=[_skill("bgp", "Fix BGP"), _skill("upgrade")],
         )
         assert [t["function"]["name"] for t in client._tools] == [
-            "run_command", "send_control", "load_skill",
+            "run_command", "send_keys", "load_skill",
         ]
         system = cast("str", _msg(client._messages[0])["content"])
         assert system.startswith(SYSTEM_PROMPT)
@@ -599,7 +599,7 @@ class TestSkills:
         client = LLMClient(_make_config(), skills=[_skill("bgp")])
         client.set_mcp_tools([MCP_TOOL_DEF])
         assert [t["function"]["name"] for t in client._tools] == [
-            "run_command", "send_control", "load_skill", "mcp__DOCS__search",
+            "run_command", "send_keys", "load_skill", "mcp__DOCS__search",
         ]
         system = cast("str", _msg(client._messages[0])["content"])
         assert "- bgp: does a thing" in system
@@ -610,13 +610,13 @@ class TestMCPTools:
     def test_tools_include_mcp_and_prompt_mentions_them(self) -> None:
         client = LLMClient(_make_config())
         assert [t["function"]["name"] for t in client._tools] == [
-            "run_command", "send_control",
+            "run_command", "send_keys",
         ]
         assert "mcp__" not in cast("str", _msg(client._messages[0])["content"])
 
         client.set_mcp_tools([MCP_TOOL_DEF])
         assert [t["function"]["name"] for t in client._tools] == [
-            "run_command", "send_control", "mcp__DOCS__search",
+            "run_command", "send_keys", "mcp__DOCS__search",
         ]
         system = cast("str", _msg(client._messages[0])["content"])
         assert system.startswith(SYSTEM_PROMPT)

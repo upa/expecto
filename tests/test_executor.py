@@ -20,7 +20,7 @@ from expecto.llm_client import (
     MCPToolParams,
     ParsedToolCall,
     RunCommandParams,
-    SendControlParams,
+    SendKeysParams,
     StepResult,
 )
 from expecto.screen_buffer import ScreenBuffer
@@ -45,13 +45,13 @@ def _cmd_result(step: int, command: str) -> StepResult:
     )
 
 
-def _control_result(step: int, key: Literal["ctrl-c", "ctrl-d", "ctrl-z"]) -> StepResult:
+def _keys_result(step: int, keys: str) -> StepResult:
     return StepResult(
         tool_calls=[
             ParsedToolCall(
                 call_id=f"call_{step}",
-                name="send_control",
-                params=SendControlParams(key=key),
+                name="send_keys",
+                params=SendKeysParams(keys=keys),
             ),
         ],
         final_text=None,
@@ -386,10 +386,11 @@ class TestExecution:
         assert b"[complete]" in out
         assert b"output from step 1" in out  # relayed to the user's screen
 
-    async def test_control_char(self, make_harness: MakeHarness) -> None:
-        """LLM calls send_control with ctrl-c, then done."""
+    async def test_send_keys_writes_parsed_bytes(self, make_harness: MakeHarness) -> None:
+        """LLM calls send_keys with key notation; the decoded bytes reach
+        the pty."""
         fake_llm = FakeLLMClient(results=[
-            _control_result(1, "ctrl-c"),
+            _keys_result(1, "q<C-c><Esc><CR>"),
             _final_result("stopped it"),
         ])
         harness = await make_harness(fake_llm)
@@ -397,8 +398,47 @@ class TestExecution:
         await harness.wait_done()
 
         assert harness.pty_written[0] == b"\n"  # initial prompt nudge
-        assert harness.pty_written[1] == b"\x03"
+        assert harness.pty_written[1] == b"q\x03\x1b\r"
         assert harness.pty_written[-1] == b"\n"
+
+    async def test_send_keys_result_is_screen_and_cursor(
+        self, make_harness: MakeHarness,
+    ) -> None:
+        """The send_keys tool result carries the visible screen and the
+        cursor position, not a diff."""
+        screen = ScreenBuffer(rows=5, cols=40)
+        screen.feed(b"editor line one\r\nline two")
+        fake_llm = FakeLLMClient(results=[
+            _keys_result(1, "<Down>"),
+            _final_result("done"),
+        ])
+        harness = await make_harness(fake_llm, screen=screen)
+        harness.start("move down")
+        await harness.wait_done()
+
+        _, output = fake_llm.tool_outputs[0]
+        assert "## Terminal Screen" in output
+        assert "editor line one" in output
+        # "output from step 1" arrived from the fake child before settle.
+        assert "[Cursor] row " in output
+
+    async def test_send_keys_invalid_notation_reports_error(
+        self, make_harness: MakeHarness,
+    ) -> None:
+        """An unknown key token is reported as the tool result; nothing
+        is written to the pty."""
+        fake_llm = FakeLLMClient(results=[
+            _keys_result(1, "<NoSuchKey>"),
+            _final_result("done"),
+        ])
+        harness = await make_harness(fake_llm)
+        harness.start("press it")
+        await harness.wait_done()
+
+        assert harness.pty_written == [b"\n", b"\n"]  # nudges only
+        _, output = fake_llm.tool_outputs[0]
+        assert output.startswith("Error:")
+        assert "NoSuchKey" in output
 
     async def test_checkpoint_answer_n_stops(self, make_harness: MakeHarness) -> None:
         """At the checkpoint, answering 'n' stops the loop."""

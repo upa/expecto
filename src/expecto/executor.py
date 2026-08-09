@@ -13,12 +13,14 @@ if TYPE_CHECKING:
     from expecto.screen_buffer import ScreenBuffer, ScreenMark
     from expecto.skills import Skill
 
+from expecto.keys import parse_keys
 from expecto.llm_client import (
     LoadSkillParams,
     MCPToolParams,
     ParsedToolCall,
     RiskLevel,
     RunCommandParams,
+    SendKeysParams,
     StepResult,
 )
 from expecto.mcp_client import TOOL_NAME_PREFIX
@@ -39,11 +41,6 @@ INTERRUPTED_TOOL_OUTPUT = (
     "The task was interrupted by the user before this command was executed."
 )
 
-CONTROL_CHAR_MAP: dict[str, bytes] = {
-    "ctrl-c": b"\x03",
-    "ctrl-d": b"\x04",
-    "ctrl-z": b"\x1a",
-}
 
 
 class MCPCaller(Protocol):
@@ -322,33 +319,32 @@ class Executor:
             self._relay.arm_sgr_reset_at_newline()
             self._write_to_pty(call.params.command.encode() + b"\n")
         else:
-            ctrl_bytes = CONTROL_CHAR_MAP.get(call.params.key)
-            if ctrl_bytes is None:
-                self._llm.add_tool_output(
-                    call.call_id, f"Error: unknown control key: {call.params.key}",
-                )
+            try:
+                data = parse_keys(call.params.keys)
+            except ValueError as exc:
+                self._llm.add_tool_output(call.call_id, f"Error: {exc}")
                 return
 
-            self._write_to_pty(ctrl_bytes)
+            self._write_to_pty(data)
 
         try:
             settle_result = await self._relay.wait_settle(
                 self._settle_ms, self._threshold_ms,
             )
         except asyncio.CancelledError:
-            # The command was already sent; answer its call with whatever
-            # output arrived so far.
+            # The keys were already sent; answer the call with whatever
+            # arrived so far.
             self._llm.add_tool_output(
                 call.call_id,
-                f"## Terminal Output\n```\n{self._screen.get_text_since(mark)}\n```\n"
-                "[Note] The task was interrupted by the user; the command "
+                self._tool_screen_output(call.params, mark)
+                + "\n[Note] The task was interrupted by the user; the command "
                 "may still be running.",
             )
             raise
         finally:
             self._relay.flush_sgr_reset()
 
-        output_text = f"## Terminal Output\n```\n{self._screen.get_text_since(mark)}\n```"
+        output_text = self._tool_screen_output(call.params, mark)
         if settle_result == SettleResult.THRESHOLD:
             threshold_s = self._threshold_ms / 1000
             output_text += (
@@ -356,6 +352,23 @@ class Executor:
                 "The command may still be running."
             )
         self._llm.add_tool_output(call.call_id, output_text)
+
+    def _tool_screen_output(
+        self, params: RunCommandParams | SendKeysParams, mark: ScreenMark,
+    ) -> str:
+        """The screen part of a run_command / send_keys tool result.
+
+        run_command reports the new output the command produced;
+        send_keys reports the visible screen plus the cursor, since keys
+        usually drive a stateful screen (an editor, a pager, a prompt)
+        where position matters more than a diff."""
+        if isinstance(params, RunCommandParams):
+            return f"## Terminal Output\n```\n{self._screen.get_text_since(mark)}\n```"
+        row, col = self._screen.get_cursor()
+        return (
+            f"## Terminal Screen\n```\n{self._screen.get_visible_text()}\n```\n"
+            f"[Cursor] row {row + 1}, column {col + 1}"
+        )
 
     def _run_load_skill(self, call_id: str, params: LoadSkillParams) -> None:
         """Hand the LLM one of the user's skills, or a file bundled with

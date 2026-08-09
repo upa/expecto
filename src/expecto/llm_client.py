@@ -35,8 +35,12 @@ goal message may include the terminal output produced since the previous \
 task (e.g. commands the user ran by hand).
 - Use the run_command tool to execute a command in the terminal. It returns \
 the terminal screen content after the output settles.
-- Use the send_control tool to send a control character (e.g. "ctrl-c") to \
-the terminal, for example to interrupt a long-running command.
+- Use the send_keys tool to type raw keystrokes into the terminal: plain \
+text plus special keys in angle-bracket notation (<CR>, <Esc>, <Tab>, \
+<Up>, <C-c>, ...). Use it to interrupt a long-running command (<C-c>), \
+answer an interactive prompt, or drive a full-screen program such as an \
+editor, pager, or menu UI. Keys are sent exactly as typed: nothing is \
+executed until you send <CR>.
 - Call one tool at a time: review each result before deciding the next action.
 - Classify every run_command call's risk on the target system: "read_only" \
 (no state change: show/get/list/ping etc.), "mutating" (changes state but \
@@ -50,7 +54,7 @@ understate the risk.
 which router/switch product, etc.), first run a command that reveals it \
 (e.g. `uname` on a Unix system, `show version` on a network device).
 - If a tool result notes that the output did not settle, the command may \
-still be running. Decide whether to interrupt it with send_control or take \
+still be running. Decide whether to interrupt it with send_keys or take \
 another action.
 - When the goal is achieved, stop calling tools and respond with a brief \
 summary of what was done. If the goal cannot be achieved, stop calling \
@@ -162,8 +166,8 @@ class RunCommandParams(BaseModel):
     risk_reason: str = ""
 
 
-class SendControlParams(BaseModel):
-    key: Literal["ctrl-c", "ctrl-d", "ctrl-z"]
+class SendKeysParams(BaseModel):
+    keys: str
 
 
 class LoadSkillParams(BaseModel):
@@ -249,22 +253,31 @@ TOOLS: list[ChatCompletionFunctionToolParam] = [
     {
         "type": "function",
         "function": {
-            "name": "send_control",
+            "name": "send_keys",
             "description": (
-                "Send a control character to the user's terminal (e.g. to interrupt "
-                "a long-running command), wait until the output settles, and return "
-                "the terminal screen text."
+                "Type raw keystrokes into the user's terminal, wait until the "
+                "output settles, and return the visible screen with the cursor "
+                "position. Plain characters are typed as-is; special keys use "
+                "angle-bracket notation: <CR> (Enter), <Esc>, <Tab>, <BS>, "
+                "<Space>, <Up>/<Down>/<Left>/<Right>, <Home>/<End>, "
+                "<PgUp>/<PgDn>, <Del>, <F1>-<F12>, control characters as <C-x> "
+                "(e.g. <C-c>), and <lt> for a literal '<'. Works for anything "
+                "the terminal is running: interrupting a command with <C-c>, "
+                "answering prompts, or driving full-screen programs. Nothing "
+                "is executed until you send <CR>."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "key": {
+                    "keys": {
                         "type": "string",
-                        "enum": ["ctrl-c", "ctrl-d", "ctrl-z"],
-                        "description": "The control character to send.",
+                        "description": (
+                            'The keystrokes to send, e.g. "y<CR>" or '
+                            '"<C-c>" or "iHello<Esc>".'
+                        ),
                     },
                 },
-                "required": ["key"],
+                "required": ["keys"],
                 "additionalProperties": False,
             },
             "strict": True,
@@ -281,7 +294,7 @@ class MCPToolParams:
     arguments: dict[str, object]
 
 
-ToolParams = RunCommandParams | SendControlParams | LoadSkillParams | MCPToolParams
+ToolParams = RunCommandParams | SendKeysParams | LoadSkillParams | MCPToolParams
 
 
 @dataclass
@@ -629,8 +642,8 @@ class LLMClient:
         try:
             if name == "run_command":
                 params = RunCommandParams.model_validate_json(item.function.arguments)
-            elif name == "send_control":
-                params = SendControlParams.model_validate_json(item.function.arguments)
+            elif name == "send_keys":
+                params = SendKeysParams.model_validate_json(item.function.arguments)
             elif name == "load_skill" and self._skills:
                 params = LoadSkillParams.model_validate_json(item.function.arguments)
             elif name in self._mcp_tool_names:

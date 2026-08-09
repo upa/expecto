@@ -5,7 +5,7 @@
 - This document is the detailed design of expecto acting as an **MCP
   client**: connecting to the MCP servers listed in config.toml and
   exposing their tools to the LLM alongside `run_command` /
-  `send_control`.
+  `send_keys`.
 
 ---
 
@@ -107,7 +107,7 @@ only when servers are configured, and `run_session()` drives it.
 ## 4. Exposing the tools to the LLM
 
 - **Naming**: `mcp__<server>__<tool>`. This cannot collide with
-  `run_command` / `send_control` or across servers, and the origin of a
+  `run_command` / `send_keys` or across servers, and the origin of a
   call is readable in the JSONL log.
 - **Schema**: the server's `inputSchema` is passed through as the
   function `parameters`, **without `strict`**. Arbitrary MCP schemas do
@@ -135,7 +135,7 @@ only when servers are configured, and `run_session()` drives it.
 ## 5. Calling a tool
 
 `Executor._run_tool_call` gains a third branch beside `run_command` /
-`send_control`:
+`send_keys`:
 
 ```
 show "[expecto: mcp <server>.<tool>]" on the outer tty in gray
