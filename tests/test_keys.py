@@ -12,6 +12,9 @@ class TestPlainText:
     def test_utf8_text(self) -> None:
         assert parse_keys("日本語") == "日本語".encode()
 
+    def test_utf8_outside_the_bmp(self) -> None:
+        assert parse_keys("🎉") == "🎉".encode()
+
     def test_empty(self) -> None:
         assert parse_keys("") == b""
 
@@ -66,6 +69,11 @@ class TestMixedSpecs:
     def test_editor_style_sequence(self) -> None:
         assert parse_keys("iHello<Esc>:wq<CR>") == b"iHello\x1b:wq\r"
 
+    def test_editor_style_sequence_with_multibyte_text(self) -> None:
+        assert parse_keys("i日本語のテキスト<Esc>:wq<CR>") == (
+            "i日本語のテキスト".encode() + b"\x1b:wq\r"
+        )
+
     def test_prompt_answer(self) -> None:
         assert parse_keys("y<CR>") == b"y\r"
 
@@ -77,6 +85,12 @@ class TestErrors:
     def test_unknown_key(self) -> None:
         with pytest.raises(ValueError, match="unknown key <Banana>"):
             parse_keys("<Banana>")
+
+    def test_unknown_key_points_at_the_literal_escape(self) -> None:
+        # Text containing "<" fails loudly; the message has to say how to
+        # type one so the LLM can fix the call by itself.
+        with pytest.raises(ValueError, match="<lt>"):
+            parse_keys("vector<int>")
 
     def test_unclosed_bracket(self) -> None:
         with pytest.raises(ValueError, match="unclosed '<'"):

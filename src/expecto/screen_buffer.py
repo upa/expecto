@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import codecs
 from collections import deque
 from dataclasses import dataclass
 
@@ -35,10 +36,20 @@ class ScreenBuffer:
         self._screen.history = self._screen.history._replace(top=self._history_top)
         self._stream: pyte.Stream = pyte.Stream(self._screen)
         self._screen.set_mode(pyte.modes.LNM)
+        self._decoder: codecs.IncrementalDecoder = codecs.getincrementaldecoder(
+            "utf-8",
+        )("replace")
 
     def feed(self, data: bytes) -> None:
+        """Feed one chunk of raw pty output to the emulator.
+
+        Decoding is incremental and spans chunks: a multibyte character
+        split across two os.read() boundaries would otherwise become
+        U+FFFD in the text handed to the LLM, which then reads the
+        terminal as garbled — for its own send_keys input as much as for
+        the child's output."""
         try:
-            self._stream.feed(data.decode("utf-8", errors="replace"))
+            self._stream.feed(self._decoder.decode(data))
         except TypeError:
             self._screen.reset()
 

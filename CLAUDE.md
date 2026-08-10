@@ -36,12 +36,13 @@ Core components (each a separate module under `src/expecto/`):
 - `io_relay` — always-on asyncio relay pump (loop.add_reader), bidirectional byte relay, execution-task management, settle/key-wait event hub
 - `input_router` — per-byte state machine, hotkey detection, UTF-8 buffering, terminal-response forwarding
 - `response_filter` — recognizes terminal→application response sequences (CPR/DA/OSC/DCS replies) in stdin so they reach the child while stdin is withheld in query/executing states (fish 4.x blocks on them at every prompt)
-- `screen_buffer` — pyte-based screen capture + scrollback ring buffer for LLM context
+- `screen_buffer` — pyte-based screen capture + scrollback ring buffer for LLM context (UTF-8 decoding is incremental across feeds, so a character split at an `os.read()` boundary is not mangled)
 - `query_ui` — gray inline miniprompt (`? `) drawn at the cursor position
 - `llm_client` — Chat Completions via AsyncOpenAI; owns the session-long message history and its compaction
 - `executor` — the command-execute-observe loop (async, cancellation-based interrupts)
 - `keys` — key-notation parser for the `send_keys` tool (plain text + `<CR>`/`<Esc>`/`<C-x>`/arrows/... → terminal bytes)
 - `settle` — idle-timer output settle detection (`wait_settle` coroutine, no PS1 dependency)
+- `fdio` — `write_all`: the one fd-write helper, looping over short writes (every write in expecto goes through it)
 - `dangerous` — regex backstop for unmistakably catastrophic commands
 - `skills` — Agent Skills from `<config_dir>/skills`: SKILL.md discovery/parsing; the `load_skill` tool serves the body (see `design/Skills.md`)
 - `mcp_client` — MCP servers from `[mcp.*]`: connect at startup, expose their tools to the LLM as `mcp__<server>__<tool>`, dispatch calls (see `design/MCP.md`)

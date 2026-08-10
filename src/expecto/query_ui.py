@@ -4,6 +4,8 @@ import os
 import unicodedata
 from typing import TYPE_CHECKING
 
+from expecto.fdio import write_all
+
 if TYPE_CHECKING:
     from collections.abc import Callable
 
@@ -94,4 +96,4 @@ class QueryModeUI:
         return cols if cols > 0 else 80
 
     def _write(self, data: bytes) -> None:
-        os.write(self._stdout_fd, data)
+        write_all(self._stdout_fd, data)

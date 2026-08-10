@@ -89,6 +89,6 @@ def _key_bytes(token: str) -> bytes:
         if char in _CTRL_SPECIALS:
             return bytes([_CTRL_SPECIALS[char]])
     raise ValueError(
-        f"unknown key <{token}>; known keys: <C-x>, "
-        + ", ".join(f"<{name}>" for name in _NAMED_KEYS),
+        f"unknown key <{token}>; use <lt> to type a literal '<'. Known keys: "
+        "<C-x>, " + ", ".join(f"<{name}>" for name in _NAMED_KEYS),
     )

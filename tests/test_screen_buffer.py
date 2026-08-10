@@ -30,6 +30,26 @@ class TestScreenBuffer:
         lines = text.split("\n")
         assert lines[-1] != ""
 
+    def test_multibyte_text(self) -> None:
+        buf = ScreenBuffer(rows=24, cols=80)
+        buf.feed("こんにちは world".encode())
+        assert "こんにちは world" in buf.get_text()
+
+    def test_multibyte_split_across_feeds(self) -> None:
+        # pty output arrives in os.read() chunks, so a character can be cut
+        # in half at a chunk boundary; decoding spans feeds so it survives.
+        buf = ScreenBuffer(rows=24, cols=80)
+        data = "あいうえお".encode()
+        buf.feed(data[:4])  # cuts the second character in the middle
+        buf.feed(data[4:])
+        assert "あいうえお" in buf.get_text()
+        assert "�" not in buf.get_text()
+
+    def test_invalid_bytes_become_replacement_chars(self) -> None:
+        buf = ScreenBuffer(rows=24, cols=80)
+        buf.feed(b"a\xffb")
+        assert "a�b" in buf.get_text()
+
     def test_resize(self) -> None:
         buf = ScreenBuffer(rows=24, cols=80)
         buf.resize(40, 120)

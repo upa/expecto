@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import os
 from typing import TYPE_CHECKING, Literal, Protocol, TypeVar
 
 if TYPE_CHECKING:
@@ -13,6 +12,7 @@ if TYPE_CHECKING:
     from expecto.screen_buffer import ScreenBuffer, ScreenMark
     from expecto.skills import Skill
 
+from expecto.fdio import write_all
 from expecto.keys import parse_keys
 from expecto.llm_client import (
     LoadSkillParams,
@@ -99,15 +99,15 @@ class _StreamingFinal:
             return
         if not self.started:
             self.started = True
-            os.write(self._stdout_fd, b"\x1b8\x1b[J\x1b[90m[")
+            write_all(self._stdout_fd, b"\x1b8\x1b[J\x1b[90m[")
         # The outer tty is in raw mode (no ONLCR); normalize to "\r\n".
         text = delta.replace("\r\n", "\n").replace("\n", "\r\n")
-        os.write(self._stdout_fd, text.encode())
+        write_all(self._stdout_fd, text.encode())
 
     def close(self) -> None:
         if self.started:
             self.started = False
-            os.write(self._stdout_fd, b"]\x1b[0m")
+            write_all(self._stdout_fd, b"]\x1b[0m")
 
 
 class Executor:
@@ -159,12 +159,12 @@ class Executor:
         overlay and the streamed text must not be wiped, so the erase
         is skipped."""
         self._relay.pause_pty()
-        os.write(self._stdout_fd, b"\x1b7\x1b[90m" + label + b"\x1b[0m")
+        write_all(self._stdout_fd, b"\x1b7\x1b[90m" + label + b"\x1b[0m")
         try:
             return await awaitable
         finally:
             if stream is None or not stream.started:
-                os.write(self._stdout_fd, b"\x1b8\x1b[J")
+                write_all(self._stdout_fd, b"\x1b8\x1b[J")
             self._relay.resume_pty()
 
     async def execute(self, query: str) -> None:
@@ -240,7 +240,7 @@ class Executor:
                 # Keep the partially streamed text on screen (rewinding is
                 # unreliable once it may have scrolled); just end the gray
                 # and break the line before the interrupted note.
-                os.write(self._stdout_fd, b"\x1b[0m\r\n")
+                write_all(self._stdout_fd, b"\x1b[0m\r\n")
             self._show_end("interrupted")
             raise
         finally:
@@ -351,7 +351,7 @@ class Executor:
             # messages; the relay pump resets right after the echoed Enter
             # (first relayed newline), or flush_sgr_reset() below when no
             # newline arrives before settle / interrupt.
-            os.write(self._stdout_fd, b"\x1b[90m")
+            write_all(self._stdout_fd, b"\x1b[90m")
             self._relay.arm_sgr_reset_at_newline()
             self._write_to_pty(call.params.command.encode() + b"\n")
         else:
@@ -478,7 +478,7 @@ class Executor:
         relaying pty output meanwhile, so the screen stays live. Ctrl-C and
         Esc answer "no" here (they do not cancel the execution task); a
         session that goes away entirely arrives as cancellation instead."""
-        os.write(
+        write_all(
             self._stdout_fd,
             f"\r\n\x1b[90m[expecto: {message} (y/n)] \x1b[0m".encode(),
         )
@@ -486,9 +486,9 @@ class Executor:
             frozenset({0x79, 0x59, 0x6E, 0x4E, 0x1B, 0x03}),  # y Y n N Esc Ctrl-C
         )
         if key in (0x79, 0x59):
-            os.write(self._stdout_fd, b"y\r\n")
+            write_all(self._stdout_fd, b"y\r\n")
             return True
-        os.write(self._stdout_fd, b"n\r\n")
+        write_all(self._stdout_fd, b"n\r\n")
         return False
 
     def _show_end(self, label: str) -> None:
@@ -502,7 +502,7 @@ class Executor:
         # The outer tty is in raw mode (no ONLCR), so bare "\n" moves down
         # without returning to column 0; normalize to "\r\n".
         text = text.replace("\r\n", "\n").replace("\n", "\r\n")
-        os.write(
+        write_all(
             self._stdout_fd,
             f"\x1b[90m{text}\x1b[0m".encode(),
         )

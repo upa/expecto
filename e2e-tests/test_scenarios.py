@@ -235,6 +235,67 @@ class TestSendKeys:
         # The typo ran and failed, which is the accepted cost.
         assert b"command not found" in session.output
 
+
+class TestMultibyte:
+    # One line out of a few hundred, far enough in that it is well past
+    # several os.read() boundaries.
+    MARKER_LINE = "E2E_MB_250_日本語テキスト"
+
+    def test_japanese_output_reaches_the_llm_unmangled(
+        self, make_expecto: MakeExpecto,
+    ) -> None:
+        """Terminal output arrives in os.read() chunks that cut multibyte
+        characters in half. What expecto puts in the LLM request must
+        still be the text the terminal showed, not replacement
+        characters. Asserted on the log: the screen is where the bytes
+        come from, the request is where the damage would show."""
+        session = make_expecto('confirm_level = "none"\n')
+        session.wait_prompt()
+
+        # ~9 KB of UTF-8, so read boundaries land inside characters.
+        session.send(
+            "python3 -c \"[print(f'E2E_MB_{i}_日本語テキスト') "
+            'for i in range(300)]"\r'.encode(),
+        )
+        session.expect(self.MARKER_LINE.encode(), timeout=30)
+
+        # The query itself is incidental: the screen goes out with the
+        # first request whatever the model then does with it.
+        session.enter_query("Use the run_command tool to run: echo E2E_MB_DONE")
+        entry = session.wait_log(
+            lambda e: e.get("type") == "llm_request",
+            timeout=LLM_TIMEOUT,
+            description="the first LLM request",
+        )
+        payload = json.dumps(entry, ensure_ascii=False)
+        assert self.MARKER_LINE in payload, (
+            "the Japanese screen text did not reach the LLM intact"
+        )
+        assert "�" not in payload, (
+            "the LLM request contains U+FFFD: a character was split at a "
+            "read boundary and decoded per chunk"
+        )
+
+    def test_llm_types_japanese_with_send_keys(
+        self, make_expecto: MakeExpecto,
+    ) -> None:
+        """The LLM types non-ASCII text into a running program with
+        send_keys, and the bytes arrive as UTF-8."""
+        session = make_expecto('confirm_level = "none"\n')
+        session.wait_prompt()
+        # cat echoes whatever is typed, so what the keys produced is
+        # visible on the terminal without involving an editor.
+        session.send(b"cat\r")
+        session.drain(0.5)
+
+        start = session.cursor()
+        session.enter_query(
+            "Use the send_keys tool to type exactly these keys into the "
+            "terminal: 日本語テスト<CR>",
+        )
+        session.expect("日本語テスト".encode(), timeout=LLM_TIMEOUT, start=start)
+
+
 class TestMCP:
     def test_mcp_server_tool_is_called(self, make_expecto: MakeExpecto) -> None:
         """expecto connects to the configured stdio MCP server at session

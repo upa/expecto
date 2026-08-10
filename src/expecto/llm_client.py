@@ -39,8 +39,10 @@ the terminal screen content after the output settles.
 text plus special keys in angle-bracket notation (<CR>, <Esc>, <Tab>, \
 <Up>, <C-c>, ...). Use it to interrupt a long-running command (<C-c>), \
 answer an interactive prompt, or drive a full-screen program such as an \
-editor, pager, or menu UI. Keys are sent exactly as typed: nothing is \
-executed until you send <CR>.
+editor, pager, or menu UI. Plain text may be any Unicode text, including \
+Japanese and other non-ASCII characters — type it directly, and write a \
+literal "<" as <lt> so it is not read as a key name. Keys are sent \
+exactly as typed: nothing is executed until you send <CR>.
 - Call one tool at a time: review each result before deciding the next action.
 - Classify every run_command call's risk on the target system: "read_only" \
 (no state change: show/get/list/ping etc.), "mutating" (changes state but \
@@ -257,7 +259,9 @@ TOOLS: list[ChatCompletionFunctionToolParam] = [
             "description": (
                 "Type raw keystrokes into the user's terminal, wait until the "
                 "output settles, and return the visible screen with the cursor "
-                "position. Plain characters are typed as-is; special keys use "
+                "position. Plain characters are typed as-is, including "
+                "non-ASCII text such as Japanese, which is sent as UTF-8; "
+                "special keys use "
                 "angle-bracket notation: <CR> (Enter), <Esc>, <Tab>, <BS>, "
                 "<Space>, <Up>/<Down>/<Left>/<Right>, <Home>/<End>, "
                 "<PgUp>/<PgDn>, <Del>, <F1>-<F12>, control characters as <C-x> "
@@ -273,7 +277,7 @@ TOOLS: list[ChatCompletionFunctionToolParam] = [
                         "type": "string",
                         "description": (
                             'The keystrokes to send, e.g. "y<CR>" or '
-                            '"<C-c>" or "iHello<Esc>".'
+                            '"<C-c>" or "iHello<Esc>" or "i日本語<Esc>".'
                         ),
                     },
                 },

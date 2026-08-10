@@ -5,6 +5,7 @@ import os
 import sys
 from typing import IO, TYPE_CHECKING
 
+from expecto.fdio import write_all
 from expecto.settle import SettleResult, wait_settle
 
 if TYPE_CHECKING:
@@ -115,7 +116,7 @@ class IORelay:
         if self._sgr_reset_armed:
             self._sgr_reset_armed = False
             if self._stdout_fd >= 0:
-                os.write(self._stdout_fd, b"\x1b[0m")
+                write_all(self._stdout_fd, b"\x1b[0m")
 
     # --- input while an execution is running (used by Executor) ---
 
@@ -164,7 +165,7 @@ class IORelay:
         exc = task.exception()
         if exc is not None and self._stdout_fd >= 0:
             msg = f"\r\n\x1b[90m[expecto: error: {exc!r}]\x1b[0m\r\n"
-            os.write(self._stdout_fd, msg.encode())
+            write_all(self._stdout_fd, msg.encode())
 
     # --- fd callbacks ---
 
@@ -183,7 +184,7 @@ class IORelay:
         if self._input_router is not None:
             self._input_router.handle(data)
         else:
-            os.write(self._pty_fd, data)
+            write_all(self._pty_fd, data)
 
     def _on_pty(self) -> None:
         try:
@@ -204,11 +205,11 @@ class IORelay:
             newline_at = data.find(b"\n")
             if newline_at >= 0:
                 self._sgr_reset_armed = False
-                os.write(self._stdout_fd, data[: newline_at + 1])
-                os.write(self._stdout_fd, b"\x1b[0m")
-                os.write(self._stdout_fd, data[newline_at + 1 :])
+                write_all(self._stdout_fd, data[: newline_at + 1])
+                write_all(self._stdout_fd, b"\x1b[0m")
+                write_all(self._stdout_fd, data[newline_at + 1 :])
                 return
-        os.write(self._stdout_fd, data)
+        write_all(self._stdout_fd, data)
 
     # --- shutdown ---
 

@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 from expecto.config import ExpectoConfig, default_env_file
 from expecto.dangerous import DangerousCommandMatcher
 from expecto.executor import Executor
+from expecto.fdio import write_all
 from expecto.input_router import InputRouter
 from expecto.io_relay import IORelay
 from expecto.llm_client import LLMClient, load_agents_md
@@ -232,7 +233,7 @@ def main(argv: list[str] | None = None) -> None:
 
     def write_to_pty(data: bytes) -> None:
         assert pty_mgr.master_fd is not None
-        os.write(pty_mgr.master_fd, data)
+        write_all(pty_mgr.master_fd, data)
 
     # on_query_submit closes over relay and executor, which are
     # created below; both exist before any input can arrive.
