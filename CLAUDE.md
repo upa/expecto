@@ -34,7 +34,7 @@ Core components (each a separate module under `src/expecto/`):
 - `tty_controller` — raw mode, termios save/restore, window-size helpers (SIGWINCH itself is registered in `cli` via `loop.add_signal_handler`)
 - `pty_manager` — pty allocation, child process fork/exec
 - `io_relay` — always-on asyncio relay pump (loop.add_reader), bidirectional byte relay, execution-task management, settle/key-wait event hub
-- `input_router` — per-byte state machine, hotkey detection, UTF-8 buffering, terminal-response forwarding
+- `input_router` — per-byte state machine, hotkey detection, UTF-8 buffering, terminal-response forwarding; also decodes the modifyOtherKeys / kitty-protocol form of the keys expecto claims (vim turns that encoding on, and the hotkey is not a plain control byte while it is in effect)
 - `response_filter` — recognizes terminal→application response sequences (CPR/DA/OSC/DCS replies) in stdin so they reach the child while stdin is withheld in query/executing states (fish 4.x blocks on them at every prompt)
 - `screen_buffer` — pyte-based screen capture + scrollback ring buffer for LLM context (UTF-8 decoding is incremental across feeds, so a character split at an `os.read()` boundary is not mangled)
 - `query_ui` — gray inline miniprompt (`? `) drawn at the cursor position

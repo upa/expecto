@@ -349,3 +349,116 @@ class TestExecuting:
         router.handle(bytes([0x0D]))
         router.handle(b"ignored")
         assert router.state == State.EXECUTING
+
+
+class TestModifiedKeyEncodings:
+    """A program that turns on modifyOtherKeys (vim) or the kitty
+    keyboard protocol makes the terminal report Ctrl-/ as an escape
+    sequence instead of 0x1F, which is why the hotkey used to be
+    invisible while vim was running."""
+
+    def _router(
+        self, forwarded: list[bytes], hotkey: int = 0x1F,
+    ) -> InputRouter:
+        return InputRouter(
+            write_to_pty=forwarded.append,
+            on_query_submit=lambda q: None,
+            on_query_cancel=lambda: None,
+            hotkey=hotkey,
+        )
+
+    def test_xterm_form_enters_query_mode(self) -> None:
+        # CSI 27 ; 5 ; 47 ~ — modifyOtherKeys, Ctrl (5) + "/" (47).
+        forwarded: list[bytes] = []
+        router = self._router(forwarded)
+        router.handle(b"\x1b[27;5;47~")
+        assert router.state == State.QUERY
+        assert forwarded == []
+
+    def test_csi_u_form_enters_query_mode(self) -> None:
+        forwarded: list[bytes] = []
+        router = self._router(forwarded)
+        router.handle(b"\x1b[47;5u")
+        assert router.state == State.QUERY
+        assert forwarded == []
+
+    def test_underscore_spelling_of_the_same_control_byte(self) -> None:
+        # Ctrl-_ and Ctrl-/ both produce 0x1F; the terminal names whichever
+        # key was pressed.
+        forwarded: list[bytes] = []
+        router = self._router(forwarded)
+        router.handle(b"\x1b[95;5u")
+        assert router.state == State.QUERY
+
+    def test_kitty_event_subparameter_is_tolerated(self) -> None:
+        forwarded: list[bytes] = []
+        router = self._router(forwarded)
+        router.handle(b"\x1b[47;5:1u")
+        assert router.state == State.QUERY
+
+    def test_shift_is_allowed_alt_is_not(self) -> None:
+        # 6 = Ctrl+Shift (layouts differ on whether "/" needs Shift);
+        # 7 = Ctrl+Alt, a different key the legacy encoding never made.
+        forwarded: list[bytes] = []
+        router = self._router(forwarded)
+        router.handle(b"\x1b[47;6u")
+        assert router.state == State.QUERY
+
+        forwarded.clear()
+        router = self._router(forwarded)
+        router.handle(b"\x1b[47;7u")
+        assert router.state == State.PASSTHROUGH
+        assert b"".join(forwarded) == b"\x1b[47;7u"
+
+    def test_custom_letter_hotkey(self) -> None:
+        forwarded: list[bytes] = []
+        router = self._router(forwarded, hotkey=0x14)  # Ctrl-T
+        router.handle(b"\x1b[116;5u")
+        assert router.state == State.QUERY
+
+    def test_text_around_the_sequence_is_preserved(self) -> None:
+        forwarded: list[bytes] = []
+        router = self._router(forwarded)
+        router.handle(b"ab\x1b[27;5;47~cd")
+        assert b"".join(forwarded) == b"ab"
+        assert router.query_text == "cd"
+
+    def test_other_encoded_keys_reach_the_child_untouched(self) -> None:
+        # Ctrl-C encoded the same way: the child asked the terminal for
+        # this form, so passthrough must not hand it the legacy byte.
+        forwarded: list[bytes] = []
+        router = self._router(forwarded)
+        router.handle(b"\x1b[27;5;99~")
+        assert router.state == State.PASSTHROUGH
+        assert b"".join(forwarded) == b"\x1b[27;5;99~"
+
+    def test_ordinary_sequences_are_byte_identical(self) -> None:
+        forwarded: list[bytes] = []
+        router = self._router(forwarded)
+        # Arrow, CPR request, Delete, and a bare Esc.
+        data = b"\x1b[A\x1b[6n\x1b[3~\x1b"
+        router.handle(data)
+        assert b"".join(forwarded) == data
+
+    def test_encoded_ctrl_c_interrupts_an_execution(self) -> None:
+        received: list[int] = []
+        router = self._router([])
+        router.set_executing_input_handler(received.append)
+        router.handle(bytes([0x1F]))
+        router.handle(bytes([0x0D]))
+        assert router.state == State.EXECUTING
+        router.handle(b"\x1b[27;5;99~")
+        assert received == [0x03]
+
+    def test_encoded_ctrl_c_cancels_query_mode(self) -> None:
+        cancelled: list[bool] = []
+        router = InputRouter(
+            write_to_pty=lambda d: None,
+            on_query_submit=lambda q: None,
+            on_query_cancel=lambda: cancelled.append(True),
+        )
+        router.handle(bytes([0x1F]))
+        router.handle(b"abc")
+        router.handle(b"\x1b[99;5u")  # Ctrl-C: "c" (99) with Ctrl (5)
+        assert router.state == State.PASSTHROUGH
+        assert cancelled == [True]

@@ -17,7 +17,7 @@ import time
 from pathlib import Path
 from typing import cast
 
-from conftest import ExpectoSession, MakeExpecto
+from conftest import QUERY_PROMPT, ExpectoSession, MakeExpecto
 
 # One LLM step takes a few seconds on CPU with the 0.6B model; 90s is
 # already generous, and it bounds how long a failing test can hang.
@@ -294,6 +294,72 @@ class TestMultibyte:
             "terminal: 日本語テスト<CR>",
         )
         session.expect("日本語テスト".encode(), timeout=LLM_TIMEOUT, start=start)
+
+
+class TestHotkeyUnderModifyOtherKeys:
+    """vim turns on xterm's modifyOtherKeys (CSI > 4 ; 2 m), after which
+    a terminal reports Ctrl-/ as an escape sequence rather than 0x1F.
+    The pty these tests drive is not a terminal emulator and does no such
+    encoding, so the test sends the encoded form itself — which is
+    exactly what a real terminal puts on expecto's stdin here."""
+
+    XTERM_FORM = b"\x1b[27;5;47~"   # CSI 27 ; Ctrl ; "/" ~
+    CSI_U_FORM = b"\x1b[47;5u"      # CSI "/" ; Ctrl u
+
+    def _open_vim(self, session: ExpectoSession) -> None:
+        session.wait_prompt()
+        session.send(b"vim -u NONE /tmp/e2e_hotkey.txt\r")
+        # vim asks for modifyOtherKeys as it starts up; waiting for that
+        # is also what proves the terminal is now in the encoded regime.
+        session.expect(b"\x1b[>4;2m", timeout=30)
+
+    def test_encoded_hotkey_opens_query_mode_inside_vim(
+        self, expecto_session: ExpectoSession,
+    ) -> None:
+        session = expecto_session
+        self._open_vim(session)
+
+        start = session.cursor()
+        session.send(self.XTERM_FORM)
+        session.expect(QUERY_PROMPT, timeout=10, start=start)
+
+        # Esc leaves query mode and vim is still there to receive keys.
+        session.send(b"\x1b")
+        session.drain(0.3)
+        session.send(b":q!\r")
+        session.wait_prompt()
+
+    def test_csi_u_form_opens_query_mode_inside_vim(
+        self, expecto_session: ExpectoSession,
+    ) -> None:
+        session = expecto_session
+        self._open_vim(session)
+
+        start = session.cursor()
+        session.send(self.CSI_U_FORM)
+        session.expect(QUERY_PROMPT, timeout=10, start=start)
+
+        session.send(b"\x1b")
+        session.drain(0.3)
+        session.send(b":q!\r")
+        session.wait_prompt()
+
+    def test_other_encoded_keys_still_reach_the_program(
+        self, expecto_session: ExpectoSession,
+    ) -> None:
+        """Only the hotkey is claimed: an encoded Ctrl-C goes to vim,
+        which answers it with its usual message rather than expecto
+        treating it as anything."""
+        session = expecto_session
+        self._open_vim(session)
+
+        start = session.cursor()
+        session.send(b"\x1b[27;5;99~")  # Ctrl-C, encoded
+        # vim's reply to Ctrl-C in normal mode.
+        session.expect(b"Type  :qa", timeout=10, start=start)
+
+        session.send(b":q!\r")
+        session.wait_prompt()
 
 
 class TestMCP:

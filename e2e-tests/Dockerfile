@@ -37,6 +37,12 @@ ENV MODEL_FILE=/opt/models/model.gguf
 RUN mkdir -p /opt/models \
     && curl -fL --retry 3 -o "${MODEL_FILE}" "${MODEL_URL}"
 
+# vim, for the scenario that drives a program which turns on
+# modifyOtherKeys. Installed here rather than with the packages above so
+# that adding it does not invalidate the two expensive layers.
+RUN apt-get update && apt-get install -y --no-install-recommends vim \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN python3 -m venv /opt/venv \
     && /opt/venv/bin/pip install --no-cache-dir pytest pytest-asyncio
 ENV PATH=/opt/venv/bin:${PATH}
