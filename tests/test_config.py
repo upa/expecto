@@ -240,6 +240,16 @@ shell = 3
         assert config.hotkey == DEFAULT_HOTKEY
         assert any("Ctrl-C" in w for w in warnings)
 
+    def test_color(self, isolated_home: Path, tmp_path: Path) -> None:
+        config, warnings = _load_toml(tmp_path, 'color = "1;36"\n')
+        assert config.color == "1;36"
+        assert warnings == []
+
+    def test_invalid_color_warns(self, isolated_home: Path, tmp_path: Path) -> None:
+        config, warnings = _load_toml(tmp_path, 'color = "cyan"\n')
+        assert config.color == "90"
+        assert any("color" in w for w in warnings)
+
 
 class TestMCPServers:
     def test_all_transports(self, isolated_home: Path, tmp_path: Path) -> None:

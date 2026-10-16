@@ -7,6 +7,7 @@ from typing import IO, TYPE_CHECKING
 
 from expecto.fdio import write_all
 from expecto.settle import SettleResult, wait_settle
+from expecto.style import sgr
 
 if TYPE_CHECKING:
     from collections.abc import Coroutine
@@ -164,7 +165,7 @@ class IORelay:
             return
         exc = task.exception()
         if exc is not None and self._stdout_fd >= 0:
-            msg = f"\r\n\x1b[90m[expecto: error: {exc!r}]\x1b[0m\r\n"
+            msg = f"\r\n{sgr()}[expecto: error: {exc!r}]\x1b[0m\r\n"
             write_all(self._stdout_fd, msg.encode())
 
     # --- fd callbacks ---

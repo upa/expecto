@@ -274,7 +274,7 @@ See **`Conversation.md`** for the detailed design.
 
 ### 5.11 expecto's own messages
 
-Everything expecto says for itself — as opposed to the child's output or the LLM's answer — is written in gray as `[expecto: ...]`, so it is distinguishable at a glance from what the terminal produced:
+Everything expecto says for itself — as opposed to the child's output or the LLM's answer — is written in gray as `[expecto: ...]`, so it is distinguishable at a glance from what the terminal produced. The query prompt (§5.6), the echoed command and the streamed answer share the same color. It is one SGR parameter list, `\x1b[90m` by default, held in `style` and set once at startup from `config.toml`'s `color` (Config.md §3) for terminals whose theme renders bright black too faintly:
 
 | message | example |
 |---------|---------|

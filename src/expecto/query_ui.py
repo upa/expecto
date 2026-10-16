@@ -5,6 +5,7 @@ import unicodedata
 from typing import TYPE_CHECKING
 
 from expecto.fdio import write_all
+from expecto.style import sgr
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -36,7 +37,7 @@ class QueryModeUI:
         self._prompt = "? "
         self._start_col = self._get_cursor_col() if self._get_cursor_col else 0
         self._text = ""
-        self._write(f"\x1b[90m{self._prompt}\x1b[0m".encode())
+        self._write(f"{sgr()}{self._prompt}\x1b[0m".encode())
 
     def update(self, text: str) -> None:
         if not self._visible:
@@ -46,11 +47,11 @@ class QueryModeUI:
             return
         if len(text) > len(old) and text[: len(old)] == old:
             new_chars = text[len(old) :]
-            self._write(f"\x1b[90m{new_chars}\x1b[0m".encode())
+            self._write(f"{sgr()}{new_chars}\x1b[0m".encode())
         else:
             self._move_to_prompt_start()
             self._write(b"\x1b[J")
-            self._write(f"\x1b[90m{self._prompt}{text}\x1b[0m".encode())
+            self._write(f"{sgr()}{self._prompt}{text}\x1b[0m".encode())
         self._text = text
 
     def hide(self) -> None:
