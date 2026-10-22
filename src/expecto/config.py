@@ -6,6 +6,8 @@ import tomllib
 from dataclasses import dataclass, field
 from typing import Literal, cast
 
+from expecto.style import DEFAULT_COLOR, parse_color
+
 ReasoningEffortLevel = Literal["none", "minimal", "low", "medium", "high", "xhigh", "max"]
 
 ConfirmLevel = Literal["destructive", "mutating", "none"]
@@ -298,6 +300,7 @@ class ExpectoConfig:
     threshold_ms: int = 30000
     max_steps: int = 15
     hotkey: int = DEFAULT_HOTKEY
+    color: str = DEFAULT_COLOR
     raw_io_log_file: str | None = None
     log_file: str | None = None
     scrollback_lines: int = 5000
@@ -366,6 +369,11 @@ def _apply_toml(
             config.hotkey = parse_hotkey(hotkey)
         except ValueError as exc:
             warnings.append(f"{path}: hotkey: {exc}; using the default")
+    if (color := table.take_str("color")) is not None:
+        try:
+            config.color = parse_color(color)
+        except ValueError as exc:
+            warnings.append(f"{path}: color: {exc}; using the default")
     if (confirm := table.take_choice("confirm_level", CONFIRM_LEVELS)) is not None:
         config.confirm_level = cast("ConfirmLevel", confirm)
     if (v := table.take_int("scrollback_lines")) is not None:

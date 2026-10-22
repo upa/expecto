@@ -36,6 +36,7 @@ All keys are optional. Only the keys that are written override the defaults. For
 ```toml
 shell = "/usr/bin/fish"           # default: $SHELL (falls back to /bin/bash)
 hotkey = "ctrl-/"                 # "ctrl-" + one character (§5)
+color = "90"                      # SGR parameters for expecto's own text (DESIGN.md §5.11)
 confirm_level = "destructive"     # destructive | mutating | none
 scrollback_lines = 5000
 settle_ms = 500

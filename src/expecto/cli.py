@@ -18,6 +18,7 @@ from expecto.pty_manager import NESTING_ENV_VAR, PTYManager
 from expecto.query_ui import QueryModeUI
 from expecto.screen_buffer import ScreenBuffer
 from expecto.skills import load_skills
+from expecto.style import set_color, sgr
 from expecto.tty_controller import TTYController
 
 
@@ -127,7 +128,7 @@ def status(message: str) -> None:
     bracketed form as its in-session messages. Redirected output gets the
     plain form, so no escape sequences land in a log file."""
     if sys.stderr.isatty():
-        print(f"\x1b[90m[expecto: {message}]\x1b[0m", file=sys.stderr)
+        print(f"{sgr()}[expecto: {message}]\x1b[0m", file=sys.stderr)
     else:
         print(f"expecto: {message}", file=sys.stderr)
 
@@ -166,6 +167,7 @@ def main(argv: list[str] | None = None) -> None:
     except FileNotFoundError:
         fail(f"config file not found: {args.config}")
         sys.exit(1)
+    set_color(config.color)
     for warning in config_warnings:
         warn(warning)
 

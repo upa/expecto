@@ -26,6 +26,7 @@ from expecto.llm_client import (
 from expecto.mcp_client import TOOL_NAME_PREFIX
 from expecto.skills import render_skill, render_skill_file
 from expecto.settle import SettleResult
+from expecto.style import sgr
 
 T = TypeVar("T")
 
@@ -99,7 +100,7 @@ class _StreamingFinal:
             return
         if not self.started:
             self.started = True
-            write_all(self._stdout_fd, b"\x1b8\x1b[J\x1b[90m[")
+            write_all(self._stdout_fd, b"\x1b8\x1b[J" + sgr().encode() + b"[")
         # The outer tty is in raw mode (no ONLCR); normalize to "\r\n".
         text = delta.replace("\r\n", "\n").replace("\n", "\r\n")
         write_all(self._stdout_fd, text.encode())
@@ -159,7 +160,7 @@ class Executor:
         overlay and the streamed text must not be wiped, so the erase
         is skipped."""
         self._relay.pause_pty()
-        write_all(self._stdout_fd, b"\x1b7\x1b[90m" + label + b"\x1b[0m")
+        write_all(self._stdout_fd, b"\x1b7" + sgr().encode() + label + b"\x1b[0m")
         try:
             return await awaitable
         finally:
@@ -351,7 +352,7 @@ class Executor:
             # messages; the relay pump resets right after the echoed Enter
             # (first relayed newline), or flush_sgr_reset() below when no
             # newline arrives before settle / interrupt.
-            write_all(self._stdout_fd, b"\x1b[90m")
+            write_all(self._stdout_fd, sgr().encode())
             self._relay.arm_sgr_reset_at_newline()
             self._write_to_pty(call.params.command.encode() + b"\n")
         else:
@@ -480,7 +481,7 @@ class Executor:
         session that goes away entirely arrives as cancellation instead."""
         write_all(
             self._stdout_fd,
-            f"\r\n\x1b[90m[expecto: {message} (y/n)] \x1b[0m".encode(),
+            f"\r\n{sgr()}[expecto: {message} (y/n)] \x1b[0m".encode(),
         )
         key = await self._relay.wait_key(
             frozenset({0x79, 0x59, 0x6E, 0x4E, 0x1B, 0x03}),  # y Y n N Esc Ctrl-C
@@ -504,7 +505,7 @@ class Executor:
         text = text.replace("\r\n", "\n").replace("\n", "\r\n")
         write_all(
             self._stdout_fd,
-            f"\x1b[90m{text}\x1b[0m".encode(),
+            f"{sgr()}{text}\x1b[0m".encode(),
         )
 
     def _effective_risk(self, params: RunCommandParams) -> tuple[RiskLevel, str | None]:
