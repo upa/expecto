@@ -18,7 +18,7 @@ from expecto.pty_manager import NESTING_ENV_VAR, PTYManager
 from expecto.query_ui import QueryModeUI
 from expecto.screen_buffer import ScreenBuffer
 from expecto.skills import load_skills
-from expecto.style import set_color, sgr
+from expecto.style import set_color, set_query_color, sgr
 from expecto.tty_controller import TTYController
 
 
@@ -168,6 +168,7 @@ def main(argv: list[str] | None = None) -> None:
         fail(f"config file not found: {args.config}")
         sys.exit(1)
     set_color(config.color)
+    set_query_color(config.query_color)
     for warning in config_warnings:
         warn(warning)
 

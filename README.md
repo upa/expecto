@@ -80,6 +80,7 @@ reasoning_effort = ""           # none/minimal/low/medium/high/xhigh/max
 shell = ""                      # child command (default: $SHELL)
 hotkey = "ctrl-/"               # hotkey to enter query mode, "ctrl-<char>"
 color = "90"                    # SGR color of expecto's own text, e.g. "36" (cyan), "1;90" (bold gray)
+query_color = ""                # SGR color of the query prompt and its input (default: same as color)
 confirm_level = "destructive"   # risk level that asks y/n: destructive/mutating/none
 max_steps = 15                  # steps between "continue?" checkpoints (0 = never ask)
 settle_ms = 500                 # idle time to regard command output as settled

@@ -301,6 +301,7 @@ class ExpectoConfig:
     max_steps: int = 15
     hotkey: int = DEFAULT_HOTKEY
     color: str = DEFAULT_COLOR
+    query_color: str | None = None  # None: same as color
     raw_io_log_file: str | None = None
     log_file: str | None = None
     scrollback_lines: int = 5000
@@ -374,6 +375,11 @@ def _apply_toml(
             config.color = parse_color(color)
         except ValueError as exc:
             warnings.append(f"{path}: color: {exc}; using the default")
+    if (query_color := table.take_str("query_color")) is not None:
+        try:
+            config.query_color = parse_color(query_color)
+        except ValueError as exc:
+            warnings.append(f"{path}: query_color: {exc}; using the default")
     if (confirm := table.take_choice("confirm_level", CONFIRM_LEVELS)) is not None:
         config.confirm_level = cast("ConfirmLevel", confirm)
     if (v := table.take_int("scrollback_lines")) is not None:

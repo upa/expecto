@@ -251,6 +251,27 @@ shell = 3
         assert any("color" in w for w in warnings)
 
 
+    def test_query_color(self, isolated_home: Path, tmp_path: Path) -> None:
+        config, warnings = _load_toml(tmp_path, 'query_color = "1;33"\n')
+        assert config.query_color == "1;33"
+        assert config.color == "90"
+        assert warnings == []
+
+    def test_query_color_defaults_to_unset(
+        self, isolated_home: Path, tmp_path: Path
+    ) -> None:
+        config, warnings = _load_toml(tmp_path, 'query_color = ""\n')
+        assert config.query_color is None
+        assert warnings == []
+
+    def test_invalid_query_color_warns(
+        self, isolated_home: Path, tmp_path: Path
+    ) -> None:
+        config, warnings = _load_toml(tmp_path, 'query_color = "yellow"\n')
+        assert config.query_color is None
+        assert any("query_color" in w for w in warnings)
+
+
 class TestMCPServers:
     def test_all_transports(self, isolated_home: Path, tmp_path: Path) -> None:
         config, warnings = _load_toml(tmp_path, """
