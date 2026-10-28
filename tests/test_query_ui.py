@@ -57,6 +57,23 @@ class TestQueryModeUI:
         assert "\x1b[36mls\x1b[0m" in output
         assert "\x1b[90m" not in output
 
+    def test_prompt_uses_query_color(self) -> None:
+        from expecto.style import DEFAULT_COLOR, set_color, set_query_color
+
+        set_color("36")
+        set_query_color("33")
+        try:
+            ui = QueryModeUI(self.slave_fd)
+            ui.show()
+            ui.update("ls")
+            output = self._read_output()
+        finally:
+            set_color(DEFAULT_COLOR)
+            set_query_color(None)
+        assert "\x1b[33m? \x1b[0m" in output
+        assert "\x1b[33mls\x1b[0m" in output
+        assert "\x1b[36m" not in output
+
     def test_update_appends_incrementally(self) -> None:
         ui = QueryModeUI(self.slave_fd)
         ui.show()

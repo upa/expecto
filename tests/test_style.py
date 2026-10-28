@@ -5,13 +5,21 @@ from collections.abc import Iterator
 import pytest
 
 from expecto import style
-from expecto.style import DEFAULT_COLOR, parse_color, set_color, sgr
+from expecto.style import (
+    DEFAULT_COLOR,
+    parse_color,
+    query_sgr,
+    set_color,
+    set_query_color,
+    sgr,
+)
 
 
 @pytest.fixture(autouse=True)
 def restore_default_color() -> Iterator[None]:
     yield
     set_color(DEFAULT_COLOR)
+    set_query_color(None)
 
 
 class TestParseColor:
@@ -38,3 +46,27 @@ class TestSetColor:
         with pytest.raises(ValueError):
             set_color("bogus")
         assert sgr() == "\x1b[90m"
+
+
+class TestSetQueryColor:
+    def test_unset_follows_color(self) -> None:
+        assert query_sgr() == "\x1b[90m"
+        set_color("1;36")
+        assert query_sgr() == "\x1b[1;36m"
+
+    def test_set_query_color_is_independent(self) -> None:
+        set_query_color("33")
+        set_color("1;36")
+        assert query_sgr() == "\x1b[33m"
+        assert sgr() == "\x1b[1;36m"
+
+    def test_none_restores_following_color(self) -> None:
+        set_query_color("33")
+        set_query_color(None)
+        assert query_sgr() == sgr()
+
+    def test_invalid_leaves_query_sgr_untouched(self) -> None:
+        set_query_color("33")
+        with pytest.raises(ValueError):
+            set_query_color("bogus")
+        assert query_sgr() == "\x1b[33m"
