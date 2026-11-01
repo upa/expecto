@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from expecto.keys import parse_keys
+from expecto.keys import parse_key_units, parse_keys
 
 
 class TestPlainText:
@@ -99,3 +99,27 @@ class TestErrors:
     def test_unknown_ctrl_combo(self) -> None:
         with pytest.raises(ValueError, match="unknown key"):
             parse_keys("<C-42>")
+
+
+class TestKeyUnits:
+    def test_one_unit_per_plain_character(self) -> None:
+        assert parse_key_units("ls") == [b"l", b"s"]
+
+    def test_multibyte_character_is_one_unit(self) -> None:
+        assert parse_key_units("日🎉") == ["日".encode(), "🎉".encode()]
+
+    def test_named_key_is_one_unit(self) -> None:
+        # <Up> is three bytes; typing it byte by byte would turn its ESC
+        # into a lone Esc press in programs like vim.
+        assert parse_key_units("i<Esc><Up><lt>") == [b"i", b"\x1b", b"\x1b[A", b"<"]
+
+    def test_empty(self) -> None:
+        assert parse_key_units("") == []
+
+    def test_joined_units_equal_parse_keys(self) -> None:
+        spec = "dd:w<CR><C-c>é"
+        assert b"".join(parse_key_units(spec)) == parse_keys(spec)
+
+    def test_errors_propagate(self) -> None:
+        with pytest.raises(ValueError, match="unclosed '<'"):
+            parse_key_units("abc<esc")

@@ -85,6 +85,7 @@ confirm_level = "destructive"   # risk level that asks y/n: destructive/mutating
 max_steps = 15                  # steps between "continue?" checkpoints (0 = never ask)
 settle_ms = 500                 # idle time to regard command output as settled
 threshold_ms = 30000            # report unsettled output to the LLM after this long
+llm_input_char_interval = -1    # ms between the keys the LLM types (0 = no wait, negative = all at once)
 
 # Context for the LLM
 scrollback_lines = 5000         # scrollback buffer capacity

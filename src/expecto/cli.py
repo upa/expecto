@@ -281,6 +281,7 @@ def main(argv: list[str] | None = None) -> None:
         new_output_max_chars=config.new_output_max_chars,
         mcp=mcp_manager,
         skills=skills,
+        char_interval_ms=config.llm_input_char_interval,
     )
 
     async def run_session() -> int:

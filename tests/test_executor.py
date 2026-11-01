@@ -287,6 +287,7 @@ async def make_harness() -> AsyncIterator[MakeHarness]:
         new_output_max_chars: int = 20000,
         mcp: FakeMCP | None = None,
         skills: list[Skill] | None = None,
+        char_interval_ms: float = -1.0,
     ) -> Harness:
         screen = screen if screen is not None else ScreenBuffer()
         expecto_sock, child_sock = socket.socketpair()
@@ -331,6 +332,7 @@ async def make_harness() -> AsyncIterator[MakeHarness]:
             new_output_max_chars=new_output_max_chars,
             mcp=mcp,
             skills=skills,
+            char_interval_ms=char_interval_ms,
         )
         run_task = asyncio.create_task(
             relay.run(expecto_sock.fileno(), stdin_fd=stdin_r, stdout_fd=stdout_w),
@@ -807,6 +809,84 @@ class TestExecution:
         assert fake_llm.last_screen_text is not None
         assert "hello" in fake_llm.last_screen_text
         assert "truncated" not in fake_llm.last_screen_text
+
+
+def _contains_run(items: list[bytes], run: list[bytes]) -> bool:
+    return any(
+        items[i:i + len(run)] == run for i in range(len(items) - len(run) + 1)
+    )
+
+
+class TestTypingInterval:
+    async def test_disabled_writes_the_command_at_once(
+        self, make_harness: MakeHarness,
+    ) -> None:
+        fake_llm = FakeLLMClient(results=[_cmd_result(1, "ls"), _final_result("ok")])
+        harness = await make_harness(fake_llm, char_interval_ms=-1)
+        harness.start()
+        await harness.wait_done()
+        assert b"ls\n" in harness.pty_written
+
+    async def test_zero_types_the_command_one_char_at_a_time(
+        self, make_harness: MakeHarness,
+    ) -> None:
+        fake_llm = FakeLLMClient(results=[_cmd_result(1, "ls"), _final_result("ok")])
+        harness = await make_harness(fake_llm, char_interval_ms=0)
+        harness.start()
+        await harness.wait_done()
+        assert _contains_run(harness.pty_written, [b"l", b"s", b"\n"])
+        assert b"ls\n" not in harness.pty_written
+
+    async def test_send_keys_types_whole_keys(
+        self, make_harness: MakeHarness,
+    ) -> None:
+        fake_llm = FakeLLMClient(
+            results=[_keys_result(1, "i<Esc>:w<CR>"), _final_result("ok")],
+        )
+        harness = await make_harness(fake_llm, char_interval_ms=0)
+        harness.start()
+        await harness.wait_done()
+        assert _contains_run(
+            harness.pty_written, [b"i", b"\x1b", b":", b"w", b"\r"],
+        )
+
+    async def test_interval_spaces_the_keys(
+        self, make_harness: MakeHarness,
+    ) -> None:
+        fake_llm = FakeLLMClient(
+            results=[_keys_result(1, "abcde"), _final_result("ok")],
+        )
+        harness = await make_harness(fake_llm, char_interval_ms=30)
+        loop = asyncio.get_running_loop()
+        start = loop.time()
+        harness.start()
+        await _until(lambda: b"e" in harness.pty_written)
+        # Four gaps between five keys.
+        assert loop.time() - start >= 0.12
+        await harness.wait_done()
+
+    async def test_ctrl_c_while_typing_stops_typing(
+        self, make_harness: MakeHarness,
+    ) -> None:
+        """Ctrl-C mid-typing stops the remaining keys; those already typed
+        stay, and the call still gets exactly one output."""
+        command = "x" * 200
+        fake_llm = FakeLLMClient(results=[_cmd_result(1, command)])
+        harness = await make_harness(
+            fake_llm, settle_ms=200, threshold_ms=30000, char_interval_ms=20,
+        )
+        harness.start()
+        await _until(lambda: harness.pty_written.count(b"x") >= 2)
+        harness.user_types(b"\x03")
+        await harness.wait_done()
+
+        assert b"[expecto: interrupted]" in harness.output()
+        typed = harness.pty_written.count(b"x")
+        assert 2 <= typed < len(command)
+        assert len(fake_llm.tool_outputs) == 1
+        call_id, output = fake_llm.tool_outputs[0]
+        assert call_id == "call_1"
+        assert "while typing" in output
 
 
 class TestStreamingFinalDisplay:

@@ -197,6 +197,39 @@ shell = 3
         assert warnings == []
         assert config.max_steps == 0
 
+    def test_llm_input_char_interval_defaults_to_disabled(
+        self, isolated_home: Path, tmp_path: Path,
+    ) -> None:
+        config, warnings = _load_toml(tmp_path, "")
+        assert warnings == []
+        assert config.llm_input_char_interval < 0
+
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [("30", 30.0), ("12.5", 12.5), ("0", 0.0), ("-1", -1.0)],
+    )
+    def test_llm_input_char_interval_accepts_numbers(
+        self, isolated_home: Path, tmp_path: Path, value: str, expected: float,
+    ) -> None:
+        config, warnings = _load_toml(
+            tmp_path, f"llm_input_char_interval = {value}\n",
+        )
+        assert warnings == []
+        assert config.llm_input_char_interval == expected
+
+    @pytest.mark.parametrize("value", ['"30"', "true"])
+    def test_llm_input_char_interval_rejects_non_numbers(
+        self, isolated_home: Path, tmp_path: Path, value: str,
+    ) -> None:
+        config, warnings = _load_toml(
+            tmp_path, f"llm_input_char_interval = {value}\n",
+        )
+        assert config.llm_input_char_interval == -1.0
+        assert any(
+            "llm_input_char_interval" in w and "expected a number" in w
+            for w in warnings
+        )
+
     def test_invalid_confirm_level_warns(
         self, isolated_home: Path, tmp_path: Path,
     ) -> None:

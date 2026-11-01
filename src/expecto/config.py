@@ -138,6 +138,18 @@ class _Table:
             return None
         return value
 
+    def take_float(self, key: str) -> float | None:
+        """Consume a number key (an integer is accepted as a float)."""
+        if key not in self._data:
+            return None
+        value = self._data.pop(key)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            self._warn(
+                key, f"expected a number, got {value!r}; using the default",
+            )
+            return None
+        return float(value)
+
     def take_str_list(self, key: str) -> list[str] | None:
         if key not in self._data:
             return None
@@ -307,6 +319,9 @@ class ExpectoConfig:
     scrollback_lines: int = 5000
     compact_thresh: int = 100000
     new_output_max_chars: int = 20000
+    # ms between the characters/keys of a tool call typed into the pty;
+    # 0 types them one by one without waiting, negative types at once.
+    llm_input_char_interval: float = -1.0
     confirm_level: ConfirmLevel = "destructive"
     dangerous_patterns_file: str = ""
     agents_md_file: str = ""
@@ -388,6 +403,8 @@ def _apply_toml(
         config.settle_ms = v
     if (v := table.take_int("threshold_ms")) is not None:
         config.threshold_ms = v
+    if (f := table.take_float("llm_input_char_interval")) is not None:
+        config.llm_input_char_interval = f
     # max_steps = 0 disables the continuation checkpoint (autonomous run).
     if (v := table.take_int("max_steps", minimum=0)) is not None:
         config.max_steps = v

@@ -58,12 +58,19 @@ def parse_keys(spec: str) -> bytes:
 
     Raises ValueError (naming the offending token) for an unknown key or
     an unclosed "<"."""
-    out = bytearray()
+    return b"".join(parse_key_units(spec))
+
+
+def parse_key_units(spec: str) -> list[bytes]:
+    """Like parse_keys, but one item per key: a plain character (all its
+    UTF-8 bytes) or a named key (its whole sequence, e.g. <Up> is
+    b"\\x1b[A"). Typing the items one by one never splits a key."""
+    out: list[bytes] = []
     index = 0
     while index < len(spec):
         char = spec[index]
         if char != "<":
-            out.extend(char.encode())
+            out.append(char.encode())
             index += 1
             continue
         end = spec.find(">", index + 1)
@@ -73,9 +80,9 @@ def parse_keys(spec: str) -> bytes:
                 "use <lt> to type a literal '<'",
             )
         token = spec[index + 1:end]
-        out.extend(_key_bytes(token))
+        out.append(_key_bytes(token))
         index = end + 1
-    return bytes(out)
+    return out
 
 
 def _key_bytes(token: str) -> bytes:

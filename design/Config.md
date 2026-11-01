@@ -42,6 +42,8 @@ confirm_level = "destructive"     # destructive | mutating | none
 scrollback_lines = 5000
 settle_ms = 500
 threshold_ms = 30000
+llm_input_char_interval = -1     # ms between typed keys of run_command / send_keys (DESIGN.md §5.8)
+                                 # 0: one key at a time, no wait; negative: all at once
 max_steps = 15                    # 0 disables the continuation checkpoint
 log_file = ""                     # JSONL log. default: disabled
 raw_io_log_file = ""              # raw I/O log for debugging. default: disabled

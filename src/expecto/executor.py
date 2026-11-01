@@ -13,7 +13,7 @@ if TYPE_CHECKING:
     from expecto.skills import Skill
 
 from expecto.fdio import write_all
-from expecto.keys import parse_keys
+from expecto.keys import parse_key_units
 from expecto.llm_client import (
     LoadSkillParams,
     MCPToolParams,
@@ -127,6 +127,7 @@ class Executor:
         new_output_max_chars: int = 20000,
         mcp: MCPCaller | None = None,
         skills: list[Skill] | None = None,
+        char_interval_ms: float = -1.0,
     ) -> None:
         self._llm = llm_client
         self._screen = screen_buffer
@@ -141,6 +142,7 @@ class Executor:
         self._new_output_max_chars = new_output_max_chars
         self._mcp = mcp
         self._skills: dict[str, Skill] = {s.name: s for s in skills or []}
+        self._char_interval_ms = char_interval_ms
 
         # Where the previous execution ended: the next query sends only
         # the terminal output produced after this point.
@@ -354,28 +356,36 @@ class Executor:
             # newline arrives before settle / interrupt.
             write_all(self._stdout_fd, sgr().encode())
             self._relay.arm_sgr_reset_at_newline()
-            self._write_to_pty(call.params.command.encode() + b"\n")
+            units = [char.encode() for char in call.params.command] + [b"\n"]
         else:
             try:
-                data = parse_keys(call.params.keys)
+                units = parse_key_units(call.params.keys)
             except ValueError as exc:
                 self._llm.add_tool_output(call.call_id, f"Error: {exc}")
                 return
 
-            self._write_to_pty(data)
-
+        typed = False
         try:
+            await self._type_to_pty(units)
+            typed = True
+            # Settle is measured from the last typed key, so typing time
+            # does not count toward threshold_ms.
             settle_result = await self._relay.wait_settle(
                 self._settle_ms, self._threshold_ms,
             )
         except asyncio.CancelledError:
-            # The keys were already sent; answer the call with whatever
-            # arrived so far.
+            # Answer the call with whatever arrived so far. Keys typed
+            # before the interrupt stay where they landed.
+            note = (
+                "\n[Note] The task was interrupted by the user; the command "
+                "may still be running."
+                if typed
+                else "\n[Note] The task was interrupted by the user while "
+                "typing; the keys typed so far remain on the terminal."
+            )
             self._llm.add_tool_output(
                 call.call_id,
-                self._tool_screen_output(call.params, mark)
-                + "\n[Note] The task was interrupted by the user; the command "
-                "may still be running.",
+                self._tool_screen_output(call.params, mark) + note,
             )
             raise
         finally:
@@ -389,6 +399,20 @@ class Executor:
                 "The command may still be running."
             )
         self._llm.add_tool_output(call.call_id, output_text)
+
+    async def _type_to_pty(self, units: list[bytes]) -> None:
+        """Write a tool call's characters/keys to the pty. With a
+        non-negative char_interval_ms they go one unit at a time, so the
+        echo shows them being typed; each write yields to the event loop
+        (even at 0 ms) so the relay pump can draw the echo in between."""
+        if self._char_interval_ms < 0:
+            self._write_to_pty(b"".join(units))
+            return
+        delay = self._char_interval_ms / 1000
+        for index, unit in enumerate(units):
+            if index > 0:
+                await asyncio.sleep(delay)
+            self._write_to_pty(unit)
 
     def _tool_screen_output(
         self, params: RunCommandParams | SendKeysParams, mark: ScreenMark,
