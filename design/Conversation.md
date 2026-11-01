@@ -118,7 +118,7 @@ discounts), so it cannot grow without bound.
   the session) still applies. On success, the history is reset to `[system]`
   and the summary is retained.
 - **Synchronization with the next query**: `start_query()` waits for any
-  in-flight compaction task to complete (while `[thinking...]` is displayed),
+  in-flight compaction task to complete (while the spinner is displayed),
   then includes the retained summary in the first message as "Session Summary
   + full screen + Goal". A Ctrl-C during query execution interrupts this
   wait, but the compaction task itself runs to completion independently and

@@ -81,8 +81,8 @@ class IORelay:
     # --- pty output control (used by Executor) ---
 
     def pause_pty(self) -> None:
-        """Stop reading pty output, e.g. while an overlay like
-        [thinking...] is shown. Output stays in the kernel buffer
+        """Stop reading pty output, e.g. while the spinner overlay
+        is shown. Output stays in the kernel buffer
         (backpressure on the child), exactly like the pre-async behavior
         of not selecting on the pty during an LLM call."""
         if self._pty_paused or not self._pty_reader_added:

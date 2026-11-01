@@ -621,13 +621,13 @@ class TestExecution:
         assert b"[expecto: interrupted]" in harness.output()
 
     async def test_thinking_indicator(self, make_harness: MakeHarness) -> None:
-        """The thinking indicator is shown while the LLM call is in flight."""
+        """The spinner's first frame is shown while the LLM call is in flight."""
         fake_llm = FakeLLMClient(results=[_final_result("done")])
         harness = await make_harness(fake_llm)
         harness.start("test")
         await harness.wait_done()
 
-        assert b"\x1b[90m[thinking...]\x1b[0m" in harness.output()
+        assert b"\x1b7\x1b[90m[|]\x1b[0m" in harness.output()
 
     async def test_multiline_explanation_uses_crlf(self, make_harness: MakeHarness) -> None:
         """Newlines in the final explanation are written as CRLF (raw mode has no ONLCR)."""
@@ -887,6 +887,73 @@ class TestTypingInterval:
         call_id, output = fake_llm.tool_outputs[0]
         assert call_id == "call_1"
         assert "while typing" in output
+
+
+class SlowLLM(StreamingFakeLLM):
+    """Waits before answering, so the spinner gets to turn."""
+
+    def __init__(
+        self, results: list[StepResult], chunks: list[list[str]], delay: float,
+    ) -> None:
+        super().__init__(results, chunks)
+        self._delay = delay
+
+    async def step(
+        self, on_delta: Callable[[str], None] | None = None,
+    ) -> StepResult:
+        await asyncio.sleep(self._delay)
+        return await super().step(on_delta=on_delta)
+
+
+class TestSpinner:
+    async def test_spinner_cycles_through_its_frames(
+        self, make_harness: MakeHarness,
+    ) -> None:
+        """Each frame is redrawn at the saved cursor position."""
+        fake_llm = SlowLLM([_final_result("done")], [[]], delay=0.5)
+        harness = await make_harness(fake_llm)
+        harness.start("test")
+        await harness.wait_done()
+
+        out = harness.output()
+        assert b"\x1b7\x1b[90m[|]\x1b[0m" in out
+        for char in (b"/", b"-", b"\\", b"|"):
+            assert b"\x1b8\x1b[90m[" + char + b"]\x1b[0m" in out
+
+    async def test_spinner_stops_once_streaming_starts(
+        self, make_harness: MakeHarness,
+    ) -> None:
+        """After the first delta the spinner never draws over the
+        streamed text, even while the call is still in flight."""
+
+        class StreamThenWait(FakeLLMClient):
+            async def step(
+                self, on_delta: Callable[[str], None] | None = None,
+            ) -> StepResult:
+                assert on_delta is not None
+                on_delta("Hello")
+                await asyncio.sleep(0.4)
+                return await super().step(on_delta=on_delta)
+
+        fake_llm = StreamThenWait(results=[_final_result("Hello")])
+        harness = await make_harness(fake_llm)
+        harness.start("greet")
+        await harness.wait_done()
+
+        out = harness.output()
+        streamed_at = out.index(b"[Hello")
+        assert b"\x1b8\x1b[90m[" not in out[streamed_at:]
+
+    async def test_spinner_stops_after_the_call(
+        self, make_harness: MakeHarness,
+    ) -> None:
+        fake_llm = SlowLLM([_final_result("done")], [[]], delay=0.25)
+        harness = await make_harness(fake_llm)
+        harness.start("test")
+        await harness.wait_done()
+        before = harness.output()
+        await asyncio.sleep(0.3)
+        assert harness.output() == before
 
 
 class TestStreamingFinalDisplay:

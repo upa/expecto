@@ -42,6 +42,16 @@ INTERRUPTED_TOOL_OUTPUT = (
     "The task was interrupted by the user before this command was executed."
 )
 
+# The overlay shown while waiting for the LLM (or an MCP call).
+SPINNER_FRAMES = b"|/-\\"
+SPINNER_INTERVAL_S = 0.1
+
+
+def _spinner_frame(index: int) -> bytes:
+    """Spinner frame `index` as gray "[c]" with the SGR reset after it."""
+    char = SPINNER_FRAMES[index % len(SPINNER_FRAMES)]
+    return sgr().encode() + b"[" + bytes([char]) + b"]\x1b[0m"
+
 
 
 class MCPCaller(Protocol):
@@ -86,7 +96,7 @@ class LLMStepper(Protocol):
 class _StreamingFinal:
     """Streams the final response text to the outer tty as it arrives.
 
-    Created per step. On the first delta it erases the [thinking...]
+    Created per step. On the first delta it erases the spinner
     overlay (the cursor was saved right before the overlay was drawn)
     and opens the gray "[" prefix; close() ends the message with "]"
     and an SGR reset."""
@@ -152,23 +162,38 @@ class Executor:
         self._nudge_pending: bool = False
 
     async def _thinking(
-        self, awaitable: Awaitable[T], label: bytes = b"[thinking...]",
-        stream: _StreamingFinal | None = None,
+        self, awaitable: Awaitable[T], stream: _StreamingFinal | None = None,
     ) -> T:
-        """Await with a gray thinking overlay shown and pty reading
-        paused (so child output cannot corrupt the overlay); both are
-        restored on every exit path, including cancellation. When a
-        streaming final display has started, it already erased the
-        overlay and the streamed text must not be wiped, so the erase
-        is skipped."""
+        """Await with a gray spinner overlay ([|] [/] [-] [\\]) shown and
+        pty reading paused (so child output cannot corrupt the overlay);
+        both are restored on every exit path, including cancellation.
+        When a streaming final display has started, it already erased the
+        overlay and the streamed text must not be wiped, so neither the
+        spinner nor the erase touches the screen after that."""
         self._relay.pause_pty()
-        write_all(self._stdout_fd, b"\x1b7" + sgr().encode() + label + b"\x1b[0m")
+        write_all(self._stdout_fd, b"\x1b7" + _spinner_frame(0))
+        spinner = asyncio.get_running_loop().create_task(self._spin(stream))
         try:
             return await awaitable
         finally:
+            spinner.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await spinner
             if stream is None or not stream.started:
                 write_all(self._stdout_fd, b"\x1b8\x1b[J")
             self._relay.resume_pty()
+
+    async def _spin(self, stream: _StreamingFinal | None) -> None:
+        """Redraw the spinner at the saved cursor position every
+        SPINNER_INTERVAL_S until cancelled or the final response starts
+        streaming over that position."""
+        index = 0
+        while True:
+            await asyncio.sleep(SPINNER_INTERVAL_S)
+            if stream is not None and stream.started:
+                return
+            index += 1
+            write_all(self._stdout_fd, b"\x1b8" + _spinner_frame(index))
 
     async def execute(self, query: str) -> None:
         """Run one execution (the LLM command-execute-observe loop) on the

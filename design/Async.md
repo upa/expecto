@@ -156,10 +156,14 @@ async def wait_settle(
 - The entire execution (`Executor.execute()`) is a single asyncio task, and
   Ctrl-C can **interrupt it immediately at every await point** — waiting for
   the LLM response, waiting for settle, and waiting at confirmation prompts.
-- `_thinking(awaitable)`: a shared helper that shows `[thinking...]` and
-  applies `pause_pty()` around the await via try/finally. Erasing the display
-  and `resume_pty()` are guaranteed on all paths, including cancellation
-  (handling after streaming display has started: DESIGN.md §5.8).
+- `_thinking(awaitable)`: a shared helper that shows the spinner overlay
+  (`[|]` `[/]` `[-]` `[\]`, DESIGN.md §5.8) and applies `pause_pty()` around
+  the await via try/finally. The spinner is a child task that redraws the
+  frame at the saved cursor position every 100 ms; the finally block cancels
+  and awaits it before erasing the display, so no frame can land after the
+  erase. Erasing the display and `resume_pty()` are guaranteed on all paths,
+  including cancellation (handling after streaming display has started:
+  DESIGN.md §5.8).
 - Compaction runs as a background task independent of query execution
   (Conversation.md §5).
 
@@ -188,7 +192,7 @@ async def wait_settle(
 
 ## 5. Display Control
 
-### 5.1 pty output during the `[thinking...]` overlay
+### 5.1 pty output during the spinner overlay
 
 To prevent interleaving between the overlay (`\x1b7` ... `\x1b8\x1b[J`) and
 child process output, pty output is held in the kernel buffer via
