@@ -318,7 +318,7 @@ OPTIONS (implemented):
   -e, --env PATH             Path to the .env file to load
                              (default: <config-dir>/.env)
   -a, --agents-md PATH       Path to the AGENTS.md appended to the system prompt
-                             (default: ~/.expecto/AGENTS.md)
+                             (default: <config-dir>/AGENTS.md)
   -m, --model NAME           Model to use (default: config.toml's model)
   -u, --base-url URL         OpenAI API endpoint (default: config.toml's
                              base_url, or the SDK default)
@@ -326,21 +326,25 @@ OPTIONS (implemented):
   --confirm-level LEVEL      Minimum risk level that requires confirmation
                              (destructive|mutating|none, default: destructive)
   --dangerous-patterns-file PATH  Additional file of dangerous-command regexes
-                             (default: ~/.expecto/dangerous_patterns.txt)
+                             (default: <config-dir>/dangerous_patterns.txt)
   -l, --log-file PATH        Destination for the JSONL log of queries and LLM requests/responses (disabled by default)
   --raw-io-log-file PATH     Destination for the raw I/O log (for debugging, disabled by default)
 ```
 
 MCP servers to connect to are declared as `[mcp.<name>]` tables in config.toml; see **`MCP.md`**.
 
-The config directory is `~/.expecto` by default and holds `config.toml`, `.env`, `AGENTS.md`, and `dangerous_patterns.txt`. `--config-dir PATH` points every one of those defaults at another directory (a path that does not exist is a startup error); the individual `-c` / `-e` / `-a` / `--dangerous-patterns-file` flags still override single files. No environment variable selects the directory — `OPENAI_API_KEY` remains the only one expecto reads.
+The config directory is `~/.expecto` by default and holds `config.toml`, `.env`, `AGENTS.md`, and `dangerous_patterns.txt`. `--config-dir PATH` points every one of those defaults at another directory (a path that does not exist is a startup error); the individual `-c` / `-e` / `-a` / `--dangerous-patterns-file` flags still override single files. No environment variable selects the directory.
 
 Configuration is written in `<config-dir>/config.toml`, with precedence
-**built-in defaults < config.toml < CLI flags**. The only value read from an
+**built-in defaults < config.toml < CLI flags**. The only setting read from an
 environment variable is `OPENAI_API_KEY` (startup error if unset); everything
 else — model, base_url, reasoning effort, hotkey, compaction threshold, etc. —
-is specified in config.toml. See **`Config.md`** for the schema, error
-handling, and hotkey notation details.
+is specified in config.toml. expecto also reads `SHELL` (the default child
+command), sets `EXPECTO_ACTIVE` for the child (nesting check), and resolves
+`$NAME` references in MCP tokens; the OpenAI SDK additionally reads its own
+variables, notably `OPENAI_BASE_URL` when `base_url` is unset. See
+**`Config.md`** §1.1 for the full list, and for the schema, error handling,
+and hotkey notation details.
 
 `.env` file loading: the file given by `--env PATH` (startup error if it does not exist) → without that flag, `<config-dir>/.env` if it exists. The current directory is not searched — as an installed command, expecto must behave the same no matter where it is launched from. Environment variables that are already set always take precedence over values from the file.
 

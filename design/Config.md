@@ -8,15 +8,35 @@
 
 ## 1. Policy
 
-- **`.env` holds secrets; `config.toml` holds behavior settings** — a strict separation of roles. The only environment variable expecto reads is `OPENAI_API_KEY`; every other setting is made via `config.toml` (and CLI flags).
+- **`.env` holds secrets; `config.toml` holds behavior settings** — a strict separation of roles. The only setting expecto takes from an environment variable is `OPENAI_API_KEY`; every other setting is made via `config.toml` (and CLI flags). The environment variables involved are listed in §1.1.
 - For settings that have defaults on the OpenAI API / SDK side (`base_url`, `reasoning_effort`), when unset expecto **omits the parameter entirely and defers to the SDK / API default**. `model` has no API-side default, so expecto carries its own default (`gpt-5.4`).
 - expecto never writes to this directory (read-only; it does not auto-generate files either).
+
+### 1.1 Environment Variables
+
+Read by expecto itself:
+
+| Variable | Use |
+|------|------|
+| `OPENAI_API_KEY` | API key; required (startup error when missing). Passed to the SDK explicitly. Rejected in config.toml (§3) |
+| `SHELL` | Default child command when neither `--shell` nor `shell` is given (falls back to `/bin/bash`) |
+| `EXPECTO_ACTIVE` | Set to `1` in the child's environment; an expecto started with it set refuses to run (no nested sessions) |
+| `$NAME` / `${NAME}` | An MCP server's `token` written this way is resolved from the environment (MCP.md §2) |
+
+Read implicitly by the OpenAI SDK — expecto never references these, but they take effect because the SDK falls back to them for parameters expecto leaves unset:
+
+| Variable | Use |
+|------|------|
+| `OPENAI_BASE_URL` | Endpoint when neither `-u`/`--base-url` nor `base_url` is set (expecto passes `base_url=None`). Precedence: `-u` > `base_url` > `OPENAI_BASE_URL` > SDK default (api.openai.com) |
+| `OPENAI_ORG_ID`, `OPENAI_PROJECT_ID`, `OPENAI_CUSTOM_HEADERS`, ... | Applied as the SDK defines them |
+
+Values in `.env` are loaded into the process environment, so they reach the SDK as well (e.g. `OPENAI_BASE_URL` written in `.env`).
 
 ## 2. Directory Layout
 
 ```
 ~/.expecto/                   # or the directory given by --config-dir
-├── .env                      # OPENAI_API_KEY only (secret)
+├── .env                      # environment variables, normally OPENAI_API_KEY (secret; §1.1)
 ├── config.toml               # behavior settings (this document)
 ├── AGENTS.md                 # user instructions appended to the system prompt (DESIGN.md §8)
 ├── skills/                   # Agent Skills, one directory each (Skills.md)
@@ -24,7 +44,7 @@
 ```
 
 - Path resolution is centralized in `config.config_dir(override)`: the `--config-dir` path when given, otherwise `~/.expecto`. Every default path (`config.toml` / `.env` / `AGENTS.md` / `dangerous_patterns.txt`) is derived from it, and the per-file flags (`-c` / `-e` / `-a` / `--dangerous-patterns-file`) still override individual files on top. A `--config-dir` path that does not exist is a startup error.
-- No environment variable selects the directory. `$XDG_CONFIG_HOME` is deliberately **not** consulted: it would duplicate `--config-dir`, and §8-1's policy is that `OPENAI_API_KEY` is the only environment variable expecto reads. There is no fallback to the pre-`~/.expecto` location either — one resolution path only.
+- No environment variable selects the directory. `$XDG_CONFIG_HOME` is deliberately **not** consulted: it would duplicate `--config-dir`, and §8-1's policy is that `OPENAI_API_KEY` is the only setting taken from an environment variable. There is no fallback to the pre-`~/.expecto` location either — one resolution path only.
 - `.env` loading: the file given by `--env PATH` → without that flag, `<config_dir>/.env` if it exists. The current directory is not searched, so an installed expecto behaves the same wherever it is launched from. An already-set environment variable always takes precedence over the file value.
 - `--env` cannot be set in config.toml: the `.env` file is loaded before the config file is read.
 - If `OPENAI_API_KEY` is unset (neither in the environment nor in `.env`), expecto prints an error message at startup and exits.
@@ -113,7 +133,7 @@ The format (one regex per line, `#` comments, case-insensitive) and the semantic
 
 ## 8. Design-Decision Record
 
-1. **Configuration is consolidated into config.toml**: scattering settings across environment variables / CLI hurts clarity, so no environment variables are introduced other than the secret (`OPENAI_API_KEY`). Precedence has exactly three levels (defaults < file < CLI).
+1. **Configuration is consolidated into config.toml**: scattering settings across environment variables / CLI hurts clarity, so no environment variables are introduced as settings other than the secret (`OPENAI_API_KEY`). Variables the OpenAI SDK reads on its own (§1.1) are not expecto settings and are left to the SDK. Precedence has exactly three levels (defaults < file < CLI).
 2. **The blacklist is not merged into config.toml**: writing regexes through TOML escaping invites mistakes, so the one-regex-per-line format of `dangerous_patterns.txt` is kept. The mechanism is not duplicated.
 3. **warn-and-continue**: expecto is a terminal wrapper; warning and running with safe defaults is better than failing to start over a config typo. This presumes the fallback (the default value) is always on the safe side.
 4. **tomllib (stdlib)**: Python 3.11+ is assumed, so TOML can be read without adding a dependency. No writing is done, so tomli-w and the like are unnecessary.
