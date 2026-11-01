@@ -131,49 +131,6 @@ class TestDestructiveConfirmation:
         ), "no declined tool output found in the conversation"
 
 
-class TestCheckpointConfirmation:
-    """max_steps = 1 makes the checkpoint fire right after the first
-    tool-call step — the same code path as any other max_steps value,
-    but with no dependence on how the model splits work into steps
-    (models freely batch tool calls or finish early, which made a
-    two-step scenario unstable)."""
-
-    QUERY = "Use the run_command tool to run: echo STEP_ONE_DONE"
-
-    def _start(self, make_expecto: MakeExpecto) -> ExpectoSession:
-        # confirm_level = none: the tiny model over-classifies harmless
-        # commands as destructive, and a surprise y/n prompt would derail
-        # this scenario — the dangerous gate has its own tests.
-        session = make_expecto('max_steps = 1\nconfirm_level = "none"\n')
-        session.wait_prompt()
-        session.enter_query(self.QUERY)
-        session.expect(b"reached step 1", timeout=LLM_TIMEOUT)
-        session.expect(b"continue? (y/n)", timeout=10)
-        return session
-
-    def test_answer_y_continues(self, make_expecto: MakeExpecto) -> None:
-        """Answering y at the checkpoint lets the loop run to its normal
-        completion."""
-        session = self._start(make_expecto)
-        # The command already ran before the checkpoint.
-        assert b"\rSTEP_ONE_DONE" in session.output
-        session.send(b"y")
-        session.wait_log(
-            _final_response_logged, timeout=LLM_TIMEOUT,
-            description="final response after continuing",
-        )
-
-    def test_answer_n_stops(self, make_expecto: MakeExpecto) -> None:
-        session = self._start(make_expecto)
-        session.send(b"n")
-        session.expect(b"[expecto: stopped at step 1]", timeout=30)
-
-        # Back to passthrough.
-        start = session.cursor()
-        session.send(b"echo AFTER_STOP\r")
-        session.expect(b"\rAFTER_STOP", timeout=30, start=start)
-
-
 class TestSendKeys:
     def test_llm_stops_a_running_program_with_ctrl_c(
         self, expecto_session: ExpectoSession,

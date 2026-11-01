@@ -275,7 +275,6 @@ def main(argv: list[str] | None = None) -> None:
         relay=relay,
         settle_ms=config.settle_ms,
         threshold_ms=config.threshold_ms,
-        max_steps=config.max_steps,
         confirm_level=config.confirm_level,
         dangerous_matcher=dangerous_matcher,
         new_output_max_chars=config.new_output_max_chars,

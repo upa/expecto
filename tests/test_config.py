@@ -82,7 +82,6 @@ class TestDefaults:
         assert config.scrollback_lines == 5000
         assert config.settle_ms == 500
         assert config.threshold_ms == 30000
-        assert config.max_steps == 15
         assert config.log_file is None
         assert config.raw_io_log_file is None
         assert config.dangerous_patterns_file == default_dangerous_patterns_file()
@@ -116,7 +115,6 @@ confirm_level = "mutating"
 scrollback_lines = 1000
 settle_ms = 300
 threshold_ms = 10000
-max_steps = 5
 log_file = "~/expecto.jsonl"
 raw_io_log_file = "~/raw.log"
 dangerous_patterns_file = "~/patterns.txt"
@@ -135,7 +133,6 @@ new_output_max_chars = 5000
         assert config.scrollback_lines == 1000
         assert config.settle_ms == 300
         assert config.threshold_ms == 10000
-        assert config.max_steps == 5
         assert config.log_file == str(isolated_home / "expecto.jsonl")
         assert config.raw_io_log_file == str(isolated_home / "raw.log")
         assert config.dangerous_patterns_file == str(isolated_home / "patterns.txt")
@@ -181,21 +178,20 @@ modle = "typo"
         config, warnings = _load_toml(tmp_path, """
 scrollback_lines = "many"
 settle_ms = true
-max_steps = -1
 shell = 3
 """)
         assert config.scrollback_lines == 5000
         assert config.settle_ms == 500
-        assert config.max_steps == 15
         assert config.shell == "/bin/testsh"
-        assert len(warnings) == 4
+        assert len(warnings) == 3
 
-    def test_max_steps_zero_disables_the_checkpoint(
+    def test_leftover_max_steps_is_an_unknown_key(
         self, isolated_home: Path, tmp_path: Path,
     ) -> None:
-        config, warnings = _load_toml(tmp_path, "max_steps = 0\n")
-        assert warnings == []
-        assert config.max_steps == 0
+        """max_steps was removed (no step limit); an old config still
+        loads, with a warning."""
+        _, warnings = _load_toml(tmp_path, "max_steps = 15\n")
+        assert any("max_steps" in w and "unknown key" in w for w in warnings)
 
     def test_llm_input_char_interval_defaults_to_disabled(
         self, isolated_home: Path, tmp_path: Path,

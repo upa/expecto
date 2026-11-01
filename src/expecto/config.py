@@ -310,7 +310,6 @@ class ExpectoConfig:
     openai_reasoning_effort: ReasoningEffortLevel | None = None
     settle_ms: int = 500
     threshold_ms: int = 30000
-    max_steps: int = 15
     hotkey: int = DEFAULT_HOTKEY
     color: str = DEFAULT_COLOR
     query_color: str | None = None  # None: same as color
@@ -405,9 +404,6 @@ def _apply_toml(
         config.threshold_ms = v
     if (f := table.take_float("llm_input_char_interval")) is not None:
         config.llm_input_char_interval = f
-    # max_steps = 0 disables the continuation checkpoint (autonomous run).
-    if (v := table.take_int("max_steps", minimum=0)) is not None:
-        config.max_steps = v
     if (log_file := table.take_str("log_file")) is not None:
         config.log_file = os.path.expanduser(log_file)
     if (raw_log := table.take_str("raw_io_log_file")) is not None:

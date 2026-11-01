@@ -64,7 +64,6 @@ settle_ms = 500
 threshold_ms = 30000
 llm_input_char_interval = -1     # ms between typed keys of run_command / send_keys (DESIGN.md §5.8)
                                  # 0: one key at a time, no wait; negative: all at once
-max_steps = 15                    # 0 disables the continuation checkpoint
 log_file = ""                     # JSONL log. default: disabled
 raw_io_log_file = ""              # raw I/O log for debugging. default: disabled
 dangerous_patterns_file = ""      # default: <config_dir>/dangerous_patterns.txt
@@ -137,3 +136,4 @@ The format (one regex per line, `#` comments, case-insensitive) and the semantic
 2. **The blacklist is not merged into config.toml**: writing regexes through TOML escaping invites mistakes, so the one-regex-per-line format of `dangerous_patterns.txt` is kept. The mechanism is not duplicated.
 3. **warn-and-continue**: expecto is a terminal wrapper; warning and running with safe defaults is better than failing to start over a config typo. This presumes the fallback (the default value) is always on the safe side.
 4. **tomllib (stdlib)**: Python 3.11+ is assumed, so TOML can be read without adding a dependency. No writing is done, so tomli-w and the like are unnecessary.
+5. **No step limit (`max_steps` removed)**: the execution loop used to ask `continue? (y/n)` every `max_steps` steps (default 15). It was removed rather than defaulted to off: long-running tasks are a normal use of an agent, a step count is a poor proxy for runaway behavior, and the user watching the screen with Ctrl-C at hand already covers the case. A leftover `max_steps` in config.toml is warned about as an unknown key.

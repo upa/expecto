@@ -91,7 +91,7 @@ local operation, the Executor can **always record on every path**:
 - Interruption before execution starts → a boilerplate interrupted output
   (`execute()` fills in the unprocessed calls)
 
-Even when execution ends at a checkpoint stop, the completed portion has
+Even when execution ends with an interruption, the completed portion has
 already been recorded, so the next query can simply continue.
 
 ## 5. Compaction (internal to LLMClient, transparent to the Executor)
@@ -102,7 +102,7 @@ discounts), so it cannot grow without bound.
 - **Trigger**: immediately after a query's execution ends (after the
   explanation is displayed and control is returned to the user). The Executor
   calls the synchronous `finish_query()` in the finally block of `execute()`
-  (fires on normal completion, checkpoint stop, and interruption alike), and
+  (fires on normal completion and interruption alike), and
   if the threshold is exceeded, the LLMClient starts compaction as an
   **asyncio background task**. The task actually runs after the execution
   task completes, i.e. after returning to passthrough, so the user is not

@@ -255,7 +255,7 @@ MakeExpecto = Callable[..., ExpectoSession]
 def make_expecto(llama_server: str, tmp_path: Path) -> Iterator[MakeExpecto]:
     """Factory for expecto instances wrapping bash, configured to talk
     to the local llama-server. Extra config.toml lines can be appended
-    per test (e.g. "max_steps = 2")."""
+    per test (e.g. 'confirm_level = "none"')."""
     sessions: list[ExpectoSession] = []
 
     def _make(config_extra: str = "") -> ExpectoSession:

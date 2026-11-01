@@ -131,7 +131,6 @@ class Executor:
         relay: IORelay,
         settle_ms: int = 500,
         threshold_ms: int = 30000,
-        max_steps: int = 15,
         confirm_level: ConfirmLevel = "destructive",
         dangerous_matcher: DangerousCommandMatcher | None = None,
         new_output_max_chars: int = 20000,
@@ -146,7 +145,6 @@ class Executor:
         self._relay = relay
         self._settle_ms = settle_ms
         self._threshold_ms = threshold_ms
-        self._max_steps = max_steps
         self._confirm_level = confirm_level
         self._dangerous_matcher = dangerous_matcher
         self._new_output_max_chars = new_output_max_chars
@@ -210,12 +208,9 @@ class Executor:
             await self._relay.wait_settle(self._settle_ms, self._threshold_ms)
 
             result: StepResult | None = None
-            step = 0
-            # max_steps < 1 disables the checkpoint: step (>= 1) never
-            # reaches it, so the loop runs without asking.
-            checkpoint = self._max_steps
+            # No step limit: the loop runs until the LLM answers without
+            # a tool call, or the user interrupts it with Ctrl-C.
             while True:
-                step += 1
                 stream = _StreamingFinal(self._stdout_fd)
                 if result is None:
                     # First step of the query. The client picks the
@@ -257,12 +252,6 @@ class Executor:
                             missed.call_id, INTERRUPTED_TOOL_OUTPUT,
                         )
                     raise
-
-                if step == checkpoint:
-                    if not await self._confirm_continue(step):
-                        self._show_end(f"stopped at step {step}")
-                        return
-                    checkpoint += self._max_steps
         except asyncio.CancelledError:
             if stream is not None and stream.started:
                 # Keep the partially streamed text on screen (rewinding is
@@ -510,12 +499,6 @@ class Executor:
             self._llm.add_tool_output(call_id, INTERRUPTED_TOOL_OUTPUT)
             raise
         self._llm.add_tool_output(call_id, output)
-
-    async def _confirm_continue(self, step: int) -> bool:
-        """Ask the user whether to continue past the step checkpoint."""
-        return await self._prompt_yes_no(
-            f"reached step {step} — continue?",
-        )
 
     async def _confirm_command(self, command: str, risk: str, detail: str) -> bool:
         """Ask the user whether to run a command that hit the confirm level."""

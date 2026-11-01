@@ -280,7 +280,6 @@ async def make_harness() -> AsyncIterator[MakeHarness]:
         fake_llm: FakeLLMClient,
         settle_ms: int = 10,
         threshold_ms: int = 5000,
-        max_steps: int = 50,
         confirm_level: ConfirmLevel = "destructive",
         dangerous_matcher: DangerousCommandMatcher | None = None,
         screen: ScreenBuffer | None = None,
@@ -326,7 +325,6 @@ async def make_harness() -> AsyncIterator[MakeHarness]:
             relay=relay,
             settle_ms=settle_ms,
             threshold_ms=threshold_ms,
-            max_steps=max_steps,
             confirm_level=confirm_level,
             dangerous_matcher=dangerous_matcher,
             new_output_max_chars=new_output_max_chars,
@@ -505,74 +503,20 @@ class TestExecution:
         assert output.startswith("Error:")
         assert "NoSuchKey" in output
 
-    async def test_checkpoint_answer_n_stops(self, make_harness: MakeHarness) -> None:
-        """At the checkpoint, answering 'n' stops the loop."""
-        max_steps = 2
-        fake_llm = FakeLLMClient(
-            results=[_cmd_result(i, f"cmd{i}") for i in range(1, max_steps + 1)],
-        )
-        harness = await make_harness(fake_llm, max_steps=max_steps)
-        pump = asyncio.create_task(
-            harness.answer_prompts(b"continue? (y/n)", [b"n"]),
-        )
-        harness.start("keep going")
-        await harness.wait_done()
-        await asyncio.wait_for(pump, timeout=5)
-
-        out = harness.output()
-        assert fake_llm.step_count == max_steps
-        assert f"reached step {max_steps}".encode() in out
-        assert b"continue? (y/n)" in out
-        assert f"[expecto: stopped at step {max_steps}]".encode() in out
-
-    async def test_checkpoint_answer_y_continues(self, make_harness: MakeHarness) -> None:
-        """Answering 'y' continues the loop past the checkpoint, keeping the
-        response chain, and asks again at the next checkpoint."""
-        fake_llm = FakeLLMClient(
-            results=[_cmd_result(i, f"cmd{i}") for i in range(1, 5)],
-        )
-        harness = await make_harness(fake_llm, max_steps=2)
-        pump = asyncio.create_task(
-            harness.answer_prompts(b"continue? (y/n)", [b"y", b"n"]),
-        )
-        harness.start("keep going")
-        await harness.wait_done()
-        await asyncio.wait_for(pump, timeout=5)
-
-        assert fake_llm.step_count == 4
-        out = harness.output()
-        assert b"reached step 2" in out
-        assert b"reached step 4" in out
-        assert b"[expecto: stopped at step 4]" in out
-
-    async def test_checkpoint_ctrl_c_stops(self, make_harness: MakeHarness) -> None:
-        """Ctrl-C at the checkpoint prompt answers 'no' and stops the loop."""
-        fake_llm = FakeLLMClient(results=[_cmd_result(1, "cmd1")])
-        harness = await make_harness(fake_llm, max_steps=1)
-        pump = asyncio.create_task(
-            harness.answer_prompts(b"continue? (y/n)", [b"\x03"]),
-        )
-        harness.start("keep going")
-        await harness.wait_done()
-        await asyncio.wait_for(pump, timeout=5)
-
-        assert fake_llm.step_count == 1
-        assert b"[expecto: stopped at step 1]" in harness.output()
-
-    async def test_max_steps_zero_never_asks(self, make_harness: MakeHarness) -> None:
-        """max_steps < 1 disables the checkpoint: the loop runs to the
-        final response without ever asking for continuation."""
+    async def test_no_step_limit(self, make_harness: MakeHarness) -> None:
+        """There is no step limit: a long run goes on to the final
+        response without ever asking for continuation."""
         fake_llm = FakeLLMClient(results=[
-            *[_cmd_result(i, f"cmd{i}") for i in range(1, 5)],
+            *[_cmd_result(i, f"cmd{i}") for i in range(1, 31)],
             _final_result("all done"),
         ])
-        harness = await make_harness(fake_llm, max_steps=0)
+        harness = await make_harness(fake_llm)
         harness.start("keep going")
-        await harness.wait_done()
+        await harness.wait_done(timeout=15)
 
-        assert fake_llm.step_count == 5
+        assert fake_llm.step_count == 31
         out = harness.output()
-        assert b"continue? (y/n)" not in out
+        assert b"(y/n)" not in out
         assert b"[all done]" in out
 
     async def test_ctrl_c_interrupt_during_settle(self, make_harness: MakeHarness) -> None:
@@ -1376,20 +1320,6 @@ class TestQueryContext:
 class TestConversationIntegrity:
     """Every tool call must get a recorded output, even across stops and
     interrupts, so the conversation never carries an unanswered call."""
-
-    async def test_checkpoint_stop_keeps_outputs_recorded(self, make_harness: MakeHarness) -> None:
-        fake_llm = FakeLLMClient(results=[_cmd_result(1, "cmd1"), _final_result("done")])
-        harness = await make_harness(fake_llm, max_steps=1)
-        pump = asyncio.create_task(
-            harness.answer_prompts(b"continue? (y/n)", [b"n"]),
-        )
-        harness.start("first")
-        await harness.wait_done()
-        await asyncio.wait_for(pump, timeout=5)
-        assert b"[expecto: stopped at step 1]" in harness.output()
-
-        assert len(fake_llm.tool_outputs) == 1
-        assert fake_llm.tool_outputs[0][0] == "call_1"
 
     async def test_interrupted_command_records_partial_output(self, make_harness: MakeHarness) -> None:
         """Ctrl-C during a command records the output collected so far as
