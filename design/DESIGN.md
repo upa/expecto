@@ -316,7 +316,7 @@ OPTIONS (implemented):
   -c, --config PATH          Path to the config file
                              (default: <config-dir>/config.toml)
   -e, --env PATH             Path to the .env file to load
-                             (default: ~/.expecto/.env)
+                             (default: <config-dir>/.env)
   -a, --agents-md PATH       Path to the AGENTS.md appended to the system prompt
                              (default: ~/.expecto/AGENTS.md)
   -m, --model NAME           Model to use (default: config.toml's model)

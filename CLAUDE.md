@@ -24,7 +24,20 @@ Core loop complete (LLMClient with Chat Completions function calling — `run_co
 - Key dependencies: `pyte` (terminal emulation), `openai` (LLM SDK, AsyncOpenAI with Structured Outputs), `mcp` (MCP client SDK)
 - Heavy use of stdlib: `asyncio`, `pty`, `termios`, `tty`, `os`, `signal`, `fcntl`
 - Build/packaging: `pyproject.toml` (hatchling, `expecto` script entry point)
-- Config: `~/.expecto/config.toml` (TOML, warn-and-continue; see `design/Config.md`), overridden by CLI flags. `OPENAI_API_KEY` is the only env var (required — startup error when missing; `.env` from cwd, falling back to `~/.expecto/.env`)
+- Config: `<config-dir>/config.toml` (`<config-dir>` defaults to `~/.expecto`; TOML, warn-and-continue; see `design/Config.md`), overridden by CLI flags
+- `.env`: only `<config-dir>/.env` is loaded (or the file given with `-e`/`--env`); the current directory is not searched. Variables already set in the environment take precedence over the file
+
+## Environment Variables
+
+Read by expecto itself:
+- `OPENAI_API_KEY` — required; startup error when missing. Passed to the SDK explicitly. Never accepted in config.toml
+- `SHELL` — default child command when `--shell` / config `shell` is not given
+- `EXPECTO_ACTIVE` — set to `1` in the child's environment; a nested expecto sees it and refuses to start
+- `$NAME` / `${NAME}` in an MCP server's `token` — resolved from the environment (see `design/MCP.md`)
+
+Read implicitly by the OpenAI SDK (expecto does not reference them; `.env` values reach the SDK too, since they are loaded into the environment):
+- `OPENAI_BASE_URL` — used when neither `-u`/`--base-url` nor config `base_url` is set (expecto passes `base_url=None`). Precedence: `-u` > config `base_url` > `OPENAI_BASE_URL` > SDK default
+- `OPENAI_ORG_ID`, `OPENAI_PROJECT_ID`, `OPENAI_CUSTOM_HEADERS` and other SDK variables likewise apply as the SDK defines them
 
 ## Architecture
 
