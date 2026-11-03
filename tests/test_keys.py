@@ -19,6 +19,27 @@ class TestPlainText:
         assert parse_keys("") == b""
 
 
+class TestLineBreaks:
+    def test_lf_is_typed_as_enter(self) -> None:
+        assert parse_keys("iline one\nline two<Esc>") == b"iline one\rline two\x1b"
+
+    def test_crlf_is_one_enter(self) -> None:
+        assert parse_keys("a\r\nb") == b"a\rb"
+
+    def test_lone_cr_is_enter(self) -> None:
+        assert parse_keys("a\rb") == b"a\rb"
+
+    def test_ctrl_j_still_sends_lf(self) -> None:
+        assert parse_keys("<C-j>") == b"\n"
+
+    def test_backslash_n_is_typed_literally(self) -> None:
+        # Escapes are not interpreted, so printf 'a\n' types as-is.
+        assert parse_keys("printf 'a\\n'") == b"printf 'a\\n'"
+
+    def test_line_break_is_one_unit(self) -> None:
+        assert parse_key_units("a\r\nb\nc") == [b"a", b"\r", b"b", b"\r", b"c"]
+
+
 class TestNamedKeys:
     def test_enter_and_cr_are_carriage_return(self) -> None:
         assert parse_keys("<CR>") == b"\r"

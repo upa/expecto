@@ -56,6 +56,13 @@ def parse_keys(spec: str) -> bytes:
     popularized, but the keys themselves are terminal keys — the spec
     can drive any program reading from the tty.
 
+    A line break in the text ("\\n" or "\\r\\n") is typed as Enter (CR),
+    as a terminal does when text is pasted: Enter starts a new line in
+    every program, while a bare LF is Ctrl-J, which programs bind
+    differently (nano: justify). <C-j> still sends a real LF. Backslash
+    escapes are not interpreted: a backslash followed by "n" types those
+    two characters.
+
     Raises ValueError (naming the offending token) for an unknown key or
     an unclosed "<"."""
     return b"".join(parse_key_units(spec))
@@ -69,6 +76,10 @@ def parse_key_units(spec: str) -> list[bytes]:
     index = 0
     while index < len(spec):
         char = spec[index]
+        if char == "\n" or spec.startswith("\r\n", index):
+            out.append(_NAMED_KEYS["enter"])
+            index += 1 if char == "\n" else 2
+            continue
         if char != "<":
             out.append(char.encode())
             index += 1

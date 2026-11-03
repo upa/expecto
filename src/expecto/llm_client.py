@@ -43,6 +43,11 @@ editor, pager, or menu UI. Plain text may be any Unicode text, including \
 Japanese and other non-ASCII characters — type it directly, and write a \
 literal "<" as <lt> so it is not read as a key name. Keys are sent \
 exactly as typed: nothing is executed until you send <CR>.
+- To start a new line, press Enter: write <CR> (e.g. \
+"iline one<CR>line two<Esc>" in vim). This works the same in any \
+program: an editor (vim, emacs, nano), a shell, or a prompt. A line break \
+in the keys string is also typed as Enter. Backslash escapes such as \
+"\\n" are NOT interpreted: they are typed as a backslash and a letter.
 - Call one tool at a time: review each result before deciding the next action.
 - Classify every run_command call's risk on the target system: "read_only" \
 (no state change: show/get/list/ping etc.), "mutating" (changes state but \
@@ -268,7 +273,10 @@ TOOLS: list[ChatCompletionFunctionToolParam] = [
                 "(e.g. <C-c>), and <lt> for a literal '<'. Works for anything "
                 "the terminal is running: interrupting a command with <C-c>, "
                 "answering prompts, or driving full-screen programs. Nothing "
-                "is executed until you send <CR>."
+                "is executed until you send <CR>. To start a new line, in an "
+                "editor or anywhere else, send <CR> (Enter); a line break in "
+                "the string is also typed as Enter. Backslash escapes such as "
+                "\"\\n\" are not interpreted: they are typed literally."
             ),
             "parameters": {
                 "type": "object",
@@ -277,7 +285,8 @@ TOOLS: list[ChatCompletionFunctionToolParam] = [
                         "type": "string",
                         "description": (
                             'The keystrokes to send, e.g. "y<CR>" or '
-                            '"<C-c>" or "iHello<Esc>" or "i日本語<Esc>".'
+                            '"<C-c>" or "iHello<Esc>" or "i日本語<Esc>" or '
+                            '"iline one<CR>line two<Esc>".'
                         ),
                     },
                 },

@@ -511,6 +511,10 @@ class TestLLMClient:
         assert "show version" in SYSTEM_PROMPT
         assert "stop calling tools" in SYSTEM_PROMPT
 
+    def test_system_prompt_says_new_line_is_enter(self) -> None:
+        assert "To start a new line, press Enter" in SYSTEM_PROMPT
+        assert '"\\n" are NOT interpreted' in SYSTEM_PROMPT
+
     async def test_log_query(self) -> None:
         with tempfile.NamedTemporaryFile(mode="r", suffix=".jsonl", delete=False) as f:
             log_path = f.name
