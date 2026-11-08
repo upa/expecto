@@ -24,7 +24,7 @@ from openai.types.chat.chat_completion_message_function_tool_call import (
 )
 from openai.types.completion_usage import CompletionUsage
 
-from expecto.config import ExpectoConfig
+from expecto.config import DEFAULT_CONTEXT_WINDOW, ExpectoConfig
 from expecto.llm_client import (
     COMPACT_REQUEST,
     HandoffSummary,
@@ -473,6 +473,16 @@ class TestCompaction:
         assert client._compact_task is None
         await client.start_query("next", screen_text="$ ")
         assert parse_captured == []
+
+    def test_threshold_is_a_percentage_of_the_default_window(self) -> None:
+        client = LLMClient(_make_config())
+        assert client._compact_thresh == DEFAULT_CONTEXT_WINDOW * 75 // 100
+
+    def test_threshold_is_a_percentage_of_the_configured_window(self) -> None:
+        client = LLMClient(
+            _make_config(model_context_window=32768, compact_thresh_percent=50),
+        )
+        assert client._compact_thresh == 16384
 
     async def test_no_compaction_on_fresh_conversation(self) -> None:
         client = LLMClient(_make_config())

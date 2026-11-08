@@ -36,7 +36,8 @@ class TestExpectoPassthrough:
         session start and termination messages."""
         expecto_session.wait_prompt()
         assert (
-            b"[expecto: session started (model: qwen3-0.6b)]"
+            b"[expecto: session started "
+            b"(model: qwen3-0.6b, ctxlen: 128000 by default)]"
             in expecto_session.output
         )
         expecto_session.send(b"echo hello-e2e\r")

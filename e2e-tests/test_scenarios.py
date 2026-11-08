@@ -393,10 +393,13 @@ class TestCompaction:
     def test_compaction_runs_and_the_session_continues(
         self, make_expecto: MakeExpecto,
     ) -> None:
-        """With compact_thresh = 1, every query end triggers a background
+        """With a 1-token threshold (1% of a 100-token window), every
+        query end triggers a background
         compaction. Invisible on screen, so this is asserted on the log;
         the next query must still work on the compacted conversation."""
-        session = make_expecto("compact_thresh = 1\n")
+        session = make_expecto(
+            "model_context_window = 100\ncompact_thresh_percent = 1\n",
+        )
         session.wait_prompt()
 
         start = session.cursor()

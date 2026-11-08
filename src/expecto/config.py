@@ -24,6 +24,10 @@ MCP_SERVER_TYPES: tuple[str, ...] = ("stdio", "sse", "streamable-http")
 
 DEFAULT_MODEL = "gpt-5.4"
 DEFAULT_HOTKEY = 0x1F  # Ctrl-/
+# Assumed context window when model_context_window is not set. The
+# backend is not asked (OpenAI-compatible APIs have no common way to
+# report it); 128k is the most common window among current models.
+DEFAULT_CONTEXT_WINDOW = 128_000
 
 
 DEFAULT_CONFIG_DIR = "~/.expecto"
@@ -122,16 +126,24 @@ class _Table:
             return None
         return value or None
 
-    def take_int(self, key: str, minimum: int = 1) -> int | None:
+    def take_int(
+        self, key: str, minimum: int = 1, maximum: int | None = None,
+    ) -> int | None:
         if key not in self._data:
             return None
         value = self._data.pop(key)
-        if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
-            expected = (
-                "a positive integer"
-                if minimum == 1
-                else f"an integer >= {minimum}"
-            )
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, int)
+            or value < minimum
+            or (maximum is not None and value > maximum)
+        ):
+            if maximum is not None:
+                expected = f"an integer from {minimum} to {maximum}"
+            elif minimum == 1:
+                expected = "a positive integer"
+            else:
+                expected = f"an integer >= {minimum}"
             self._warn(
                 key, f"expected {expected}, got {value!r}; using the default",
             )
@@ -316,7 +328,10 @@ class ExpectoConfig:
     raw_io_log_file: str | None = None
     log_file: str | None = None
     scrollback_lines: int = 5000
-    compact_thresh: int = 100000
+    # None: DEFAULT_CONTEXT_WINDOW is assumed (see context_window()).
+    model_context_window: int | None = None
+    # Compaction starts at this percentage of the context window.
+    compact_thresh_percent: int = 75
     new_output_max_chars: int = 20000
     # ms between the characters/keys of a tool call typed into the pty;
     # 0 types them one by one without waiting, negative types at once.
@@ -366,6 +381,13 @@ class ExpectoConfig:
 
         _apply_toml(config, data, path, warnings)
         return config, warnings
+
+    def context_window(self) -> tuple[int, str]:
+        """The model's context window in tokens and where it came from:
+        "config" when model_context_window is set, "default" otherwise."""
+        if self.model_context_window is not None:
+            return self.model_context_window, "config"
+        return DEFAULT_CONTEXT_WINDOW, "default"
 
 
 def _apply_toml(
@@ -421,8 +443,10 @@ def _apply_toml(
         config.openai_base_url = base_url
     if (effort := table.take_choice("reasoning_effort", REASONING_EFFORT_LEVELS)) is not None:
         config.openai_reasoning_effort = cast("ReasoningEffortLevel", effort)
-    if (v := table.take_int("compact_thresh")) is not None:
-        config.compact_thresh = v
+    if (v := table.take_int("model_context_window")) is not None:
+        config.model_context_window = v
+    if (v := table.take_int("compact_thresh_percent", maximum=100)) is not None:
+        config.compact_thresh_percent = v
     if (v := table.take_int("new_output_max_chars")) is not None:
         config.new_output_max_chars = v
 

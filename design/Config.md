@@ -75,7 +75,8 @@ base_url = ""                     # if unset, SDK default (api.openai.com)
 reasoning_effort = ""             # none|minimal|low|medium|high|xhigh|max
                                   # if unset, reasoning is omitted from the request
 
-compact_thresh = 100000           # conversation-history compaction threshold (prompt_tokens)
+model_context_window = 128000     # the model's context window (tokens). default: 128000 (§8-6)
+compact_thresh_percent = 75       # compact the conversation at this % of model_context_window (1-100)
 new_output_max_chars = 20000      # max characters of new output diff between queries
 
 mcp_connect_timeout_ms = 10000    # per-server MCP connection timeout
@@ -137,3 +138,4 @@ The format (one regex per line, `#` comments, case-insensitive) and the semantic
 3. **warn-and-continue**: expecto is a terminal wrapper; warning and running with safe defaults is better than failing to start over a config typo. This presumes the fallback (the default value) is always on the safe side.
 4. **tomllib (stdlib)**: Python 3.11+ is assumed, so TOML can be read without adding a dependency. No writing is done, so tomli-w and the like are unnecessary.
 5. **No step limit (`max_steps` removed)**: the execution loop used to ask `continue? (y/n)` every `max_steps` steps (default 15). It was removed rather than defaulted to off: long-running tasks are a normal use of an agent, a step count is a poor proxy for runaway behavior, and the user watching the screen with Ctrl-C at hand already covers the case. A leftover `max_steps` in config.toml is warned about as an unknown key.
+6. **The context window is configured, not discovered**: OpenAI-compatible APIs have no common way to report a model's context window — OpenAI's `/v1/models` does not carry it, and the backends that do each use their own endpoint and field (llama.cpp `/props`, vLLM `max_model_len`, ollama `/api/ps` only once the model is loaded, LM Studio `/api/v1/models`). Probing them in turn at startup would issue requests that are bound to fail on every other backend at every session start, so expecto does not ask. `model_context_window` is set by the user; when it is not, `DEFAULT_CONTEXT_WINDOW` (128000, the most common window among current models) is assumed. The session start line shows the value and its origin (`ctxlen: 128000 by default` / `by config`). `compact_thresh_percent` replaced the former token-count `compact_thresh` so the threshold follows the window; its default 75 leaves headroom for the tool output a single query adds before the end-of-query check and for the compaction request itself, and 75% of the default window (96000) keeps the former 100000-token behavior.

@@ -397,7 +397,8 @@ class LLMClient:
     The message history starts at the system prompt and accumulates
     queries, tool calls/outputs, and final responses across the whole
     session. It is append-only (for prompt-cache hits) and compacted
-    transparently when it grows past compact_thresh (design/Conversation.md)."""
+    transparently when it grows past compact_thresh_percent of the context
+    window (design/Conversation.md)."""
 
     def __init__(
         self,
@@ -419,7 +420,11 @@ class LLMClient:
             base_url=config.openai_base_url,
         )
         self._log_file = config.log_file
-        self._compact_thresh = config.compact_thresh
+        context_window, _ = config.context_window()
+        # Prompt tokens at which finish_query() starts a compaction.
+        self._compact_thresh: int = (
+            context_window * config.compact_thresh_percent // 100
+        )
         self._messages: list[ChatCompletionMessageParam] = [
             {
                 "role": "system",

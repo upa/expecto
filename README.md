@@ -37,6 +37,12 @@ overrides the model. For example:
 OPENAI_API_KEY=ollama expecto -u http://localhost:11434/v1 -m gpt-oss:20b
 ```
 
+With a local LLM, set `model_context_window` in the config file to the
+context length the server actually runs with (e.g. ollama's `num_ctx`
+or llama-server's `--ctx-size`). expecto cannot ask the backend, so it
+otherwise assumes 128000 tokens, which is often far more than a local
+server provides.
+
 See [Configuration](#configuration) for all available options.
 
 
@@ -54,7 +60,7 @@ When you send a query, the terminal output produced since the previous
 query is sent along with it (the amount is capped, configurable via
 `new_output_max_chars`), so the agent also knows what you did by hand
 in between. When the conversation grows past a threshold
-(`compact_thresh`), it is compacted: summarized so the session can
+(`compact_thresh_percent` of `model_context_window`), it is compacted: summarized so the session can
 keep going without exhausting the context window.
 
 
@@ -88,7 +94,8 @@ llm_input_char_interval = -1    # ms between the keys the LLM types (0 = no wait
 
 # Context for the LLM
 scrollback_lines = 5000         # scrollback buffer capacity
-compact_thresh = 100000         # prompt tokens that trigger conversation compaction
+model_context_window = 128000   # the model's context length in tokens (default: 128000)
+compact_thresh_percent = 75     # compact the conversation at this % of model_context_window
 new_output_max_chars = 20000    # max chars of between-query output sent to the LLM
 
 # Files

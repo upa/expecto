@@ -269,7 +269,7 @@ The message history is held by `LLMClient` and continues as **a single conversat
 
 ### 5.10 Conversation History and Compaction (session context)
 
-The session context is carried by the client-held message history itself (all past queries, commands, and outputs remain). When the history grows beyond a threshold (`compact_thresh`, measured in prompt_tokens), after the query's execution finishes (after the explanation is displayed and control is returned to the user), LLMClient internally (almost transparently to the Executor) requests a handoff summary (`HandoffSummary`: environment / activities / notes) of the history in the background, and starts the next query as a new conversation headed by the summary + the full screen (compaction). The user's manual operations between queries are conveyed by the diff of new output attached to the next query (capped by `new_output_max_chars`).
+The session context is carried by the client-held message history itself (all past queries, commands, and outputs remain). When the history grows beyond a threshold (`compact_thresh_percent` of `model_context_window`, measured in prompt_tokens; the window is configured, not queried from the backend — Config.md §8-6), after the query's execution finishes (after the explanation is displayed and control is returned to the user), LLMClient internally (almost transparently to the Executor) requests a handoff summary (`HandoffSummary`: environment / activities / notes) of the history in the background, and starts the next query as a new conversation headed by the summary + the full screen (compaction). The user's manual operations between queries are conveyed by the diff of new output attached to the next query (capped by `new_output_max_chars`).
 
 See **`Conversation.md`** for the detailed design.
 
@@ -279,7 +279,7 @@ Everything expecto says for itself — as opposed to the child's output or the L
 
 | message | example |
 |---------|---------|
-| session lifecycle | `[expecto: session started (model: gpt-5.4)]`, `[expecto: session terminated]` |
+| session lifecycle | `[expecto: session started (model: gpt-5.4, ctxlen: 128000 by default)]`, `[expecto: session terminated]` |
 | startup status | `[expecto: connecting to 2 MCP server(s)...]` |
 | startup warning / error | `[expecto: warning: <path>: <key>: ...]`, `[expecto: error: config file not found: ...]` |
 | tool activity | `[expecto: mcp docs.search]`, `[expecto: skill junos-upgrade]` |

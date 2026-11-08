@@ -108,7 +108,8 @@ discounts), so it cannot grow without bound.
   task completes, i.e. after returning to passthrough, so the user is not
   kept waiting.
 - **Decision**: the most recent response's `usage.prompt_tokens` is at or
-  above `compact_thresh` (config, default 100000). As a fallback for backends
+  above `compact_thresh_percent` (config, default 75) of the model's context
+  window (`model_context_window`, default 128000; Config.md §8-6). As a fallback for backends
   that do not return usage, it is estimated as the history's character count
   divided by 4.
 - **Procedure**: with the current history + COMPACT_REQUEST (a user message),
@@ -132,7 +133,8 @@ discounts), so it cannot grow without bound.
 
 | Key | Default | Meaning |
 |------|--------|------|
-| `compact_thresh` | 100000 | If the most recent response's prompt_tokens is at or above this, compact after the query ends |
+| `model_context_window` | unset (128000 assumed) | The model's context window in tokens |
+| `compact_thresh_percent` | 75 | If the most recent response's prompt_tokens is at or above this percentage of the context window, compact after the query ends |
 | `new_output_max_chars` | 20000 | Maximum character count of the between-query delta (truncation keeping the tail) |
 
 ## 7. Constraints (accepted trade-offs)

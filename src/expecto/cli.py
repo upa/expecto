@@ -285,7 +285,11 @@ def main(argv: list[str] | None = None) -> None:
 
     async def run_session() -> int:
         loop = asyncio.get_running_loop()
-        status(f"session started (model: {config.model})")
+        context_window, context_source = config.context_window()
+        status(
+            f"session started (model: {config.model}, "
+            f"ctxlen: {context_window} by {context_source})",
+        )
         # MCP servers are connected before the child starts: their tools
         # must be known before the first LLM request (design/MCP.md §3),
         # and warnings still print with the tty in its normal mode.

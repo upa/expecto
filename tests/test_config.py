@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from expecto.config import (
+    DEFAULT_CONTEXT_WINDOW,
     DEFAULT_HOTKEY,
     DEFAULT_MODEL,
     ExpectoConfig,
@@ -87,7 +88,8 @@ class TestDefaults:
         assert config.dangerous_patterns_file == default_dangerous_patterns_file()
         assert config.agents_md_file == default_agents_md_file()
         assert config.skills_dir == default_skills_dir()
-        assert config.compact_thresh == 100000
+        assert config.model_context_window is None
+        assert config.compact_thresh_percent == 75
         assert config.new_output_max_chars == 20000
 
     def test_api_key_from_env(
@@ -123,7 +125,8 @@ skills_dir = "~/skills"
 model = "main-model"
 base_url = "https://main.api/v1"
 reasoning_effort = "high"
-compact_thresh = 50000
+model_context_window = 32768
+compact_thresh_percent = 60
 new_output_max_chars = 5000
 """)
         assert warnings == []
@@ -141,7 +144,8 @@ new_output_max_chars = 5000
         assert config.model == "main-model"
         assert config.openai_base_url == "https://main.api/v1"
         assert config.openai_reasoning_effort == "high"
-        assert config.compact_thresh == 50000
+        assert config.model_context_window == 32768
+        assert config.compact_thresh_percent == 60
         assert config.new_output_max_chars == 5000
 
     def test_no_mcp_section_means_no_servers(
@@ -192,6 +196,47 @@ shell = 3
         loads, with a warning."""
         _, warnings = _load_toml(tmp_path, "max_steps = 15\n")
         assert any("max_steps" in w and "unknown key" in w for w in warnings)
+
+    @pytest.mark.parametrize("value", ["0", "101", "-5", '"75"'])
+    def test_compact_thresh_percent_out_of_range_warns(
+        self, isolated_home: Path, tmp_path: Path, value: str,
+    ) -> None:
+        config, warnings = _load_toml(
+            tmp_path, f"compact_thresh_percent = {value}\n",
+        )
+        assert config.compact_thresh_percent == 75
+        assert any(
+            "compact_thresh_percent" in w and "from 1 to 100" in w
+            for w in warnings
+        )
+
+    def test_compact_thresh_percent_accepts_bounds(
+        self, isolated_home: Path, tmp_path: Path,
+    ) -> None:
+        for value in (1, 100):
+            config, warnings = _load_toml(
+                tmp_path, f"compact_thresh_percent = {value}\n",
+            )
+            assert warnings == []
+            assert config.compact_thresh_percent == value
+
+    @pytest.mark.parametrize("value", ["0", "-1", '"32k"'])
+    def test_invalid_model_context_window_warns(
+        self, isolated_home: Path, tmp_path: Path, value: str,
+    ) -> None:
+        config, warnings = _load_toml(
+            tmp_path, f"model_context_window = {value}\n",
+        )
+        assert config.model_context_window is None
+        assert any("model_context_window" in w for w in warnings)
+
+    def test_leftover_compact_thresh_is_an_unknown_key(
+        self, isolated_home: Path, tmp_path: Path,
+    ) -> None:
+        """compact_thresh (tokens) became compact_thresh_percent."""
+        config, warnings = _load_toml(tmp_path, "compact_thresh = 100000\n")
+        assert config.compact_thresh_percent == 75
+        assert any("compact_thresh" in w and "unknown key" in w for w in warnings)
 
     def test_llm_input_char_interval_defaults_to_disabled(
         self, isolated_home: Path, tmp_path: Path,
@@ -299,6 +344,16 @@ shell = 3
         config, warnings = _load_toml(tmp_path, 'query_color = "yellow"\n')
         assert config.query_color is None
         assert any("query_color" in w for w in warnings)
+
+
+class TestContextWindow:
+    def test_default_when_unset(self) -> None:
+        config = ExpectoConfig()
+        assert config.context_window() == (DEFAULT_CONTEXT_WINDOW, "default")
+
+    def test_configured_value_wins(self) -> None:
+        config = ExpectoConfig(model_context_window=32768)
+        assert config.context_window() == (32768, "config")
 
 
 class TestMCPServers:
