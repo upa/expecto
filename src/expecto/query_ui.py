@@ -65,9 +65,10 @@ class QueryModeUI:
         """Keep the query text on screen and mark the prompt invisible.
 
         A trailing space closes the query so that whatever expecto shows
-        next — the thinking overlay — does not run straight on from it.
-        No newline is written: the executor nudges the shell with Enter
-        right after, and its echo supplies the line break."""
+        next — the spinner overlay — does not run straight on from it.
+        No newline is written: the line break comes from the echo of the
+        prompt nudge the executor sends before its first command, or from
+        the newline it sends when the execution ends."""
         if not self._visible:
             return
         self._visible = False

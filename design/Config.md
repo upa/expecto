@@ -43,7 +43,7 @@ Values in `.env` are loaded into the process environment, so they reach the SDK 
 └── dangerous_patterns.txt    # additional dangerous-command regexes (DESIGN.md §5.8)
 ```
 
-- Path resolution is centralized in `config.config_dir(override)`: the `--config-dir` path when given, otherwise `~/.expecto`. Every default path (`config.toml` / `.env` / `AGENTS.md` / `dangerous_patterns.txt`) is derived from it, and the per-file flags (`-c` / `-e` / `-a` / `--dangerous-patterns-file`) still override individual files on top. A `--config-dir` path that does not exist is a startup error.
+- Path resolution is centralized in `config.config_dir(override)`: the `--config-dir` path when given, otherwise `~/.expecto`. Every default path (`config.toml` / `.env` / `AGENTS.md` / `skills/` / `dangerous_patterns.txt`) is derived from it, and the per-file flags (`-c` / `-e` / `-a` / `--dangerous-patterns-file`) still override individual files on top. A `--config-dir` path that does not exist is a startup error.
 - No environment variable selects the directory. `$XDG_CONFIG_HOME` is deliberately **not** consulted: it would duplicate `--config-dir`, and §8-1's policy is that `OPENAI_API_KEY` is the only setting taken from an environment variable. There is no fallback to the pre-`~/.expecto` location either — one resolution path only.
 - `.env` loading: the file given by `--env PATH` → without that flag, `<config_dir>/.env` if it exists. The current directory is not searched, so an installed expecto behaves the same wherever it is launched from. An already-set environment variable always takes precedence over the file value.
 - `--env` cannot be set in config.toml: the `.env` file is loaded before the config file is read.
@@ -51,7 +51,7 @@ Values in `.env` are loaded into the process environment, so they reach the SDK 
 
 ## 3. config.toml Schema
 
-All keys are optional. Only the keys that are written override the defaults. For string keys, the empty string `""` is equivalent to "unset". Path keys (`log_file` / `raw_io_log_file` / `dangerous_patterns_file` / `agents_md_file`) expand `~`.
+All keys are optional. Only the keys that are written override the defaults. For string keys, the empty string `""` is equivalent to "unset". Path keys (`log_file` / `raw_io_log_file` / `dangerous_patterns_file` / `agents_md_file` / `skills_dir`) expand `~`.
 
 ```toml
 shell = "/usr/bin/fish"           # default: $SHELL (falls back to /bin/bash)
@@ -95,7 +95,7 @@ args = ["arg1", "arg2"]
 built-in defaults < config.toml < CLI flags
 ```
 
-- Implementation: `ExpectoConfig.load(config_file) -> (config, warnings)` — build an `ExpectoConfig` from the defaults, apply the TOML, and resolve `OPENAI_API_KEY` from the environment. CLI flag overrides are applied by `cli.main()` as before.
+- Implementation: `ExpectoConfig.load(config_file, config_dir) -> (config, warnings)` — build an `ExpectoConfig` from the defaults, apply the TOML, and resolve `OPENAI_API_KEY` from the environment. CLI flag overrides are applied by `cli.main()` as before.
 - `--config PATH` changes the location of the config file (default: `<config_dir>/config.toml`); `--config-dir PATH` moves the whole directory the defaults are resolved against (§2).
 
 ## 5. hotkey Notation
@@ -106,7 +106,7 @@ built-in defaults < config.toml < CLI flags
 
 ## 6. Error Handling (warn-and-continue)
 
-Follows the existing policy of `dangerous_patterns.txt` (invalid lines are warned about and skipped; startup continues). Warnings are printed to stderr at startup in the form `[expecto: warning: <path>: <key>: ...]` (the plain `expecto: warning: ...` form when stderr is not a terminal — see DESIGN.md §5.10).
+Follows the existing policy of `dangerous_patterns.txt` (invalid lines are warned about and skipped; startup continues). Warnings are printed to stderr at startup in the form `[expecto: warning: <path>: <key>: ...]` (the plain `expecto: warning: ...` form when stderr is not a terminal — see DESIGN.md §5.11).
 
 | Situation | Behavior |
 |------|------|

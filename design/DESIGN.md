@@ -121,9 +121,9 @@ locks). See **`Async.md`** for details.
 
 ### 5.1 TTYController
 
-- Responsibility: save the outer tty's `termios` settings at `expecto` startup and switch to raw mode. Always restore the original settings on exit (normal exit, exception, or signal).
+- Responsibility: save the outer tty's `termios` settings at `expecto` startup and switch to raw mode. Always restore the original settings on exit (normal exit or exception; see below for signals).
 - Python stdlib: the `termios` and `tty` modules. Use `tty.setraw(fd)`, but save the result of `termios.tcgetattr()` for restoration.
-- Ensure restoration is called via both `atexit` and signal handlers (when the process itself receives `SIGTERM` or `SIGINT`).
+- Restoration runs from `cli.main()`'s `finally` on every normal or exceptional exit, and `enter_raw()` also registers it with `atexit` (`restore()` is idempotent). No signal handlers are installed for it: in raw mode the outer tty does not generate `SIGINT` from Ctrl-C (the byte goes to InputRouter instead), and a `SIGTERM` sent to expecto itself terminates it with the default disposition, leaving the outer tty in raw mode (`stty sane` / `reset` recovers it).
 - `SIGWINCH` handler registration is done by cli via asyncio's `loop.add_signal_handler()` (executed on the event loop, hence safe). The handler propagates the outer tty's current size to the pty via TTYController's `get_window_size()` / `set_pty_window_size()`, and also makes the pyte screen follow via `ScreenBuffer.resize()`.
 
 ### 5.2 PTYManager
@@ -181,12 +181,12 @@ locks). See **`Async.md`** for details.
 ### 5.6 QueryModeUI
 
 - Responsibility: display a miniprompt on the outer tty without destroying the child process's screen.
-- Implementation: draws `? ` and the query string inline in gray starting at the current cursor position (the starting column is obtained from ScreenBuffer). Appending characters uses differential echo only; on deletion or rewriting, it moves back to the start of the prompt, erases with `\x1b[J`, and redraws (the return-position calculation uses display width accounting for East Asian Width, supporting line wrapping). On cancel it erases; on submit (`finalize()`) it exits leaving the query line on screen (the echo of the newline sent immediately afterward supplies the line feed).
-- Entering query mode while an alternate screen (vim etc.) is in use is not supported in v0.1 (documented as a known issue; see §10 for details).
+- Implementation: draws `? ` and the query string inline in gray starting at the current cursor position (the starting column is obtained from ScreenBuffer). Appending characters uses differential echo only; on deletion or rewriting, it moves back to the start of the prompt, erases with `\x1b[J`, and redraws (the return-position calculation uses display width accounting for East Asian Width, supporting line wrapping). On cancel it erases; on submit (`finalize()`) it leaves the query line on screen and writes a single trailing space, but no newline: what expecto shows next (the spinner, §5.8) continues on the same line, and the line break comes later from the echo of the prompt nudge sent before the first `run_command` (§5.8), or from the newline sent at the end of the execution.
+- On an alternate screen (vim etc.) the miniprompt is drawn the same way, straight onto the program's display; this is accepted as-is (§10-1).
 
 ### 5.7 LLMClient
 
-- Uses the OpenAI **Chat Completions API** (the Responses API was rejected because support in non-OpenAI compatible backends is insufficient). Each step of the execution loop uses `AsyncOpenAI`'s `client.chat.completions.stream()` (streaming); the compaction handoff summary (§5.10) uses `client.chat.completions.parse()` (Structured Outputs). The model is configurable (default: a current-generation fast model).
+- Uses the OpenAI **Chat Completions API** (the Responses API was rejected because support in non-OpenAI compatible backends is insufficient). Each step of the execution loop uses `AsyncOpenAI`'s `client.chat.completions.create(stream=True)`, assembling the raw chunks (content deltas and tool-call fragments) by hand — the SDK's auto-parsing `stream()` helper refuses to parse calls to non-strict function tools, and MCP tool schemas are passed through without `strict` (MCP.md §4); the compaction handoff summary (§5.10) uses `client.chat.completions.parse()` (Structured Outputs). The model is configurable (default: a current-generation fast model).
 - Input: the entire conversation history, starting with the system prompt, is passed via `messages=` (the history is held by LLMClient; see "Conversation history" below).
 - The system prompt is written in English and instructs that "output other than commands should match the language of the user's query".
 - The **final response of the execution loop is plain text** (no schema enforcement). The system prompt instructs the LLM to return a summary of goal achievement, or the reason if the goal cannot be achieved, as text. There is no done/fail status field (the distinction carries no practical meaning, and plain text simplifies streaming display).
@@ -204,7 +204,7 @@ The single step of "execute a command and receive its result" is exposed to the 
 | `load_skill`   | `name: string`, `file: string`         | Returns the body of one of the user's skills, or a file bundled with it. Read by expecto itself, since skills live on the local machine while the terminal may not. Only offered when skills exist; see **`Skills.md`** |
 | `mcp__<server>__<tool>` | the server's own schema | Calls a tool on one of the MCP servers configured in config.toml and returns its result text. Discovered at session start; see **`MCP.md`** |
 
-- Tool definitions are passed as JSON Schema with `strict: true`, and arguments are validated with Pydantic models (`RunCommandParams` / `SendControlParams`). If validation fails (which normally cannot happen due to strict mode), error text is returned as the output for the corresponding `call_id`.
+- Tool definitions are passed as JSON Schema with `strict: true`, and arguments are validated with Pydantic models (`RunCommandParams` / `SendKeysParams` / `LoadSkillParams`; MCP tool arguments are only decoded as a JSON object and left to the server to validate). `RunCommandParams` gives `risk` / `risk_reason` defaults (`read_only` / empty), so with a backend that does not enforce `strict` a call that omits them is accepted as `read_only` rather than rejected — the regex backstop still applies. If validation fails (which normally cannot happen due to strict mode), error text is returned as the output for the corresponding `call_id`.
 - **No separate "type this literal string" tool.** A second tool beside `send_keys` would only buy freedom from the `<lt>` escape, and the escape fails in the direction that can be recovered from: a `<` followed by anything that is not a key name (`vector<int>`, `a < b > c`) raises, and the error names the offending token and how to escape it, so the LLM fixes the call itself on the next step. Silent misreading needs text that happens to spell a real key name (`<CR>` inside prose), which is rare enough not to justify making the model choose between two overlapping tools on every call. If insertion of `<`-heavy text ever turns out to be routine, a literal-text tool is the answer then.
 - `parallel_tool_calls=False` is specified to guarantee one tool call per response at the API level (if multiple are defensively returned anyway, they are executed sequentially).
 - The LLM chooses between returning a tool call (continue) or a final response (plain text). **A response containing no tool call is treated as the end of the loop.** Since Structured Outputs is not used, it is structurally possible for the model to emit preamble text before a tool call (suppressed via the prompt; if it appears, it is streamed to the display as-is and the loop continues).
@@ -242,7 +242,7 @@ The message history is held by `LLMClient` and continues as **a single conversat
 - Controls the execution loop after query submission (command execution → output inspection → next action).
 - **Prompt nudge (a newline)**: since the query line has consumed the previous prompt line, a command injected without a nudge would appear on a line with no prompt. The nudge sends a single newline and waits for settle, so the fresh prompt is captured before `mark()` is taken.
   - Input the user typed but did not submit is submitted by that newline and may fail. This is accepted rather than cleared first: Ctrl-U makes the shell repaint the line by absolute arithmetic against a line it believes is shorter than what is on screen (expecto drew the query there), which eats part of the query text — verified on bash and fish, which answer Ctrl-U with `\x08\x08\x08\x08\x1b[K` and, for fish, an absolute column restore. Every way of keeping both the query text and the clearing turned out to cost more than the error is worth.
-  - **It is sent only immediately before the first `run_command` of an execution, never at query submission.** Both keys assume a shell line editor; at query time the terminal may be showing a full-screen program (an editor, a pager) whose buffer they would damage. Deferring also means the screen the LLM first sees is the terminal's real state.
+  - **It is sent only immediately before the first `run_command` of an execution, never at query submission.** The newline assumes a line-oriented child; at query time the terminal may be showing a full-screen program (an editor, a pager) whose buffer it would damage. Deferring also means the screen the LLM first sees is the terminal's real state.
   - Tools that do not touch the terminal (`load_skill`, MCP) leave the nudge owed, so a command that follows one still gets it.
   - Once `send_keys` has been used, the nudge is dropped for the rest of the execution: the LLM is driving whatever the terminal is running, and a newline there is its business, not expecto's.
   - At the end of an execution a single newline is still sent unconditionally, so the user is left at a fresh prompt.
@@ -263,8 +263,8 @@ The message history is held by `LLMClient` and continues as **a single conversat
 
 - To detect the moment when "output has quieted down" after command execution, a simple idle-timer approach is adopted. The implementation is the `settle.wait_settle()` coroutine (waits for IORelay's output events via an `asyncio.Event`):
   - After the command is sent, output-arrival events from the pty master are monitored.
-  - If no output arrives for a fixed period (default 300ms–800ms, configurable), the output is judged to have "settled".
-  - If the threshold time (default 30 seconds, configurable) is exceeded without settling: this is not treated as a timeout error; the output up to that point is sent to the LLM as the tool's execution result. A note that "the output did not settle (the command may still be running)" is included in the result, and the LLM decides the next action (e.g., send `<C-c>` via `send_keys` to interrupt the command, keep waiting, switch to another approach). Commands running longer than 30 seconds (downloads, builds, etc.) are routine, so they are not uniformly treated as timeouts.
+  - If no output arrives for a fixed period (`settle_ms`, default 500ms), the output is judged to have "settled".
+  - If the threshold time (`threshold_ms`, default 30 seconds) is exceeded without settling: this is not treated as a timeout error; the output up to that point is sent to the LLM as the tool's execution result. A note that "the output did not settle (the command may still be running)" is included in the result, and the LLM decides the next action (e.g., send `<C-c>` via `send_keys` to interrupt the command, keep waiting, switch to another approach). Commands running longer than 30 seconds (downloads, builds, etc.) are routine, so they are not uniformly treated as timeouts.
 - It does **not** depend on shell-specific prompt-marker injection (PS1 rewriting). That would not work over ssh or on router CLIs, so for generality v0.1 is built on idle detection only. A future extension of "additionally using PS1 markers on supported shells for more accurate detection" remains possible (see §11).
 
 ### 5.10 Conversation History and Compaction (session context)
@@ -348,7 +348,7 @@ and hotkey notation details.
 
 `.env` file loading: the file given by `--env PATH` (startup error if it does not exist) → without that flag, `<config-dir>/.env` if it exists. The current directory is not searched — as an installed command, expecto must behave the same no matter where it is launched from. Environment variables that are already set always take precedence over values from the file.
 
-Not implemented (future work): the `--hotkey` / `--max-steps` / `--settle-ms` CLI flags (all low priority now that they are configurable via config.toml).
+Not implemented (future work): the `--hotkey` / `--settle-ms` CLI flags (all low priority now that they are configurable via config.toml).
 
 ### TODO (improvements planned for the future)
 
@@ -452,8 +452,10 @@ expecto/
 │       ├── query_ui.py       # miniprompt drawing
 │       ├── llm_client.py     # Chat Completions calls, conversation history keeping and compaction
 │       ├── executor.py       # execution loop control
+│       ├── keys.py           # send_keys key-notation parser (<CR>, <C-c>, ... → bytes)
 │       ├── settle.py         # settle detection (wait_settle coroutine)
 │       ├── fdio.py           # write_all: fd writes that survive short writes
+│       ├── style.py          # SGR color of expecto's own text and the query prompt
 │       ├── dangerous.py      # dangerous-command regex backstop
 │       ├── mcp_client.py     # MCP servers: connection and tool dispatch
 │       ├── skills.py         # Agent Skills: discovery and SKILL.md parsing

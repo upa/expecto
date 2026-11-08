@@ -10,7 +10,7 @@ Key differentiator: wraps the **tty itself**, not a specific shell — works ove
 
 ## Status
 
-Core loop complete (LLMClient with Chat Completions function calling — `run_command` / `send_keys` tools, Executor tool-call loop, idle-timer settle detection). The final response is plain text streamed to the terminal as it arrives (`chat.completions.stream()`, shown gray in `[...]`). A former one-shot "completion mode" has been removed; the command-execute-observe loop is expecto's sole behavior. The LLMClient owns the message history, which spans the whole session (append-only for prompt-cache hits) and is compacted transparently into a handoff summary past a token threshold (see `design/Conversation.md`). Concurrency is a single-threaded asyncio event loop — one always-on relay pump, executions as cancellable tasks, no threads/locks (see `design/Async.md`). `design/DESIGN.md` is the authoritative specification.
+Core loop complete (LLMClient with Chat Completions function calling — `run_command` / `send_keys` tools, Executor tool-call loop, idle-timer settle detection). The final response is plain text streamed to the terminal as it arrives (`chat.completions.create(stream=True)`, shown gray in `[...]`). A former one-shot "completion mode" has been removed; the command-execute-observe loop is expecto's sole behavior. The LLMClient owns the message history, which spans the whole session (append-only for prompt-cache hits) and is compacted transparently into a handoff summary past a token threshold (see `design/Conversation.md`). Concurrency is a single-threaded asyncio event loop — one always-on relay pump, executions as cancellable tasks, no threads/locks (see `design/Async.md`). `design/DESIGN.md` is the authoritative specification.
 
 ### TODO
 
@@ -56,6 +56,7 @@ Core components (each a separate module under `src/expecto/`):
 - `keys` — key-notation parser for the `send_keys` tool (plain text + `<CR>`/`<Esc>`/`<C-x>`/arrows/... → terminal bytes)
 - `settle` — idle-timer output settle detection (`wait_settle` coroutine, no PS1 dependency)
 - `fdio` — `write_all`: the one fd-write helper, looping over short writes (every write in expecto goes through it)
+- `style` — the SGR color of expecto's own text and of the query prompt (`color` / `query_color` in config.toml)
 - `dangerous` — regex backstop for unmistakably catastrophic commands
 - `skills` — Agent Skills from `<config_dir>/skills`: SKILL.md discovery/parsing; the `load_skill` tool serves the body (see `design/Skills.md`)
 - `mcp_client` — MCP servers from `[mcp.*]`: connect at startup, expose their tools to the LLM as `mcp__<server>__<tool>`, dispatch calls (see `design/MCP.md`)
