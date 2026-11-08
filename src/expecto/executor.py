@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from expecto.screen_buffer import ScreenBuffer, ScreenMark
     from expecto.skills import Skill
 
+from expecto.config import CHARS_PER_TOKEN, DEFAULT_CONTEXT_WINDOW
 from expecto.fdio import write_all
 from expecto.keys import parse_key_units
 from expecto.llm_client import (
@@ -41,6 +42,52 @@ DECLINED_TOOL_OUTPUT = (
 INTERRUPTED_TOOL_OUTPUT = (
     "The task was interrupted by the user before this command was executed."
 )
+
+# What a truncation note suggests for getting at the omitted middle.
+COMMAND_TRUNCATION_HINT = (
+    "If you need the omitted part, run a command that prints only that part "
+    "(e.g. with head, tail, grep, or sed -n) when it is safe to run again."
+)
+MCP_TRUNCATION_HINT = (
+    "If you need the omitted part, call the tool again with arguments that "
+    "narrow its result, if it offers any."
+)
+
+
+def _truncate_middle(text: str, max_chars: int) -> str:
+    """Cut text longer than max_chars down to its beginning and its end.
+
+    The budget is split evenly between the head and the tail (the first
+    error and the command echo, the last output and the prompt), and the
+    middle becomes one marker line. Both cuts fall on line boundaries so no
+    line is shown half; a line too long for that is cut mid-line."""
+    if len(text) <= max_chars:
+        return text
+    head_budget = max_chars // 2
+    tail_budget = max_chars - head_budget
+    head_end = text.rfind("\n", 0, head_budget + 1)
+    if head_end <= 0:
+        head_end = head_budget
+    tail_start = text.find("\n", len(text) - tail_budget - 1) + 1
+    if tail_start <= head_end or tail_start >= len(text):
+        tail_start = len(text) - tail_budget
+    omitted = tail_start - head_end
+    return (
+        text[:head_end].rstrip("\n")
+        + f"\n[... {omitted} chars truncated ...]\n"
+        + text[tail_start:]
+    )
+
+
+def _truncation_note(text: str, hint: str = "") -> str:
+    """The note appended to a tool result whose text was truncated."""
+    total_lines = text.count("\n") + 1
+    note = (
+        f"\n[Note] The output was truncated: {total_lines} lines, "
+        f"{len(text)} chars in total; only the beginning and the end are shown."
+    )
+    return f"{note} {hint}" if hint else note
+
 
 # The overlay shown while waiting for the LLM (or an MCP call).
 SPINNER_FRAMES = b"|/-\\"
@@ -137,6 +184,9 @@ class Executor:
         mcp: MCPCaller | None = None,
         skills: list[Skill] | None = None,
         char_interval_ms: float = -1.0,
+        tool_output_max_chars: int = (
+            DEFAULT_CONTEXT_WINDOW * 4 // 100 * CHARS_PER_TOKEN
+        ),
     ) -> None:
         self._llm = llm_client
         self._screen = screen_buffer
@@ -151,6 +201,7 @@ class Executor:
         self._mcp = mcp
         self._skills: dict[str, Skill] = {s.name: s for s in skills or []}
         self._char_interval_ms = char_interval_ms
+        self._tool_output_max_chars = tool_output_max_chars
 
         # Where the previous execution ended: the next query sends only
         # the terminal output produced after this point.
@@ -436,14 +487,27 @@ class Executor:
         run_command reports the new output the command produced;
         send_keys reports the visible screen plus the cursor, since keys
         usually drive a stateful screen (an editor, a pager, a prompt)
-        where position matters more than a diff."""
+        where position matters more than a diff.
+
+        Either text is cut to tool_output_max_chars, keeping its beginning
+        and end, with a note saying so."""
         if isinstance(params, RunCommandParams):
-            return f"## Terminal Output\n```\n{self._screen.get_text_since(mark)}\n```"
-        row, col = self._screen.get_cursor()
-        return (
-            f"## Terminal Screen\n```\n{self._screen.get_visible_text()}\n```\n"
-            f"[Cursor] row {row + 1}, column {col + 1}"
-        )
+            text = self._screen.get_text_since(mark)
+            shown = _truncate_middle(text, self._tool_output_max_chars)
+            output = f"## Terminal Output\n```\n{shown}\n```"
+            hint = COMMAND_TRUNCATION_HINT
+        else:
+            text = self._screen.get_visible_text()
+            shown = _truncate_middle(text, self._tool_output_max_chars)
+            row, col = self._screen.get_cursor()
+            output = (
+                f"## Terminal Screen\n```\n{shown}\n```\n"
+                f"[Cursor] row {row + 1}, column {col + 1}"
+            )
+            hint = ""
+        if shown != text:
+            output += _truncation_note(text, hint)
+        return output
 
     def _run_load_skill(self, call_id: str, params: LoadSkillParams) -> None:
         """Hand the LLM one of the user's skills, or a file bundled with
@@ -498,7 +562,10 @@ class Executor:
         except asyncio.CancelledError:
             self._llm.add_tool_output(call_id, INTERRUPTED_TOOL_OUTPUT)
             raise
-        self._llm.add_tool_output(call_id, output)
+        shown = _truncate_middle(output, self._tool_output_max_chars)
+        if shown != output:
+            shown += _truncation_note(output, MCP_TRUNCATION_HINT)
+        self._llm.add_tool_output(call_id, shown)
 
     async def _confirm_command(self, command: str, risk: str, detail: str) -> bool:
         """Ask the user whether to run a command that hit the confirm level."""

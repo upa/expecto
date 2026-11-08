@@ -12,7 +12,13 @@ from typing import Literal, cast
 import pytest
 
 from expecto.dangerous import DangerousCommandMatcher
-from expecto.executor import ConfirmLevel, Executor
+from expecto.executor import (
+    COMMAND_TRUNCATION_HINT,
+    MCP_TRUNCATION_HINT,
+    ConfirmLevel,
+    Executor,
+    _truncate_middle,
+)
 from expecto.input_router import InputRouter
 from expecto.io_relay import IORelay
 from expecto.llm_client import (
@@ -182,6 +188,23 @@ class FakeLLMClient:
         self.finish_calls += 1
 
 
+class FixedOutputLLM(FakeLLMClient):
+    """Like FakeLLMClient, but the child answers every tool call with
+    the same given output."""
+
+    def __init__(self, results: list[StepResult], output: bytes) -> None:
+        super().__init__(results)
+        self._output = output
+
+    async def step(
+        self, on_delta: Callable[[str], None] | None = None,
+    ) -> StepResult:
+        result = await super().step(on_delta=on_delta)
+        if result.tool_calls:
+            self.pending_output = self._output
+        return result
+
+
 class StreamingFakeLLM(FakeLLMClient):
     """Delivers each result's text through on_delta in chunks before
     returning it, like the real streaming client."""
@@ -287,6 +310,7 @@ async def make_harness() -> AsyncIterator[MakeHarness]:
         mcp: FakeMCP | None = None,
         skills: list[Skill] | None = None,
         char_interval_ms: float = -1.0,
+        tool_output_max_chars: int = 20480,
     ) -> Harness:
         screen = screen if screen is not None else ScreenBuffer()
         expecto_sock, child_sock = socket.socketpair()
@@ -331,6 +355,7 @@ async def make_harness() -> AsyncIterator[MakeHarness]:
             mcp=mcp,
             skills=skills,
             char_interval_ms=char_interval_ms,
+            tool_output_max_chars=tool_output_max_chars,
         )
         run_task = asyncio.create_task(
             relay.run(expecto_sock.fileno(), stdin_fd=stdin_r, stdout_fd=stdout_w),
@@ -1123,6 +1148,104 @@ class TestMCPToolCalls:
         assert [c for c, _ in fake_llm.tool_outputs] == ["call_1"]
         assert "interrupted" in fake_llm.tool_outputs[0][1]
         assert b"[expecto: interrupted]" in harness.output()
+
+
+class TestTruncateMiddle:
+    def test_short_text_is_unchanged(self) -> None:
+        assert _truncate_middle("abc\ndef", 100) == "abc\ndef"
+        assert _truncate_middle("x" * 10, 10) == "x" * 10
+
+    def test_keeps_head_and_tail_on_line_boundaries(self) -> None:
+        text = "\n".join(f"line-{i:02d}" for i in range(100))
+        result = _truncate_middle(text, 60)
+        lines = result.split("\n")
+        assert lines[0] == "line-00"
+        assert lines[-1] == "line-99"
+        # Every kept line is whole.
+        kept = [line for line in lines if not line.startswith("[...")]
+        assert all(len(line) == 7 and line.startswith("line-") for line in kept)
+        assert sum(line.startswith("[... ") for line in lines) == 1
+        assert len("\n".join(kept)) <= 60
+
+    def test_marker_counts_the_omitted_chars(self) -> None:
+        text = "\n".join(f"line-{i:02d}" for i in range(100))
+        result = _truncate_middle(text, 60)
+        marker = next(line for line in result.split("\n") if line.startswith("[... "))
+        omitted = int(marker.removeprefix("[... ").split()[0])
+        kept = len(result) - len(marker) - 2  # the marker's own two newlines
+        assert omitted + kept == len(text)
+
+    def test_one_long_line_is_cut_mid_line(self) -> None:
+        text = "a" * 50 + "b" * 50
+        result = _truncate_middle(text, 20)
+        assert result.startswith("a" * 10 + "\n[... ")
+        assert result.endswith("\n" + "b" * 10)
+
+
+class TestToolOutputTruncation:
+    async def test_long_command_output_keeps_head_and_tail(
+        self, make_harness: MakeHarness,
+    ) -> None:
+        output = "".join(f"row-{i:03d}\r\n" for i in range(200)).encode()
+        fake_llm = FixedOutputLLM(
+            [_cmd_result(1, "cat big"), _final_result("done")], output,
+        )
+        harness = await make_harness(fake_llm, tool_output_max_chars=200)
+        harness.start("show it")
+        await harness.wait_done()
+
+        call_id, result = fake_llm.tool_outputs[0]
+        assert call_id == "call_1"
+        assert "row-000" in result
+        assert "row-199" in result
+        assert "row-100" not in result
+        assert "chars truncated ...]" in result
+        assert "[Note] The output was truncated: 200 lines" in result
+        assert result.endswith(COMMAND_TRUNCATION_HINT)
+
+    async def test_short_command_output_has_no_note(
+        self, make_harness: MakeHarness,
+    ) -> None:
+        fake_llm = FakeLLMClient(results=[_cmd_result(1, "ls"), _final_result("done")])
+        harness = await make_harness(fake_llm, tool_output_max_chars=200)
+        harness.start("list")
+        await harness.wait_done()
+
+        _, result = fake_llm.tool_outputs[0]
+        assert "output from step 1" in result
+        assert "truncated" not in result
+
+    async def test_send_keys_screen_is_capped_without_a_hint(
+        self, make_harness: MakeHarness,
+    ) -> None:
+        output = "".join(f"row-{i:03d}\r\n" for i in range(20)).encode()
+        fake_llm = FixedOutputLLM(
+            [_keys_result(1, "q"), _final_result("done")], output,
+        )
+        harness = await make_harness(fake_llm, tool_output_max_chars=40)
+        harness.start("press q")
+        await harness.wait_done()
+
+        _, result = fake_llm.tool_outputs[0]
+        assert "[Note] The output was truncated:" in result
+        assert COMMAND_TRUNCATION_HINT not in result
+        assert "[Cursor] row" in result
+
+    async def test_long_mcp_result_is_capped(self, make_harness: MakeHarness) -> None:
+        fake_llm = FakeLLMClient(results=[
+            _mcp_result(1, "mcp__DOCS__search"),
+            _final_result("found it"),
+        ])
+        mcp = FakeMCP(output="\n".join(f"doc-{i:03d}" for i in range(100)))
+        harness = await make_harness(fake_llm, mcp=mcp, tool_output_max_chars=50)
+        harness.start("look it up")
+        await harness.wait_done()
+
+        _, result = fake_llm.tool_outputs[0]
+        assert result.startswith("doc-000")
+        assert "doc-099" in result
+        assert "[Note] The output was truncated: 100 lines" in result
+        assert result.endswith(MCP_TRUNCATION_HINT)
 
 
 class TestDangerousCommandConfirmation:

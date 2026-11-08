@@ -219,6 +219,12 @@ The single step of "execute a command and receive its result" is exposed to the 
 
       [Note] Output did not settle within 30s. The command may still be running.
 
+- **Size cap on tool results**: the text of a `run_command` result, the screen of a `send_keys` result, and an MCP result are each cut to `tool_output_max_percent` (default 4) of `model_context_window`, at 4 characters per token (Config.md §8-7) — without it a single `cat` of a large file could fill the context window in the middle of a query. Like Codex CLI, the cut keeps the beginning and the end (the budget split evenly) and replaces the middle with one marker line, `[... N chars truncated ...]`; both cuts fall on line boundaries unless a single line is too long for that. A note is appended so the LLM knows, with a hint on how to get the omitted part (a narrowed command for `run_command`, narrower arguments for MCP; none for `send_keys`, whose screen is rarely large enough to be cut):
+
+      [Note] The output was truncated: 4210 lines, 312345 chars in total; only the beginning and the end are shown. If you need the omitted part, run a command that prints only that part (e.g. with head, tail, grep, or sed -n) when it is safe to run again.
+
+  The first screen of a conversation and the between-query output keep their own tail-only cap (`new_output_max_chars`, §5.5): there the most recent screen is what matters.
+
 #### Conversation history (client-held) and prompt caching
 
 The message history is held by `LLMClient` and continues as **a single conversation for the whole session** (details in **`Conversation.md`**):

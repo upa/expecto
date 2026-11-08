@@ -90,6 +90,7 @@ class TestDefaults:
         assert config.skills_dir == default_skills_dir()
         assert config.model_context_window is None
         assert config.compact_thresh_percent == 75
+        assert config.tool_output_max_percent == 4
         assert config.new_output_max_chars == 20000
 
     def test_api_key_from_env(
@@ -127,6 +128,7 @@ base_url = "https://main.api/v1"
 reasoning_effort = "high"
 model_context_window = 32768
 compact_thresh_percent = 60
+tool_output_max_percent = 10
 new_output_max_chars = 5000
 """)
         assert warnings == []
@@ -146,6 +148,7 @@ new_output_max_chars = 5000
         assert config.openai_reasoning_effort == "high"
         assert config.model_context_window == 32768
         assert config.compact_thresh_percent == 60
+        assert config.tool_output_max_percent == 10
         assert config.new_output_max_chars == 5000
 
     def test_no_mcp_section_means_no_servers(
@@ -219,6 +222,19 @@ shell = 3
             )
             assert warnings == []
             assert config.compact_thresh_percent == value
+
+    @pytest.mark.parametrize("value", ["0", "101", '"4"'])
+    def test_tool_output_max_percent_out_of_range_warns(
+        self, isolated_home: Path, tmp_path: Path, value: str,
+    ) -> None:
+        config, warnings = _load_toml(
+            tmp_path, f"tool_output_max_percent = {value}\n",
+        )
+        assert config.tool_output_max_percent == 4
+        assert any(
+            "tool_output_max_percent" in w and "from 1 to 100" in w
+            for w in warnings
+        )
 
     @pytest.mark.parametrize("value", ["0", "-1", '"32k"'])
     def test_invalid_model_context_window_warns(
@@ -354,6 +370,12 @@ class TestContextWindow:
     def test_configured_value_wins(self) -> None:
         config = ExpectoConfig(model_context_window=32768)
         assert config.context_window() == (32768, "config")
+
+    def test_tool_output_max_chars_follows_the_window(self) -> None:
+        # 4% of 128000 tokens, at 4 chars per token.
+        assert ExpectoConfig().tool_output_max_chars() == 20480
+        config = ExpectoConfig(model_context_window=32768, tool_output_max_percent=10)
+        assert config.tool_output_max_chars() == 3276 * 4
 
 
 class TestMCPServers:

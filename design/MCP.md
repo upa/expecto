@@ -154,6 +154,9 @@ validates its own input, and a rejection comes back as tool-output text.
   `[non-text content omitted: image/png]`. An `isError` result is
   prefixed with `Error: ` and returned as the tool output — like a
   declined command, a failure is information for the LLM, not an abort.
+- **Size cap**: a result longer than `tool_output_max_percent` of the
+  context window keeps its beginning and end, with a note suggesting
+  narrower arguments (DESIGN.md §5.7).
 - **No confirmation gate.** The risk classification and the regex
   backstop cover terminal commands; MCP tools are not commands, and the
   user chose to configure the server. The safety property expecto does

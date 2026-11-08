@@ -281,6 +281,7 @@ def main(argv: list[str] | None = None) -> None:
         mcp=mcp_manager,
         skills=skills,
         char_interval_ms=config.llm_input_char_interval,
+        tool_output_max_chars=config.tool_output_max_chars(),
     )
 
     async def run_session() -> int:

@@ -15,6 +15,8 @@ from openai.types.chat import (
 )
 from pydantic import BaseModel, ValidationError
 
+from expecto.config import CHARS_PER_TOKEN
+
 if TYPE_CHECKING:
     from collections.abc import Callable
 
@@ -635,15 +637,15 @@ class LLMClient:
 
     def _prompt_size(self) -> int:
         """Prompt size in tokens for the compaction check: the last
-        request's reported usage, or a chars/4 estimate when the backend
-        reports no usage."""
+        request's reported usage, or a chars/CHARS_PER_TOKEN estimate when
+        the backend reports no usage."""
         if self._last_prompt_tokens > 0:
             return self._last_prompt_tokens
         chars = sum(
             len(json.dumps(message, ensure_ascii=False))
             for message in self._messages
         )
-        return chars // 4
+        return chars // CHARS_PER_TOKEN
 
     def _parse_tool_call(
         self, item: ChatCompletionMessageToolCallUnion,

@@ -28,6 +28,9 @@ DEFAULT_HOTKEY = 0x1F  # Ctrl-/
 # backend is not asked (OpenAI-compatible APIs have no common way to
 # report it); 128k is the most common window among current models.
 DEFAULT_CONTEXT_WINDOW = 128_000
+# The rough characters-per-token ratio used wherever a token count is
+# estimated from text (no tokenizer is available for an arbitrary backend).
+CHARS_PER_TOKEN = 4
 
 
 DEFAULT_CONFIG_DIR = "~/.expecto"
@@ -332,6 +335,8 @@ class ExpectoConfig:
     model_context_window: int | None = None
     # Compaction starts at this percentage of the context window.
     compact_thresh_percent: int = 75
+    # A single tool result is cut to this percentage of the context window.
+    tool_output_max_percent: int = 4
     new_output_max_chars: int = 20000
     # ms between the characters/keys of a tool call typed into the pty;
     # 0 types them one by one without waiting, negative types at once.
@@ -388,6 +393,12 @@ class ExpectoConfig:
         if self.model_context_window is not None:
             return self.model_context_window, "config"
         return DEFAULT_CONTEXT_WINDOW, "default"
+
+    def tool_output_max_chars(self) -> int:
+        """The most characters a single tool result may carry:
+        tool_output_max_percent of the context window, in characters."""
+        context_window, _ = self.context_window()
+        return context_window * self.tool_output_max_percent // 100 * CHARS_PER_TOKEN
 
 
 def _apply_toml(
@@ -447,6 +458,8 @@ def _apply_toml(
         config.model_context_window = v
     if (v := table.take_int("compact_thresh_percent", maximum=100)) is not None:
         config.compact_thresh_percent = v
+    if (v := table.take_int("tool_output_max_percent", maximum=100)) is not None:
+        config.tool_output_max_percent = v
     if (v := table.take_int("new_output_max_chars")) is not None:
         config.new_output_max_chars = v
 

@@ -93,10 +93,11 @@ threshold_ms = 30000            # report unsettled output to the LLM after this 
 llm_input_char_interval = -1    # ms between the keys the LLM types (0 = no wait, negative = all at once)
 
 # Context for the LLM
-scrollback_lines = 5000         # scrollback buffer capacity
 model_context_window = 128000   # the model's context length in tokens (default: 128000)
 compact_thresh_percent = 75     # compact the conversation at this % of model_context_window
+scrollback_lines = 5000         # scrollback buffer capacity
 new_output_max_chars = 20000    # max chars of between-query output sent to the LLM
+tool_output_max_percent = 4     # max size of one command/MCP result, as % of model_context_window
 
 # Files
 log_file = ""                   # JSONL log of queries and LLM requests/responses
