@@ -74,10 +74,21 @@ class TestKeyInputRejected:
         assert seq == b"\x1ba"
 
     def test_ss3_key_rejected(self) -> None:
-        """F1-F4 style SS3 sequences (ESC O x) are not responses."""
+        """F1-F4 style SS3 sequences (ESC O x) are not responses; the
+        whole key is rejected as one sequence."""
         events = _feed(ResponseFilter(), b"\x1bOR")
-        assert events[1] == (FilterResult.REJECT, b"\x1bO")
-        assert events[2] == (FilterResult.PASS, b"")
+        assert events[1] == (FilterResult.PENDING, b"")
+        assert events[2] == (FilterResult.REJECT, b"\x1bOR")
+
+    def test_application_mode_arrow_rejected_whole(self) -> None:
+        result, seq = _last(ResponseFilter(), b"\x1bOD")
+        assert result == FilterResult.REJECT
+        assert seq == b"\x1bOD"
+
+    def test_control_byte_inside_ss3_rejected(self) -> None:
+        result, seq = _last(ResponseFilter(), b"\x1bO\x03")
+        assert result == FilterResult.REJECT
+        assert seq == b"\x1bO\x03"
 
     def test_control_byte_inside_csi_rejected(self) -> None:
         """A Ctrl-C typed mid-sequence is replayed, so it still cancels."""
@@ -121,6 +132,15 @@ class TestChunkBoundaries:
         assert filt.feed(0x1B) == (FilterResult.PENDING, b"")
         assert filt.flush_chunk_end() == b"\x1b"
         # The filter is reset afterwards.
+        assert filt.feed(0x61) == (FilterResult.PASS, b"")
+
+    def test_ss3_prefix_at_chunk_end_is_returned(self) -> None:
+        """SS3 is never a reply, so "ESC O" is not held across reads
+        (holding it would swallow the next key)."""
+        filt = ResponseFilter()
+        filt.feed(0x1B)
+        filt.feed(ord("O"))
+        assert filt.flush_chunk_end() == b"\x1bO"
         assert filt.feed(0x61) == (FilterResult.PASS, b"")
 
     def test_split_response_recognized_across_chunks(self) -> None:

@@ -97,6 +97,67 @@ class State(enum.Enum):
     EXECUTING = "executing"
 
 
+class QueryKey(enum.Enum):
+    """An editing key of the query line."""
+
+    LEFT = "left"
+    RIGHT = "right"
+    HOME = "home"
+    END = "end"
+    DELETE = "delete"
+
+
+# Final bytes of the CSI / SS3 cursor keys ("ESC [ D", "ESC O D", ...).
+# Modifier parameters ("ESC [ 1 ; 5 D", Ctrl-Left) are ignored: a
+# modified arrow moves like the plain one.
+_FINAL_BYTE_KEYS: dict[int, QueryKey] = {
+    0x44: QueryKey.LEFT,   # D
+    0x43: QueryKey.RIGHT,  # C
+    0x48: QueryKey.HOME,   # H
+    0x46: QueryKey.END,    # F
+}
+
+# "CSI <n> ~" keys, by their first parameter. Home and End have two
+# numberings (vt220: 1 / 4, rxvt: 7 / 8); both are accepted.
+_TILDE_KEYS: dict[bytes, QueryKey] = {
+    b"1": QueryKey.HOME,
+    b"7": QueryKey.HOME,
+    b"4": QueryKey.END,
+    b"8": QueryKey.END,
+    b"3": QueryKey.DELETE,
+}
+
+# Emacs-style control keys: Ctrl-A / Ctrl-E (start / end of line),
+# Ctrl-B / Ctrl-F (back / forward one character).
+_CTRL_KEYS: dict[int, QueryKey] = {
+    0x01: QueryKey.HOME,
+    0x05: QueryKey.END,
+    0x02: QueryKey.LEFT,
+    0x06: QueryKey.RIGHT,
+}
+
+
+def _is_key_sequence(seq: bytes) -> bool:
+    """Whether seq is one complete CSI ("ESC [" params final) or SS3
+    ("ESC O" final) sequence — the shape of a key the terminal sends."""
+    if len(seq) < 3 or seq[0] != 0x1B or not 0x40 <= seq[-1] <= 0x7E:
+        return False
+    if seq[1] == 0x4F:  # O
+        return len(seq) == 3
+    if seq[1] == 0x5B:  # [
+        return all(0x20 <= byte <= 0x3F for byte in seq[2:-1])
+    return False
+
+
+def query_edit_key(seq: bytes) -> QueryKey | None:
+    """The query-line editing key a complete CSI / SS3 key sequence
+    stands for, or None for a key with no meaning there (Up, Down, F1,
+    ...)."""
+    if seq[-1] == 0x7E:  # ~
+        return _TILDE_KEYS.get(seq[2:-1].split(b";")[0])
+    return _FINAL_BYTE_KEYS.get(seq[-1])
+
+
 class InputRouter:
     def __init__(
         self,
@@ -104,7 +165,7 @@ class InputRouter:
         on_query_submit: Callable[[str], None],
         on_query_cancel: Callable[[], None],
         on_query_start: Callable[[], None] | None = None,
-        on_query_update: Callable[[str], None] | None = None,
+        on_query_update: Callable[[str, int], None] | None = None,
         hotkey: int = 0x1F,
     ) -> None:
         self._write_to_pty = write_to_pty
@@ -115,6 +176,8 @@ class InputRouter:
         self._hotkey = hotkey
         self._state: State = State.PASSTHROUGH
         self._query_buf: list[str] = []
+        # Where in _query_buf the next character goes (a character index).
+        self._query_cursor: int = 0
         self._utf8_pending: bytearray = bytearray()
         self._on_executing_input: Callable[[int], None] | None = None
         self._response_filter: ResponseFilter = ResponseFilter()
@@ -127,6 +190,11 @@ class InputRouter:
     def query_text(self) -> str:
         return "".join(self._query_buf)
 
+    @property
+    def query_cursor(self) -> int:
+        """The cursor position in the query text, in characters."""
+        return self._query_cursor
+
     def set_executing_input_handler(self, handler: Callable[[int], None]) -> None:
         """Set the receiver for bytes typed while an execution is running
         (wired by IORelay: key requests, Ctrl-C cancellation)."""
@@ -135,8 +203,7 @@ class InputRouter:
     def set_passthrough(self) -> None:
         """Return to passthrough (called when an execution finishes)."""
         self._state = State.PASSTHROUGH
-        self._query_buf.clear()
-        self._utf8_pending.clear()
+        self._clear_query()
         # The remainder of a split terminal reply flows to the pty
         # directly from here on; forward what was already buffered.
         pending = self._response_filter.take_pending()
@@ -165,9 +232,12 @@ class InputRouter:
         where stdin is withheld from the child anyway — decoding it in
         passthrough would hand the child the legacy byte it asked the
         terminal not to send, throwing away the distinction it turned
-        modifyOtherKeys on to get."""
+        modifyOtherKeys on to get. The query line's Emacs-style keys
+        only in QUERY, where they edit the query."""
         if self._state == State.PASSTHROUGH:
             return frozenset({self._hotkey})
+        if self._state == State.QUERY:
+            return frozenset({self._hotkey, 0x03, *_CTRL_KEYS})
         return frozenset({self._hotkey, 0x03})
 
     def _handle_byte(self, byte: int) -> None:
@@ -181,6 +251,15 @@ class InputRouter:
                 self._write_to_pty(seq)
                 return
             if result == FilterResult.REJECT:
+                if self._state == State.QUERY and _is_key_sequence(seq):
+                    # A key such as an arrow. One with no meaning in the
+                    # query line (Up, Down, F1, ...) is dropped: replaying
+                    # its bytes would read the leading ESC as the Esc key,
+                    # cancel the query, and leak the rest to the child.
+                    key = query_edit_key(seq)
+                    if key is not None:
+                        self._edit_query(key)
+                    return
                 for buffered in seq:
                     self._dispatch_byte(buffered)
                 return
@@ -200,7 +279,7 @@ class InputRouter:
     def _handle_passthrough(self, byte: int) -> None:
         if byte == self._hotkey:
             self._state = State.QUERY
-            self._query_buf.clear()
+            self._clear_query()
             if self._on_query_start is not None:
                 self._on_query_start()
         else:
@@ -214,11 +293,10 @@ class InputRouter:
                 if len(self._utf8_pending) >= expected:
                     try:
                         char = bytes(self._utf8_pending).decode("utf-8")
-                        self._query_buf.append(char)
-                        if self._on_query_update is not None:
-                            self._on_query_update(self.query_text)
                     except UnicodeDecodeError:
                         pass
+                    else:
+                        self._insert_query_char(char)
                     self._utf8_pending.clear()
             else:
                 self._utf8_pending.clear()
@@ -234,17 +312,51 @@ class InputRouter:
             self._on_query_submit(query)
         elif byte in (0x1B, 0x03):  # Esc, Ctrl-C
             self._state = State.PASSTHROUGH
-            self._query_buf.clear()
-            self._utf8_pending.clear()
+            self._clear_query()
             self._on_query_cancel()
         elif byte == 0x7F:  # Backspace
-            if self._query_buf:
-                self._query_buf.pop()
-                if self._on_query_update is not None:
-                    self._on_query_update(self.query_text)
+            if self._query_cursor > 0:
+                self._query_cursor -= 1
+                del self._query_buf[self._query_cursor]
+                self._notify_query_update()
+        elif byte in _CTRL_KEYS and byte != self._hotkey:
+            self._edit_query(_CTRL_KEYS[byte])
         elif byte >= 0xC0:  # Start of multi-byte UTF-8
             self._utf8_pending.append(byte)
         elif byte >= 0x20:  # printable ASCII
-            self._query_buf.append(chr(byte))
-            if self._on_query_update is not None:
-                self._on_query_update(self.query_text)
+            self._insert_query_char(chr(byte))
+
+    def _insert_query_char(self, char: str) -> None:
+        self._query_buf.insert(self._query_cursor, char)
+        self._query_cursor += 1
+        self._notify_query_update()
+
+    def _edit_query(self, key: QueryKey) -> None:
+        """Apply a cursor-movement or deletion key to the query line."""
+        length = len(self._query_buf)
+        cursor = self._query_cursor
+        if key == QueryKey.DELETE:
+            if cursor < length:
+                del self._query_buf[cursor]
+                self._notify_query_update()
+            return
+        if key == QueryKey.LEFT:
+            cursor = max(cursor - 1, 0)
+        elif key == QueryKey.RIGHT:
+            cursor = min(cursor + 1, length)
+        elif key == QueryKey.HOME:
+            cursor = 0
+        else:  # QueryKey.END
+            cursor = length
+        if cursor != self._query_cursor:
+            self._query_cursor = cursor
+            self._notify_query_update()
+
+    def _clear_query(self) -> None:
+        self._query_buf.clear()
+        self._query_cursor = 0
+        self._utf8_pending.clear()
+
+    def _notify_query_update(self) -> None:
+        if self._on_query_update is not None:
+            self._on_query_update(self.query_text, self._query_cursor)

@@ -158,14 +158,18 @@ locks). See **`Async.md`** for details.
   - **No buffering across reads.** One key press arrives as one read, so a sequence split between two chunks is simply not recognized (the pre-existing behavior). Holding a partial sequence would delay a bare Esc, which the program on the terminal needs immediately — the cost ResponseFilter accepts in QUERY / EXECUTING is not acceptable in passthrough.
 - **Forwarding of terminal response sequences** (`ResponseFilter` in `response_filter.py`): a child process may send a query to the outer terminal and hold off input processing until the response arrives (fish 4.x sends CPR `\x1b[6n`, OSC 11, and Primary DA on every prompt; bash/readline does not). Since stdin is not forwarded to the pty during QUERY / EXECUTING, the response would otherwise never reach the child process and the injected command would not be processed. Therefore, in both states, a response-recognition state machine is inserted before normal byte processing, and only sequences confirmed to be terminal→application responses are forwarded to the pty:
   - CSI responses: final character `R n y t`, or `c` with a `?`/`>` prefix, or `u` with `?` (DA and kitty keyboard protocol responses). Arrow keys (`\x1b[A`), `~`-style sequences, and kitty key input (`u` without `?`) are not treated as responses and are replayed to normal processing.
+  - SS3 sequences (`ESC O` + one byte: cursor keys in application mode, F1–F4) are never responses; the whole three-byte key is rejected as one sequence. A pending `ESC O` at the end of a chunk is replayed rather than held, so an Alt-Shift-O does not swallow the next key.
   - OSC / DCS responses (BEL / ST terminated): cannot originate from a keyboard, so they are forwarded regardless of content.
   - If only a single ESC byte is pending at the end of a chunk (one read), it is treated as the user's Esc key. Valid prefixes of 2+ bytes are held across chunks, handling responses split across reads. Pending limit is 1024 bytes.
   - As a side effect, this also prevents the ESC contained in the OSC response terminator `\x1b\` from being misread as an "n" answer to a y/n confirmation prompt (`wait_key`).
   - It is accepted that some keys indistinguishable from responses (e.g., the F3 collision with CPR) may reach the pty during execution.
-- Input handling during query mode:
-  - Regular characters → appended to the query buffer + reflected in the miniprompt
-  - Backspace → delete one character
-  - Enter → submit and proceed to the LLM call
+- Input handling during query mode (the query is a one-line editor with a cursor, a character index into the query buffer):
+  - Regular characters → inserted at the cursor + reflected in the miniprompt
+  - Backspace → delete the character before the cursor; Delete (`CSI 3~`) → delete the character at the cursor
+  - ← / → (`CSI D` / `CSI C`, or `SS3 D` / `SS3 C` in application cursor mode, which zsh's line editor and vim turn on), Ctrl-B / Ctrl-F → move one character. Modifier parameters are ignored (Ctrl-← moves like ←)
+  - Home / End (`CSI H` / `CSI F`, `SS3 H` / `SS3 F`, `CSI 1~` / `CSI 4~`, `CSI 7~` / `CSI 8~`), Ctrl-A / Ctrl-E → start / end of the query. When the hotkey is one of these Ctrl keys, the hotkey wins (it does nothing in query mode). Encoded by modifyOtherKeys (vim), these Ctrl keys are decoded in QUERY like Ctrl-C (the claimed keys above)
+  - Any other complete CSI / SS3 key (↑ / ↓ — there is no query history —, PgUp, F-keys, ...) → dropped. Replaying its bytes would read the leading ESC as the Esc key: the query was cancelled and the rest of the sequence (`[D`) leaked to the child
+  - Enter → submit the whole query (wherever the cursor is) and proceed to the LLM call
   - Esc or Ctrl-C → cancel and return to passthrough
 
 ### 5.5 ScreenBuffer (history management)
@@ -181,7 +185,7 @@ locks). See **`Async.md`** for details.
 ### 5.6 QueryModeUI
 
 - Responsibility: display a miniprompt on the outer tty without destroying the child process's screen.
-- Implementation: draws `? ` and the query string inline in gray starting at the current cursor position (the starting column is obtained from ScreenBuffer). Appending characters uses differential echo only; on deletion or rewriting, it moves back to the start of the prompt, erases with `\x1b[J`, and redraws (the return-position calculation uses display width accounting for East Asian Width, supporting line wrapping). On cancel it erases; on submit (`finalize()`) it leaves the query line on screen and writes a single trailing space, but no newline: what expecto shows next (the spinner, §5.8) continues on the same line, and the line break comes later from the echo of the prompt nudge sent before the first `run_command` (§5.8), or from the newline sent at the end of the execution.
+- Implementation: draws `? ` and the query string inline in gray starting at the current cursor position (the starting column is obtained from ScreenBuffer). `update(text, cursor)` receives the text and the cursor (a character index). Typing at the end uses differential echo only; any other edit moves back to the start of the prompt, erases with `\x1b[J`, redraws, and then places the cursor. Moving the cursor right re-echoes the characters it passes, which leaves the terminal exactly as the original echo did (including the deferred wrap when text ends at the right margin); moving it left (and back to the prompt start) is a `\r` + CUU + CUF computed from the display width (East Asian Width) and the row the cursor is on, which the UI tracks. A wide character that wraps early at the right margin is not accounted for in that arithmetic (approximation). On cancel it erases; on submit (`finalize()`) it moves the cursor to the end of the query, leaves the query line on screen and writes a single trailing space, but no newline: what expecto shows next (the spinner, §5.8) continues on the same line, and the line break comes later from the echo of the prompt nudge sent before the first `run_command` (§5.8), or from the newline sent at the end of the execution.
 - On an alternate screen (vim etc.) the miniprompt is drawn the same way, straight onto the program's display; this is accepted as-is (§10-1).
 
 ### 5.7 LLMClient

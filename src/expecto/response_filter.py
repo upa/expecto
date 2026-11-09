@@ -22,6 +22,7 @@ class _State(enum.Enum):
     IDLE = "idle"
     ESC = "esc"
     CSI = "csi"
+    SS3 = "ss3"
     OSC = "osc"
     OSC_ESC = "osc_esc"
     DCS = "dcs"
@@ -47,6 +48,9 @@ class ResponseFilter:
       ``ESC[13u`` without ``?``) are rejected.
     - OSC replies: ``ESC ]`` … BEL or ST — keyboards never produce OSC.
     - DCS replies: ``ESC P`` … ST (XTGETTCAP / XTVERSION replies).
+
+    SS3 key sequences (``ESC O`` + one byte: application-mode cursor
+    keys, F1-F4) are rejected as one whole sequence, like CSI keys.
 
     A lone ESC at the end of a read chunk is treated as the Esc key
     (flush_chunk_end); a longer valid prefix is kept pending so replies
@@ -77,6 +81,8 @@ class ResponseFilter:
                 self._state = _State.OSC
             elif byte == 0x50:  # P
                 self._state = _State.DCS
+            elif byte == 0x4F:  # O
+                self._state = _State.SS3
             else:
                 return self._reject(byte)
             self._buf.append(byte)
@@ -93,6 +99,12 @@ class ResponseFilter:
                 if self._is_csi_response(seq):
                     return (FilterResult.RESPONSE, seq)
                 return (FilterResult.REJECT, seq)
+            return self._reject(byte)
+
+        if self._state == _State.SS3:
+            # SS3 sequences are keys only (cursor keys in application
+            # mode, F1-F4); terminals never reply with one. Keep the whole
+            # key together so it is replayed as one sequence.
             return self._reject(byte)
 
         if self._state == _State.OSC:
@@ -129,10 +141,16 @@ class ResponseFilter:
     def flush_chunk_end(self) -> bytes:
         """Called at the end of a stdin read chunk. A lone pending ESC is
         the Esc key, not the start of a response — return it for replay.
-        A longer prefix stays pending (a reply split across reads)."""
-        if self._state == _State.ESC and len(self._buf) == 1:
+        A pending "ESC O" is returned too: SS3 is never a reply, and a key
+        sends its whole sequence in one read, so holding it would only
+        swallow the next key (Alt-Shift-O). A longer prefix stays pending
+        (a reply split across reads)."""
+        if (
+            self._state == _State.ESC and len(self._buf) == 1
+        ) or self._state == _State.SS3:
+            seq = bytes(self._buf)
             self._reset()
-            return b"\x1b"
+            return seq
         return b""
 
     def take_pending(self) -> bytes:

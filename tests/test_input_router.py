@@ -128,7 +128,7 @@ class TestQueryMode:
         )
         router.handle(bytes([0x1F]))
         router.handle(b"a")
-        router.handle(bytes([0x01]))  # Ctrl-A
+        router.handle(bytes([0x07]))  # Ctrl-G
         router.handle(b"b")
         assert router.query_text == "ab"
 
@@ -462,3 +462,213 @@ class TestModifiedKeyEncodings:
         router.handle(b"\x1b[99;5u")  # Ctrl-C: "c" (99) with Ctrl (5)
         assert router.state == State.PASSTHROUGH
         assert cancelled == [True]
+
+
+class TestQueryLineEditing:
+    """Cursor keys move within the query instead of cancelling it (their
+    leading ESC used to be read as the Esc key, and the rest leaked to
+    the child as "[D")."""
+
+    def _query_router(
+        self,
+        forwarded: list[bytes] | None = None,
+        cancelled: list[bool] | None = None,
+        hotkey: int = 0x1F,
+    ) -> InputRouter:
+        sink = forwarded if forwarded is not None else []
+        cancels = cancelled if cancelled is not None else []
+        router = InputRouter(
+            write_to_pty=sink.append,
+            on_query_submit=lambda q: None,
+            on_query_cancel=lambda: cancels.append(True),
+            hotkey=hotkey,
+        )
+        router.handle(bytes([hotkey]))
+        return router
+
+    def test_left_arrow_moves_cursor_without_cancelling(self) -> None:
+        forwarded: list[bytes] = []
+        cancelled: list[bool] = []
+        router = self._query_router(forwarded, cancelled)
+        router.handle(b"abc")
+        router.handle(b"\x1b[D")
+        assert router.state == State.QUERY
+        assert router.query_text == "abc"
+        assert router.query_cursor == 2
+        assert forwarded == []
+        assert cancelled == []
+
+    def test_typing_inserts_at_cursor(self) -> None:
+        router = self._query_router()
+        router.handle(b"ac")
+        router.handle(b"\x1b[D")
+        router.handle(b"b")
+        assert router.query_text == "abc"
+        assert router.query_cursor == 2
+
+    def test_utf8_inserts_at_cursor(self) -> None:
+        router = self._query_router()
+        router.handle("あう".encode())
+        router.handle(b"\x1b[D")
+        router.handle("い".encode())
+        assert router.query_text == "あいう"
+        assert router.query_cursor == 2
+
+    def test_backspace_deletes_before_cursor(self) -> None:
+        router = self._query_router()
+        router.handle(b"abc")
+        router.handle(b"\x1b[D")
+        router.handle(bytes([0x7F]))
+        assert router.query_text == "ac"
+        assert router.query_cursor == 1
+
+    def test_backspace_at_start_does_nothing(self) -> None:
+        router = self._query_router()
+        router.handle(b"abc")
+        router.handle(b"\x1b[H")
+        router.handle(bytes([0x7F]))
+        assert router.query_text == "abc"
+        assert router.query_cursor == 0
+
+    def test_delete_removes_char_at_cursor(self) -> None:
+        router = self._query_router()
+        router.handle(b"abc")
+        router.handle(b"\x1b[H")
+        router.handle(b"\x1b[3~")
+        assert router.query_text == "bc"
+        assert router.query_cursor == 0
+
+    def test_delete_at_end_does_nothing(self) -> None:
+        router = self._query_router()
+        router.handle(b"abc")
+        router.handle(b"\x1b[3~")
+        assert router.query_text == "abc"
+
+    def test_cursor_stays_within_the_text(self) -> None:
+        router = self._query_router()
+        router.handle(b"ab")
+        router.handle(b"\x1b[C")
+        assert router.query_cursor == 2
+        for _ in range(3):
+            router.handle(b"\x1b[D")
+        assert router.query_cursor == 0
+
+    def test_home_and_end_spellings(self) -> None:
+        router = self._query_router()
+        router.handle(b"abc")
+        for home, end in (
+            (b"\x1b[H", b"\x1b[F"),
+            (b"\x1bOH", b"\x1bOF"),
+            (b"\x1b[1~", b"\x1b[4~"),
+            (b"\x1b[7~", b"\x1b[8~"),
+        ):
+            router.handle(home)
+            assert router.query_cursor == 0, home
+            router.handle(end)
+            assert router.query_cursor == 3, end
+
+    def test_application_mode_arrows(self) -> None:
+        """zsh's line editor and vim switch the terminal to application
+        cursor keys, which arrive as SS3 (ESC O D) instead of CSI."""
+        router = self._query_router()
+        router.handle(b"abc")
+        router.handle(b"\x1bOD")
+        assert router.query_cursor == 2
+        router.handle(b"\x1bOC")
+        assert router.query_cursor == 3
+        assert router.state == State.QUERY
+
+    def test_modified_arrow_moves_like_plain_one(self) -> None:
+        router = self._query_router()
+        router.handle(b"abc")
+        router.handle(b"\x1b[1;5D")  # Ctrl-Left
+        assert router.query_cursor == 2
+
+    def test_emacs_keys(self) -> None:
+        router = self._query_router()
+        router.handle(b"abc")
+        router.handle(bytes([0x01]))  # Ctrl-A
+        assert router.query_cursor == 0
+        router.handle(bytes([0x06]))  # Ctrl-F
+        assert router.query_cursor == 1
+        router.handle(bytes([0x05]))  # Ctrl-E
+        assert router.query_cursor == 3
+        router.handle(bytes([0x02]))  # Ctrl-B
+        assert router.query_cursor == 2
+        assert router.query_text == "abc"
+
+    def test_encoded_emacs_key_edits_the_query(self) -> None:
+        """Under vim's modifyOtherKeys, Ctrl-A arrives encoded."""
+        router = self._query_router()
+        router.handle(b"abc")
+        router.handle(b"\x1b[27;5;97~")
+        assert router.query_cursor == 0
+        assert router.query_text == "abc"
+
+    def test_encoded_ctrl_a_still_reaches_the_child_in_passthrough(self) -> None:
+        forwarded: list[bytes] = []
+        router = InputRouter(
+            write_to_pty=forwarded.append,
+            on_query_submit=lambda q: None,
+            on_query_cancel=lambda: None,
+        )
+        router.handle(b"\x1b[27;5;97~")
+        assert b"".join(forwarded) == b"\x1b[27;5;97~"
+
+    def test_hotkey_takes_precedence_over_emacs_key(self) -> None:
+        router = self._query_router(hotkey=0x01)  # hotkey Ctrl-A
+        router.handle(b"abc")
+        router.handle(bytes([0x01]))
+        assert router.query_cursor == 3
+
+    def test_up_down_and_function_keys_are_dropped(self) -> None:
+        forwarded: list[bytes] = []
+        cancelled: list[bool] = []
+        router = self._query_router(forwarded, cancelled)
+        router.handle(b"abc")
+        for key in (b"\x1b[A", b"\x1b[B", b"\x1bOP", b"\x1b[15~", b"\x1b[5~"):
+            router.handle(key)
+        assert router.state == State.QUERY
+        assert router.query_text == "abc"
+        assert router.query_cursor == 3
+        assert forwarded == []
+        assert cancelled == []
+
+    def test_lone_esc_still_cancels(self) -> None:
+        cancelled: list[bool] = []
+        router = self._query_router(cancelled=cancelled)
+        router.handle(b"abc")
+        router.handle(b"\x1b")
+        assert cancelled == [True]
+        assert router.state == State.PASSTHROUGH
+
+    def test_cursor_reset_on_next_query(self) -> None:
+        router = self._query_router()
+        router.handle(b"abc")
+        router.handle(b"\x1b[D")
+        router.handle(b"\x1b")  # cancel
+        router.handle(bytes([0x1F]))
+        assert router.query_cursor == 0
+        router.handle(b"x")
+        assert router.query_text == "x"
+
+    def test_submit_sends_whole_text_regardless_of_cursor(self) -> None:
+        submitted: list[str] = []
+        router = InputRouter(
+            write_to_pty=lambda d: None,
+            on_query_submit=submitted.append,
+            on_query_cancel=lambda: None,
+        )
+        router.handle(bytes([0x1F]))
+        router.handle(b"df -h")
+        router.handle(b"\x1b[H")
+        router.handle(bytes([0x0D]))
+        assert submitted == ["df -h"]
+
+    def test_arrow_while_executing_still_reaches_handler(self) -> None:
+        received: list[int] = []
+        router = self._query_router()
+        router.set_executing_input_handler(received.append)
+        router.handle(bytes([0x0D]))
+        router.handle(b"\x1b[D")
+        assert received == [0x1B, ord("["), ord("D")]
